@@ -919,14 +919,18 @@ function validateRemoteOptions(remote: ControlCenterRemoteOptionsV1 | undefined)
   const hosts = [...new Set(remote.allowedHosts.map((h) => (typeof h === "string" ? h.trim().toLowerCase().replace(/\[|\]/g, "") : "")))];
   if (!hosts.length) throw new Error("Control Center remote access requires at least one allowedHost.");
   for (const host of hosts) {
+    if (isIP(host) !== 0) {
+      throw new Error(`Control Center allowedHost '${host}' must be a DNS hostname, not an IP literal.`);
+    }
     if (!REMOTE_HOST_PATTERN.test(host) || host === "localhost" || host.startsWith("127.") || host === "::1") {
       throw new Error(`Control Center allowedHost '${host}' is not a valid non-loopback DNS hostname.`);
     }
   }
   const hostSet = new Set(hosts);
-  const origins = [...new Set(remote.allowedOrigins.map((o) => (typeof o === "string" ? o.trim() : "")))];
-  if (!origins.length) throw new Error("Control Center remote access requires at least one allowedOrigin.");
-  for (const origin of origins) {
+  const rawOrigins = [...new Set(remote.allowedOrigins.map((o) => (typeof o === "string" ? o.trim() : "")))];
+  if (!rawOrigins.length) throw new Error("Control Center remote access requires at least one allowedOrigin.");
+  const origins: string[] = [];
+  for (const origin of rawOrigins) {
     let url: URL;
     try {
       url = new URL(origin);
@@ -945,8 +949,11 @@ function validateRemoteOptions(remote: ControlCenterRemoteOptionsV1 | undefined)
     if (!REMOTE_HOST_PATTERN.test(url.hostname.toLowerCase())) {
       throw new Error(`Control Center allowedOrigin '${origin}' host is invalid.`);
     }
+    // Store the normalized origin (browsers always send normalized Origins;
+    // raw variants with case/port quirks would otherwise fail closed).
+    origins.push(url.origin);
   }
-  return { origins, hosts };
+  return { origins: [...new Set(origins)], hosts };
 }
 
 /**

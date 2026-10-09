@@ -46,6 +46,7 @@ describe("Control Center trusted-proxy remote access", () => {
   it("rejects invalid remote configuration fail-closed", () => {
     expect(() => new LocalControlCenterV1({ remote: { mode: "trusted-proxy", allowedOrigins: [], allowedHosts: [] } })).toThrow();
     expect(() => new LocalControlCenterV1({ remote: { mode: "trusted-proxy", allowedOrigins: ["http://insecure.example"], allowedHosts: ["insecure.example"] } })).toThrow();
+    expect(() => new LocalControlCenterV1({ remote: { mode: "trusted-proxy", allowedOrigins: ["https://192.168.1.10"], allowedHosts: ["192.168.1.10"] } })).toThrow(/IP literal/);
     expect(() => remoteOptionsFromEnvironment({ AEH_CONTROL_CENTER_REMOTE_MODE: "funnel" })).toThrow();
     expect(remoteOptionsFromEnvironment({})).toBeUndefined();
   });
@@ -108,6 +109,7 @@ describe("Control Center trusted-proxy remote access", () => {
       expect((await rawRequest(`${started.url}health`, { headers: { Host: REMOTE_HOST } })).status).toBe(403);
       // Untrusted proxy headers fail closed.
       expect((await rawRequest(`${started.url}health`, { headers: { Host: REMOTE_HOST, "X-Forwarded-Proto": "https", "X-Forwarded-Host": "evil.example" } })).status).toBe(403);
+      expect((await rawRequest(`${started.url}health`, { headers: { Host: REMOTE_HOST, "X-Forwarded-Proto": "https", "X-Real-IP": "1.2.3.4" } })).status).toBe(403);
       expect((await rawRequest(`${started.url}health`, { headers: { Host: REMOTE_HOST, "X-Forwarded-Proto": "https", Forwarded: "for=1.2.3.4" } })).status).toBe(403);
       expect((await rawRequest(`${started.url}health`, { headers: { Host: REMOTE_HOST, "X-Forwarded-Proto": "https", "X-Forwarded-For": "a, b" } })).status).toBe(403);
       // Wrong Origin on pairing fails.
