@@ -55,9 +55,10 @@ export interface IndependentPullRequestReviewV1 {
   /**
    * Opaque provenance binding to the PR evidence bundle the reviewer
    * inspected (final diff, check runs, validation/review evidence digests).
-   * Format-verified here; content is verified by the reviewer plus the
-   * deterministic CI/freshness/authority gates. Callers must supply the
-   * digest of the actual evidence bundle, not a placeholder.
+   * Format-verified here; the deterministic gates do not inspect the digest
+   * content itself (they verify CI state, head/base identity, candidate and
+   * policy binding separately). Callers must supply the digest of the actual
+   * evidence bundle for the audit trail, not a placeholder.
    */
   evidenceDigest: string;
   /** Assurance tier of this review. HIGH is required for high-risk changes. */
@@ -86,10 +87,14 @@ export interface MergeEligibilityInputV1 {
   mergeAllowedByPolicy: boolean;
   mergeMode: DeliveryMergeModeV1;
   risk: "low" | "medium" | "high";
-  /** When true, reviewerProvider must be a qualified high-assurance provider. */
+  /** When true, reviewerProvider must be a frozen qualified high-assurance provider (exact match). */
   requireHighAssurance?: boolean;
-  /** Case-insensitive qualified providers for HIGH reviews. Defaults to Luna/Codex family. */
-  qualifiedProviders?: string[];
+  /**
+   * 1-indexed repair-review round, bounded by assertReviewRound
+   * (PR_REVIEW_MAX_ROUNDS). The operation controller persists the round with
+   * the review chain; eligibility rejects anything past the bound.
+   */
+  reviewRound?: number;
 }
 
 export interface MergeEligibilityV1 {
@@ -285,13 +290,13 @@ export function resolveDeliveryMergeMode(input: {
   return input.mode;
 }
 
-/** Default qualified high-assurance reviewer providers (Luna/Codex family), matched case-insensitively. */
-export const HIGH_ASSURANCE_PROVIDERS_DEFAULT = ["luna", "codex", "codex/luna", "gpt-6-luna", "gpt-6-luna-codex"] as const;
+/** Frozen qualified high-assurance reviewer providers (Luna/Codex family), matched by exact case-insensitive equality. */
+export const HIGH_ASSURANCE_PROVIDERS_DEFAULT: readonly string[] = ["luna", "codex", "codex/luna", "gpt-6-luna", "gpt-6-luna-codex"];
 
-function isQualifiedHighAssuranceProvider(provider: unknown, qualified: readonly string[]): boolean {
+function isQualifiedHighAssuranceProvider(provider: unknown): boolean {
   if (typeof provider !== "string") return false;
   const normalized = provider.trim().toLowerCase();
-  return qualified.some((q) => q.toLowerCase() === normalized || normalized.includes(q.toLowerCase()));
+  return HIGH_ASSURANCE_PROVIDERS_DEFAULT.some((q) => q.toLowerCase() === normalized);
 }
 
 /**
@@ -356,11 +361,19 @@ export function evaluateMergeEligibility(input: MergeEligibilityInputV1): MergeE
     blockers.push("MERGE_BLOCKED: independent PR reviewer provider must be a non-empty string.");
   }
   if (input.requireHighAssurance === true) {
-    const qualified = input.qualifiedProviders ?? [...HIGH_ASSURANCE_PROVIDERS_DEFAULT];
-    if (!isQualifiedHighAssuranceProvider(input.review?.reviewerProvider, qualified)) {
+    // Frozen allowlist, exact match only: callers cannot widen qualification
+    // and substring spoofing (evil-luna-impersonator) never qualifies.
+    if (!isQualifiedHighAssuranceProvider(input.review?.reviewerProvider)) {
       blockers.push("MERGE_BLOCKED: high-risk changes require a qualified high-assurance reviewer (Luna/Codex family).");
     } else if (input.review?.assuranceTier !== "HIGH") {
       blockers.push("MERGE_BLOCKED: high-assurance review tier is required for this change.");
+    }
+  }
+  if (input.reviewRound !== undefined) {
+    try {
+      assertReviewRound(input.reviewRound);
+    } catch (error) {
+      blockers.push(error instanceof Error ? error.message : String(error));
     }
   }
   if (input.review?.pr?.number !== input.expectedPr?.number

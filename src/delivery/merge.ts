@@ -23,12 +23,59 @@ export interface MergeAcceptedPullRequestInput {
   review: IndependentPullRequestReviewV1;
   candidate: CandidateRevisionV1;
   policyDigest: string;
+  /**
+   * Implementer identity for the independence check. Trust boundary: merge
+   * requires fenced controller authority (epoch + controller actor), so only
+   * the controller can invoke this path; the controller must supply the true
+   * implementer identity from the candidate/operation record. Forgery requires
+   * controller compromise, which already grants merge.
+   */
   implementerIdentity: string;
   mergeMethod?: "merge" | "squash" | "rebase";
+  /**
+   * Risk class driving the high-assurance requirement. The controller must
+   * derive this from the frozen candidate impact/policy; understating is a
+   * controller bug. Absent risk fails closed to high.
+   */
   risk?: "low" | "medium" | "high";
   /** When true, a qualified high-assurance reviewer is required. Defaults from risk (high → true). */
   requireHighAssurance?: boolean;
-  qualifiedProviders?: string[];
+  /** 1-indexed repair-review round persisted by the controller (max 3). */
+  reviewRound?: number;
+}
+
+export interface LiveMergeStateV1 {
+  state?: string;
+  headSha?: string;
+  baseSha?: string;
+  mergeable?: boolean | null;
+  mergeableState?: string;
+  combinedStatus?: string;
+}
+
+/**
+ * DETERMINISTIC: evaluate live merge state observed from GitHub against the
+ * reviewed PR identity. Fails closed: only mergeable_state clean passes;
+ * unknown/unstable/behind/blocked/dirty all block. Returns blockers so
+ * callers record machine-readable denial evidence.
+ */
+export function evaluateLiveMergeState(reviewed: PullRequestIdentityV1, live: LiveMergeStateV1): string[] {
+  const blockers: string[] = [];
+  if (live.state !== "open") blockers.push(`MERGE_BLOCKED: pull request #${reviewed.number} is not open (state=${String(live.state)}).`);
+  if (typeof live.headSha === "string" && live.headSha.toLowerCase() !== reviewed.headSha.toLowerCase()) {
+    blockers.push("MERGE_BLOCKED: live PR head no longer matches the reviewed head; renewed independent review is required.");
+  }
+  if (typeof live.baseSha === "string" && live.baseSha.toLowerCase() !== reviewed.baseSha.toLowerCase()) {
+    blockers.push("MERGE_BLOCKED: live PR base no longer matches the reviewed base; renewed independent review is required.");
+  }
+  if (live.mergeable === false) blockers.push("MERGE_BLOCKED: pull request reports unmergeable state; repair and renewed review are required.");
+  if (live.mergeableState !== "clean") {
+    blockers.push(`MERGE_BLOCKED: pull request mergeable_state is '${String(live.mergeableState)}', expected 'clean'; repair or wait and re-review as appropriate.`);
+  }
+  if (live.combinedStatus !== "success") {
+    blockers.push(`MERGE_BLOCKED: required GitHub checks are not green (combined state=${String(live.combinedStatus)}).`);
+  }
+  return [...new Set(blockers)].sort();
 }
 
 export interface MergeAcceptedPullRequestResult {
@@ -111,56 +158,54 @@ export async function mergeAcceptedPullRequest(
 
   // Revalidate immediately before the merge from live evidence (never from
   // caller-asserted booleans): fetch the live PR and the combined commit
-  // status. Confirm the exact reviewed head is still current, the live base
-  // SHA still matches the reviewed base, the PR is open and mergeable, and
-  // required checks are green. Branch protection itself is enforced by GitHub;
-  // we never attempt to override it. A protection failure surfaces as a merge
-  // failure, not a silent override.
+  // status, then evaluate through the deterministic live-state gate. Only
+  // mergeable_state clean passes; unknown/unstable/behind/blocked/dirty all
+  // fail closed. Branch protection itself is enforced by GitHub; we never
+  // attempt to override it.
   const live = await githubRequest<{ head?: { sha?: string }; base?: { ref?: string; sha?: string }; state?: string; mergeable?: boolean | null; mergeable_state?: string; html_url?: string }>(
     apiBase, token, `/repos/${repository}/pulls/${input.pr.number}`,
   );
-  if (live.state !== "open") throw new Error(`MERGE_BLOCKED: pull request #${input.pr.number} is not open (state=${String(live.state)}).`);
-  if (typeof live.head?.sha === "string" && live.head.sha.toLowerCase() !== input.pr.headSha.toLowerCase()) {
-    throw new Error("MERGE_BLOCKED: live PR head no longer matches the reviewed head; renewed independent review is required.");
-  }
-  if (typeof live.base?.sha === "string" && live.base.sha.toLowerCase() !== input.pr.baseSha.toLowerCase()) {
-    throw new Error("MERGE_BLOCKED: live PR base no longer matches the reviewed base; renewed independent review is required.");
-  }
-  if (live.mergeable === false || live.mergeable_state === "dirty") {
-    throw new Error("MERGE_BLOCKED: pull request reports a merge conflict; repair and renewed review are required.");
-  }
-  if (live.mergeable_state === "blocked") {
-    throw new Error("MERGE_BLOCKED: pull request is blocked by branch protection (failing checks or missing reviews).");
-  }
-  const baseFresh = live.mergeable_state !== "behind" && live.mergeable_state !== "dirty";
-  if (!baseFresh) {
-    throw new Error(`MERGE_BLOCKED: target branch freshness/integration requirement is not satisfied (mergeable_state=${String(live.mergeable_state)}).`);
-  }
   const status = await githubRequest<{ state?: string; statuses?: unknown[] }>(
     apiBase, token, `/repos/${repository}/commits/${input.pr.headSha}/status`,
   );
-  const ciGreen = status.state === "success";
-  if (!ciGreen) {
-    throw new Error(`MERGE_BLOCKED: required GitHub checks are not green (combined state=${String(status.state)}).`);
+  const liveBlockers = evaluateLiveMergeState(input.pr, {
+    state: live.state,
+    headSha: live.head?.sha,
+    baseSha: live.base?.sha,
+    mergeable: live.mergeable,
+    mergeableState: live.mergeable_state,
+    combinedStatus: status.state,
+  });
+  if (liveBlockers.length) {
+    throw new Error(liveBlockers[0]!);
   }
 
-  const risk = input.risk ?? "medium";
+  // Fail closed on risk: absent risk is treated as high so the Luna
+  // high-assurance requirement applies unless the controller explicitly
+  // classifies the change from frozen candidate impact.
+  const risk = input.risk ?? "high";
   const requirement = compilePullRequestReviewRequirement({ risk, requiresHighAssurance: input.requireHighAssurance });
   const authoritySatisfied = operation.status === "RUNNING";
+  // Anchor the review policy binding to the frozen operation policy (S6: never
+  // accept a caller digest as proof of current policy/epoch).
+  const frozenDigest = operation.resolvedOperationPolicy?.digest;
+  if (typeof frozenDigest !== "string" || frozenDigest !== input.policyDigest) {
+    throw new Error("MERGE_BLOCKED: review policy binding does not match the current frozen operation policy.");
+  }
   const eligibilityInput = {
     review: input.review,
     expectedPr: input.pr,
     expectedCandidate: boundCandidate,
     expectedPolicyDigest: input.policyDigest,
     implementerIdentity: input.implementerIdentity,
-    ciGreen,
-    baseFresh,
+    ciGreen: true,
+    baseFresh: true,
     authoritySatisfied,
     mergeAllowedByPolicy,
     mergeMode: mode,
     risk,
     requireHighAssurance: requirement.requireHighAssurance,
-    ...(input.qualifiedProviders ? { qualifiedProviders: input.qualifiedProviders } : {}),
+    ...(input.reviewRound !== undefined ? { reviewRound: input.reviewRound } : {}),
   };
   const eligibility = evaluateMergeEligibility(eligibilityInput);
   if (!eligibility.eligible) {

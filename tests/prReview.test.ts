@@ -12,6 +12,7 @@ import {
   resolveDeliveryMergeMode,
   verifyIndependentPrReviewDigest,
 } from "../src/delivery/prReview.js";
+import { evaluateLiveMergeState } from "../src/delivery/merge.js";
 import type { CandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 
 function candidate(): CandidateRevisionV1 {
@@ -297,8 +298,13 @@ describe("IndependentPullRequestReview native gate", () => {
     const blocked = evaluateMergeEligibility({ ...base, review: standard });
     expect(blocked.eligible).toBe(false);
     expect(blocked.blockers.join("\n")).toMatch("high-assurance");
-    const luna = reviewFor({ reviewerProvider: "codex/gpt-6-luna", assuranceTier: "HIGH" });
+    const luna = reviewFor({ reviewerProvider: "gpt-6-luna", assuranceTier: "HIGH" });
     expect(evaluateMergeEligibility({ ...base, review: luna }).eligible).toBe(true);
+    // Substring spoofing never qualifies.
+    const spoof = reviewFor({ reviewerProvider: "evil-luna-impersonator", assuranceTier: "HIGH" });
+    const spoofed = evaluateMergeEligibility({ ...base, review: spoof });
+    expect(spoofed.eligible).toBe(false);
+    expect(spoofed.blockers.join("\n")).toMatch("high-assurance");
   });
 
   it("bounds the repair-review loop to three rounds", () => {
@@ -306,6 +312,34 @@ describe("IndependentPullRequestReview native gate", () => {
     expect(() => assertReviewRound(3)).not.toThrow();
     expect(() => assertReviewRound(4)).toThrow("PR_REVIEW_ROUNDS_EXHAUSTED");
     expect(() => assertReviewRound(0)).toThrow("positive integer");
+    const review = reviewFor();
+    const base = {
+      expectedPr: pr(),
+      expectedCandidate: candidate(),
+      expectedPolicyDigest: "c".repeat(64),
+      implementerIdentity: "implementer-1",
+      ciGreen: true,
+      baseFresh: true,
+      authoritySatisfied: true,
+      mergeAllowedByPolicy: true,
+      mergeMode: "AUTO_MERGE" as const,
+      risk: "low" as const,
+      review,
+    };
+    expect(evaluateMergeEligibility({ ...base, reviewRound: 3 }).eligible).toBe(true);
+    expect(evaluateMergeEligibility({ ...base, reviewRound: 4 }).eligible).toBe(false);
+  });
+
+  it("live merge state fails closed except clean + green", () => {
+    const reviewed = pr();
+    const clean = { state: "open", headSha: reviewed.headSha, baseSha: reviewed.baseSha, mergeable: true as const, mergeableState: "clean", combinedStatus: "success" };
+    expect(evaluateLiveMergeState(reviewed, clean)).toEqual([]);
+    expect(evaluateLiveMergeState(reviewed, { ...clean, mergeableState: "unknown" }).length).toBeGreaterThan(0);
+    expect(evaluateLiveMergeState(reviewed, { ...clean, mergeableState: "unstable" }).length).toBeGreaterThan(0);
+    expect(evaluateLiveMergeState(reviewed, { ...clean, mergeableState: "behind" }).length).toBeGreaterThan(0);
+    expect(evaluateLiveMergeState(reviewed, { ...clean, mergeableState: "blocked" }).length).toBeGreaterThan(0);
+    expect(evaluateLiveMergeState(reviewed, { ...clean, combinedStatus: "failure" }).length).toBeGreaterThan(0);
+    expect(evaluateLiveMergeState(reviewed, { ...clean, headSha: "f".repeat(40) }).join("\n")).toMatch("head");
   });
 });
 
