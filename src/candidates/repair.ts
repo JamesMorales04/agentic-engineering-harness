@@ -30,6 +30,7 @@ import {
   assertRepairScopeAmendment,
   repairHardProtectedPaths,
   normalizeRepairScopePath,
+  isNewTestCreationTierPath,
   verifyOwnerHardProtectionExemption,
   REPAIR_AMENDABLE_MANIFEST_PATHS,
   type RepairScopeAmendmentV1,
@@ -213,11 +214,24 @@ export async function executeRepairerCandidateMutation(input: {
 
   // Amendment-path exact carve-out for subtree denies (see assembler field
   // docs): only the amendment-exempted exact files, only when they were just
-  // re-verified against the durable MAC grant in this same controller tick.
-  // Direct writes and non-amended retries pass nothing (behavior unchanged).
+  // re-verified against the durable MAC grant in this same controller tick —
+  // plus (H-NEW-13) recorded lead-amendable new-test creations from a
+  // non-owner amendment (verified non-existent under tests/ at apply time;
+  // trusted here without re-stat so the check-to-assembly race resolves via
+  // the amended scope either way). Owner amendments rely solely on the grant
+  // (fail closed when stale); lead-amendable paths are never taken from an
+  // owner amendment. Direct writes and non-amended retries pass nothing
+  // (behavior unchanged).
   const ownerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, operation, input.scopeAmendment);
-  const { allowedScope, forbiddenScope } = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment, ownerScope);
-  const exactScopeExemptions = ownerScope && input.scopeAmendment ? [...input.scopeAmendment.exemptedPaths] : undefined;
+  const leadAmendableNewTestPaths = input.scopeAmendment && !input.scopeAmendment.ownerExemption
+    ? input.scopeAmendment.exemptedPaths.filter((filePath) =>
+      isNewTestCreationTierPath(normalizeRepairScopePath(String(filePath ?? "").trim())),
+    )
+    : [];
+  const { allowedScope, forbiddenScope } = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment, ownerScope, leadAmendableNewTestPaths.length ? leadAmendableNewTestPaths : undefined);
+  const exactFromOwner = ownerScope && input.scopeAmendment ? [...input.scopeAmendment.exemptedPaths] : [];
+  const mergedExactExemptions = [...new Set([...exactFromOwner, ...leadAmendableNewTestPaths])];
+  const exactScopeExemptions = mergedExactExemptions.length ? mergedExactExemptions : undefined;
   // Serialized under the per-operation coordination lock (re-validated inside):
   // a concurrent assembly that advanced the candidate first turns this into a
   // clean CANDIDATE_STALE instead of tearing the shared workspace.
@@ -433,8 +447,19 @@ export async function rejectRepairCandidateChangeSet(input: {
   });
   if (!inverse) throw new AehError("CANDIDATE_STALE", "Rejected repair has no reversible source changes.");
   const rejectedOwnerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, operation, input.scopeAmendment);
-  const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment, rejectedOwnerScope);
-  const rejectedExactExemptions = rejectedOwnerScope && input.scopeAmendment ? [...input.scopeAmendment.exemptedPaths] : undefined;
+  // H-NEW-13 symmetric tier: the rollback inverse touches the same amended
+  // paths, so it needs the same lead-amendable carve-out as the apply path.
+  // Owner amendments rely solely on the grant (fail closed when stale);
+  // lead-amendable paths are never taken from an owner amendment.
+  const rejectedLeadAmendable = input.scopeAmendment && !input.scopeAmendment.ownerExemption
+    ? input.scopeAmendment.exemptedPaths.filter((filePath) =>
+      isNewTestCreationTierPath(normalizeRepairScopePath(String(filePath ?? "").trim())),
+    )
+    : [];
+  const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment, rejectedOwnerScope, rejectedLeadAmendable.length ? rejectedLeadAmendable : undefined);
+  const rejectedFromOwner = rejectedOwnerScope && input.scopeAmendment ? [...input.scopeAmendment.exemptedPaths] : [];
+  const rejectedMergedExemptions = [...new Set([...rejectedFromOwner, ...rejectedLeadAmendable])];
+  const rejectedExactExemptions = rejectedMergedExemptions.length ? rejectedMergedExemptions : undefined;
   // Same per-operation serialization as the apply path above.
   //
   // Scope-escape ONE-correction turn (IDENTICAL helper, deterministic
@@ -622,7 +647,11 @@ export function partitionRepairScopeBlockerFiles(
  * amendment + reseal); otherwise the retry fails closed with no auto-allow.
  * HARD-protected paths (frozen TaskContract, seal, validators,
  * acceptance/spec, policy) remain denied unless a verified owner-scoped
- * hard-protection grant covers exactly the exempted paths.
+ * hard-protection grant covers exactly the exempted paths — or, for the
+ * H-NEW-13 new-test creation tier only, the path is listed in
+ * `leadAmendablePaths` (verified non-existent under tests/ at amendment
+ * time; the retry trusts the recorded amendment and never re-stats so the
+ * check-to-assembly race resolves via the amended scope either way).
  */
 function effectiveRepairScope(
   allowedScope: readonly string[],
@@ -645,6 +674,7 @@ function effectiveRepairScope(
     operationExecutionRevision?: number;
     terminal: boolean;
   },
+  leadAmendablePaths?: readonly string[],
 ): { allowedScope: readonly string[]; forbiddenScope: readonly string[] } {
   if (!amendment) return { allowedScope, forbiddenScope };
   assertRepairScopeAmendment(amendment);
@@ -662,11 +692,12 @@ function effectiveRepairScope(
   }
   // HARD-protection gate: frozen TaskContract/seal/validators/acceptance/spec/
   // policy paths in the amendment stay denied and throw NON_EXEMPTIBLE —
-  // UNLESS a verified owner-scoped grant covers them. The single gate lives
+  // UNLESS a verified owner-scoped grant covers them or (H-NEW-13 new-test
+  // tier) they are recorded lead-amendable creations. The single gate lives
   // in filterForbiddenScopeForAmendment (no duplicated deny logic here); the
-  // verified ownerScope flows straight through.
+  // verified ownerScope and leadAmendablePaths flow straight through.
   const hardProtected = repairHardProtectedPaths(config, contract);
-  return { allowedScope, forbiddenScope: filterForbiddenScopeForAmendment(forbiddenScope, amendment, hardProtected, ownerScope) };
+  return { allowedScope, forbiddenScope: filterForbiddenScopeForAmendment(forbiddenScope, amendment, hardProtected, ownerScope, leadAmendablePaths) };
 }
 
 /**
