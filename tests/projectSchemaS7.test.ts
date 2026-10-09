@@ -205,11 +205,17 @@ describe("GitHub delivery action scope", () => {
     expect(config.delivery?.github?.allowedActions).toEqual(["git.branch.create", "git.commit", "git.push", "github.pull-request.create"]);
   });
 
-  it("rejects merge, force, delete, and credential actions outside the supported allowlist", async () => {
-    for (const action of ["github.pull-request.merge", "git.push.force", "git.branch.delete", "github.repository.delete", "github.credentials.update"]) {
+  it("rejects force, delete, and credential actions outside the supported allowlist", async () => {
+    for (const action of ["git.push.force", "git.branch.delete", "github.repository.delete", "github.credentials.update"]) {
       const root = await writeDeliveryConfig({ enabled: true, allowedActions: [action] });
       await expect(loadProjectConfig(root)).rejects.toThrow();
     }
+    // Governed autonomous merge is supported only through the native
+    // IndependentPullRequestReview gate with an explicit mergeMode.
+    const mergeRoot = await writeDeliveryConfig({ enabled: true, allowedActions: ["github.pull-request.merge"], mergeMode: "AUTO_MERGE" });
+    const mergeConfig = await loadProjectConfig(mergeRoot);
+    expect(mergeConfig.delivery?.github?.allowedActions).toContain("github.pull-request.merge");
+    expect(mergeConfig.delivery?.github?.mergeMode).toBe("AUTO_MERGE");
   });
 });
 
