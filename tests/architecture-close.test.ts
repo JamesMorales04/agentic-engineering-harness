@@ -35,7 +35,8 @@ describe("architecture close", () => {
 
   it("rejects a planner wave plan that leaves a requirement unassigned", () => {
     const contract: TaskContract = { version: 1, task: { id: "T", title: "test" }, scope: { allowed: ["src/**"] }, requirements: [{ id: "REQ-1" }, { id: "REQ-2" }] };
-    const issues = validatePlannerWavePlan(contract, { workUnits: [{ id: "A", objective: "a", scope: ["src/a.ts"], dependencies: [], requirementRefs: ["REQ-1"], acceptanceRefs: [], competencies: ["typescript"], riskTags: [], changeKinds: ["source"], risk: "low" }], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [] });
+    const config: HarnessProjectConfig = { version: 1, project: { name: "test" } };
+    const issues = validatePlannerWavePlan(contract, { workUnits: [{ id: "A", objective: "a", scope: ["src/a.ts"], dependencies: [], requirementRefs: ["REQ-1"], acceptanceRefs: [], competencies: ["typescript"], riskTags: [], changeKinds: ["source"], risk: "low" }], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [], filesNeededOutsideScope: [] }, config);
     expect(issues).toContain("requirement REQ-2 is not assigned to any implementation work unit");
   });
 

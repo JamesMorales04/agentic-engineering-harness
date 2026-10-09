@@ -9,7 +9,7 @@ import { extractMarkedJson } from "./structuredOutput.js";
 import { validateExecutionCapabilities } from "./permissions.js";
 import type { ControlPlaneSnapshot } from "../core/controlPlane.js";
 import { materializeControlPlaneSnapshot } from "../core/controlPlane.js";
-import type { HarnessProjectConfig, TaskContract, ValidationReport, WorkerSession } from "../core/types.js";
+import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidationReport, WorkerSession } from "../core/types.js";
 import { executeAgentPrompt, prepareAgentExecutionIdentity } from "../workers/agentPrompt.js";
 import { dispatchDistributedDelegation } from "../distributed/worker.js";
 import { enforceSandboxPolicy } from "../security/sandbox.js";
@@ -30,8 +30,19 @@ import {
   isScopeCorrectionTimeoutError,
 } from "../candidates/scopeEscapeCorrection.js";
 import {
+  assertRepairScopeBlockerReceipt,
   createRepairScopeBlockerReceipt,
+  findRepairHardProtectedViolations,
+  isExactRepairScopeFilePath,
+  isSafeRepairScopePath,
+  normalizeRepairScopePath,
   parseRepairScopeBlockerFromSession,
+  repairHardProtectedPaths,
+  repairScopeBlockerValidationCheck,
+  resolveRepairScopeBlockerViaProductChoice,
+  scopePatternOverlapsHardPattern,
+  writeRepairScopeBlockerReceipt,
+  type RepairScopeAmendmentV1,
   type RepairScopeBlockerReceiptV1,
 } from "../candidates/repairScope.js";
 import { partitionRepairScopeBlockerFiles, repairProtectedPaths } from "../candidates/repair.js";
@@ -66,7 +77,7 @@ import { isProviderRateLimited, parseProviderRateLimitDetail } from "../paseo/sd
 
 export interface DelegationExecutionResult { task: WorkUnitOutput; session: WorkerSession; changedFiles: string[]; patch: string; status: "PASS" | "FAIL"; message?: string; distributed?: boolean; candidate?: CandidateRevisionV1; impact?: CandidateImpactV1; changeSet?: ChangeSetV1; escapeCorrectionUsed?: boolean; escapeCorrectionSessions?: WorkerSession[]; scopeBlocker?: RepairScopeBlockerReceiptV1; }
 export interface WaveExecutionSummary { wave: number; taskIds: string[]; status: "PASS" | "FAIL"; results: DelegationExecutionResult[]; barrier?: ValidationReport; }
-export interface PlannerWaveResult { used: boolean; plan?: PlannerOutput; blueprint?: ExecutionBlueprint; schedule?: ParallelismPlan; waves: WaveExecutionSummary[]; sessions: WorkerSession[]; aggregateSession?: WorkerSession; report?: ValidationReport; preExecutionFailure?: boolean; correctionAttempts?: 0 | 1; escapeCorrections?: number; }
+export interface PlannerWaveResult { used: boolean; plan?: PlannerOutput; amendedContract?: TaskContract; blueprint?: ExecutionBlueprint; schedule?: ParallelismPlan; waves: WaveExecutionSummary[]; sessions: WorkerSession[]; aggregateSession?: WorkerSession; report?: ValidationReport; preExecutionFailure?: boolean; correctionAttempts?: 0 | 1; escapeCorrections?: number; }
 
 /**
  * Round-2 B1 (DETERMINISTIC): existing repair budget for scope-escape
@@ -192,9 +203,30 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     if (plannerSession.exitCode !== 0) return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, "Planner runtime failed.") };
     try { plan = plannerOutputSchema.parse(extractMarkedJson(plannerSession.stdout, plannerSession.stderr)); } catch (error) { return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Invalid planner output: ${String(error)}`) }; }
   }
-  const planIssues = validatePlannerWavePlan(input.contract, plan);
+  const planIssues = validatePlannerWavePlan(input.contract, plan, input.config);
   if (planIssues.length) return { used: true, plan, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Planner contract rejected: ${planIssues.join("; ")}`) };
-  if (!plan.workUnits.length) return { used: false, plan, waves: [], sessions };
+  // H-NEW-11 planner declaration routing (DETERMINISTIC orchestration, MODEL
+  // content): plan-level filesNeededOutsideScope flows to the EXISTING
+  // repairer amendment/suspend machinery (same receipt +
+  // resolveRepairScopeBlockerViaProductChoice path — suspend HUMAN_REQUIRED
+  // with bounded choices, Owner approval, amendment + reseal, retry). No
+  // parallel flow is invented. On AMENDED the resealed contract is adopted
+  // for compilation and waves, and the granted exemption makes the WU scopes
+  // assemblable through the existing exemption-honoring assembly. On BLOCKED
+  // planning stops fail-closed before any wave runs.
+  const plannerRouting = await resolvePlannerScopeDeclarations({
+    root: input.root, controlRoot: input.stateRoot, config: input.config, contract: input.contract, plan,
+  });
+  if (plannerRouting.status === "BLOCKED") {
+    return { used: true, plan, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Planner scope blocked: ${plannerRouting.check.message}`) };
+  }
+  let plannerAmendedContract: TaskContract | undefined;
+  if (plannerRouting.status === "AMENDED") {
+    input.contract = plannerRouting.contract;
+    plannerAmendedContract = plannerRouting.contract;
+  }
+  const plannerAmendmentSpread = plannerAmendedContract ? { amendedContract: plannerAmendedContract } : {};
+  if (!plan.workUnits.length) return { used: false, plan, waves: [], sessions, ...plannerAmendmentSpread };
   let blueprint: ExecutionBlueprint;
   let graph: ReturnType<typeof createWorkGraph>;
   let validationResolution: ValidationResolutionV1;
@@ -244,7 +276,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
   blueprint = await compileWaveExecutionBlueprint({ input, operation, graph, knowledgeResolutions, validationResolution, capabilityRegistry: input.capabilityRegistry, plan });
   } catch (error) {
     const failedCorrectionAttempts = error instanceof PlannerWorkGraphCorrectionError ? error.correctionAttempts : correctionAttempts;
-    return { used: true, plan, waves: [], sessions, preExecutionFailure: true, correctionAttempts: failedCorrectionAttempts, aggregateSession: aggregate(sessions, 1, `Participant plan rejected: ${String(error)}`) };
+    return { used: true, plan, waves: [], sessions, preExecutionFailure: true, correctionAttempts: failedCorrectionAttempts, ...plannerAmendmentSpread, aggregateSession: aggregate(sessions, 1, `Participant plan rejected: ${String(error)}`) };
   }
   // The executor consumes schedule.waves (built below), never blueprint.waves
   // directly: the frozen blueprint is the serialization contract (its wave
@@ -274,13 +306,13 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
       } catch (error) {
         const summary: WaveExecutionSummary = { wave: index + 1, taskIds: schedule.waves[index]!, status: "FAIL", results: [] };
         waveSummaries.push(summary);
-        return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Next wave execution identity could not be recompiled: ${String(error)}`) };
+        return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...plannerAmendmentSpread, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Next wave execution identity could not be recompiled: ${String(error)}`) };
       }
     }
     const ids = schedule.waves[index]; const tasks = ids.map((id) => plan.workUnits.find((task) => task.id === id)!).filter(Boolean);
     const participantByWorkUnit = new Map<string, ParticipantAssignmentV1>();
     for (const assignment of blueprint.plan.assignments as ParticipantAssignmentV1[]) for (const workUnitId of assignment.workUnitIds) participantByWorkUnit.set(workUnitId, assignment);
-    if (!currentCandidate || !operation?.id) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results: [] }; waveSummaries.push(summary); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, "Candidate assembly requires a managed operation candidate.") }; }
+    if (!currentCandidate || !operation?.id) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results: [] }; waveSummaries.push(summary); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...plannerAmendmentSpread, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, "Candidate assembly requires a managed operation candidate.") }; }
     const waveOperationId = operation.id;
     const waveBlueprint = blueprint;
     const waveBase = createWaveBase({ operationId: waveOperationId, taskId: input.contract.task.id, waveIndex: index, candidate: currentCandidate });
@@ -342,7 +374,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
       };
       waveSummaries.push(summary);
       await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids });
-      return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} provider capacity QUEUE exhausted.`) };
+      return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...plannerAmendmentSpread, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} provider capacity QUEUE exhausted.`) };
     }
     // Per-workspace write-lease admission (Luna F2+F3: SHARED durable atomic
     // acquire, not wave-local check-then-proceed; non-throwing QUEUE, never
@@ -425,7 +457,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     for (const result of results) {
       if (result.escapeCorrectionSessions?.length) sessions.push(...result.escapeCorrectionSessions);
     }
-    if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} failed.`) }; }
+    if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...plannerAmendmentSpread, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} failed.`) }; }
     const resultByWorkUnit = new Map(results.map((result) => [result.task.id, result] as const));
     const submissions: WaveChangeSetSubmissionV1[] = [];
     for (const result of results) {
@@ -465,10 +497,10 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
         }
       }
     }
-    if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids, reconciliationRequired: results.filter((result) => result.message?.startsWith("WAVE_RECONCILIATION_REQUIRED")).map((result) => result.task.id) }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} candidate assembly failed.`) }; }
-    finalReport = planning?.barrierValidation === false ? undefined : await input.revalidate(); const status = finalReport?.status === "FAIL" ? "FAIL" : "PASS"; const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status, results, barrier: finalReport }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status, tasks: ids, checks: finalReport?.checks.length }); if (status === "FAIL") return { used: true, plan, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} deterministic barrier failed.`), report: finalReport };
+    if (results.some((result) => result.status === "FAIL")) { const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status: "FAIL", results }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status: "FAIL", tasks: ids, reconciliationRequired: results.filter((result) => result.message?.startsWith("WAVE_RECONCILIATION_REQUIRED")).map((result) => result.task.id) }); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...plannerAmendmentSpread, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} candidate assembly failed.`) }; }
+    finalReport = planning?.barrierValidation === false ? undefined : await input.revalidate(); const status = finalReport?.status === "FAIL" ? "FAIL" : "PASS"; const summary: WaveExecutionSummary = { wave: index + 1, taskIds: ids, status, results, barrier: finalReport }; waveSummaries.push(summary); await recordEvent(input.stateRoot, input.config, "harness.wave.finish", { taskId: input.contract.task.id, wave: index + 1, status, tasks: ids, checks: finalReport?.checks.length }); if (status === "FAIL") return { used: true, plan, schedule, waves: waveSummaries, sessions, ...plannerAmendmentSpread, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, 1, `Wave ${index + 1} deterministic barrier failed.`), report: finalReport };
   }
-  finalReport ??= await input.revalidate(); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, finalReport.status === "PASS" ? 0 : 1, `Executed ${plan.workUnits.length} work unit(s) across ${schedule.waves.length} wave(s).`), report: finalReport, correctionAttempts };
+  finalReport ??= await input.revalidate(); return { used: true, plan, blueprint, schedule, waves: waveSummaries, sessions, ...plannerAmendmentSpread, ...(escapeGate.used ? { escapeCorrections: escapeGate.used } : {}), aggregateSession: aggregate(sessions, finalReport.status === "PASS" ? 0 : 1, `Executed ${plan.workUnits.length} work unit(s) across ${schedule.waves.length} wave(s).`), report: finalReport, correctionAttempts };
 }
 
 export async function resolvePlannerKnowledge(plan: PlannerOutput, input: Pick<Parameters<typeof executePlannerWaves>[0], "contract" | "root" | "config" | "librarianSelection" | "knowledgeMode" | "knowledgeCache" | "knowledgeResolutions" | "knowledgeLookup"> & Partial<Pick<Parameters<typeof executePlannerWaves>[0], "stateRoot">>): Promise<KnowledgeResolutionV1[]> {
@@ -960,12 +992,172 @@ function buildWaveChangeSet(input: { operationId: string; contract: TaskContract
   };
 }
 
-export function validatePlannerWavePlan(contract: TaskContract, plan: PlannerOutput): string[] {
+export function validatePlannerWavePlan(contract: TaskContract, plan: PlannerOutput, config: HarnessProjectConfig): string[] {
   const issues: string[] = []; const ids = new Set<string>(); const requirements = new Set((contract.requirements ?? []).map((item) => item.id)); const covered = new Set<string>();
   for (const task of plan.workUnits) { if (ids.has(task.id)) issues.push(`duplicate work unit id ${task.id}`); ids.add(task.id); if (!task.scope.length) issues.push(`${task.id} has empty scope`); for (const scope of task.scope) if (!withinContractScope(scope, contract.scope?.allowed ?? ["**"])) issues.push(`${task.id} scope ${scope} is outside TaskContract scope`); for (const req of [...task.requirementRefs, ...task.acceptanceRefs]) { if (requirements.size && !requirements.has(req)) issues.push(`${task.id} references unknown requirement ${req}`); if (requirements.has(req)) covered.add(req); } }
-  for (const task of plan.workUnits) for (const dependency of task.dependencies) if (!ids.has(dependency)) issues.push(`${task.id} depends on unknown work unit ${dependency}`); for (const requirement of requirements) if (!covered.has(requirement)) issues.push(`requirement ${requirement} is not assigned to any implementation work unit`); return [...new Set(issues)];
+  for (const task of plan.workUnits) for (const dependency of task.dependencies) if (!ids.has(dependency)) issues.push(`${task.id} depends on unknown work unit ${dependency}`); for (const requirement of requirements) if (!covered.has(requirement)) issues.push(`requirement ${requirement} is not assigned to any implementation work unit`);
+  // H-NEW-11 DETERMINISTIC plan-level hard-protection declaration gate: a
+  // work-unit scope intersecting hard-protected paths (frozen TaskContract,
+  // seal, validators, acceptance/spec, policy — repairHardProtectedPaths)
+  // REQUIRES a matching plan-level filesNeededOutsideScope declaration (exact
+  // path). Missing declaration is a fail-fast compile rejection with a
+  // precise diagnostic naming the file and instructing the declaration; the
+  // planner corrects within its existing one-correction budget (no new retry
+  // machinery). Mechanism: DETERMINISTIC (scope-pattern overlap +
+  // exact-path declaration match); model content (declared paths + reasons).
+  // No other validation behavior changes: every check above is untouched.
+  for (const issue of validatePlannerHardProtectionDeclarations(contract, plan, config)) issues.push(issue);
+  return [...new Set(issues)];
 }
-function buildPlannerPrompt(contract: TaskContract): string { const requirements = (contract.requirements ?? []).map((item) => `- ${item.id}: ${item.description ?? ""}`).join("\n") || "- none"; return `Create the implementation WorkGraph for ${contract.task.id}: ${contract.task.title}.\nThe TaskContract and sealed sources are immutable. Produce the smallest dependency-aware workUnits, concrete path scopes, competencies, risk tags and changeKinds. Scope shape: use an exact file path or 'dir/**'; a bare directory path never matches children. Repo-tree evidence artifacts require explicit 'dir/**' scope AND a write claim; otherwise write to the controller-owned scratch dir (/tmp/aeh-scratch-*, disclosed as 'AEH private scratch directory') or the operation evidence dir (.harness/evidence, .harness/operations/<operationId>/workspace-evidence/latest). Each workUnits[].objective must be concise, non-empty, and no longer than 500 characters, matching the Planner output schema and WorkGraph compiler. Map every requirement ID to at least one work unit. If validation meaning is needed, emit typed validationRequirements[{version,id,property,kind,scope,evidenceNeeded,requirementRefs,acceptanceRefs}]; state what must be demonstrated, never a command or provider. If a work unit requires exclusive or ordered access to a shared mutable resource (database schema, migration sequence, package lock, deployment environment, public API contract, generated client, shared config, external mutable resource), emit resourceClaims[{version,resource,mode,order}] with mode SHARED_READ, EXCLUSIVE_WRITE or ORDERED_SEQUENCE and a non-negative order for ORDERED_SEQUENCE. The deterministic scheduler validates and enforces claims; you cannot widen scheduling by claiming a resource. The deterministic resolver will choose approved project scripts, validators or providers. Do not select agents, reviewers, validators, commands, tools or credentials by name, and do not create product requirements. If formalization is required, set formalizationNeed=REQUIRED with one typed formalizationReason and formalizationEvidenceRefs.\nRequirements:\n${requirements}\nAllowed scope: ${(contract.scope?.allowed ?? ["**"]).join(", ")}\nReturn output matching the planner contract; when native structured output is unavailable, use one final AEH_RESULT_JSON=<json> line.`; }
+
+/**
+ * H-NEW-11 plan-level declaration check (DETERMINISTIC, pure, no I/O).
+ * Extracted so the compile gate above and plan-routing diagnostics share one
+ * definition of "declared". A violating scope is satisfied only by a
+ * declaration that names an exact hard-protected file within that scope;
+ * malformed declarations (glob/traversal/empty) are rejected fail-closed so
+ * they can never satisfy the gate or reach the receipt.
+ */
+export function validatePlannerHardProtectionDeclarations(contract: TaskContract, plan: PlannerOutput, config: HarnessProjectConfig): string[] {
+  const issues: string[] = [];
+  const hardProtected = repairHardProtectedPaths(config, contract);
+  const declared = new Map<string, string>();
+  for (const entry of plan.filesNeededOutsideScope ?? []) {
+    const raw = typeof entry?.path === "string" ? entry.path.trim() : "";
+    if (!raw || !isSafeRepairScopePath(raw) || !isExactRepairScopeFilePath(raw)) {
+      issues.push(`PLANNER_BLOCKER_DECLARATION_INVALID: plan-level filesNeededOutsideScope entry '${raw || "(empty)"}' is not an exact file path; declarations allow exact paths only (no wildcards, traversal, or absolute forms).`);
+      continue;
+    }
+    const normalized = normalizeRepairScopePath(raw);
+    if (!declared.has(normalized)) declared.set(normalized, typeof entry?.reason === "string" ? entry.reason : "");
+  }
+  for (const unit of plan.workUnits) {
+    for (const scope of unit.scope) {
+      const rawScope = typeof scope === "string" ? scope.trim() : "";
+      if (!rawScope) continue;
+      const directlyViolated = findRepairHardProtectedViolations([rawScope], config, contract);
+      const overlapped = hardProtected.filter((hard) => scopePatternOverlapsHardPattern(rawScope, hard));
+      if (!directlyViolated.length && !overlapped.length) continue;
+      const matched = [...declared.keys()].some((candidate) =>
+        withinContractScope(candidate, [rawScope]) && findRepairHardProtectedViolations([candidate], config, contract).length > 0);
+      if (matched) continue;
+      const cited = [...new Set([...directlyViolated, ...overlapped])].sort((a, b) => a.localeCompare(b)).slice(0, 8).join(", ");
+      issues.push(`PLANNER_PROTECTED_SCOPE_UNDECLARED: work unit '${unit.id}' scope '${rawScope}' intersects hard-protected path(s): ${cited}. Declare the exact file(s) via plan-level filesNeededOutsideScope[{path, reason}] (max 8, exact file paths with per-file reasons); hard-protected paths the planned work needs (validators, tests, policy, .harness/project.yaml, seals) flow to Owner-approved amendment only through this declaration channel. Glob scopes touching hard-protected paths must first be narrowed to exact file paths.`);
+    }
+  }
+  return issues;
+}
+
+export type PlannerScopeDeclarationRoutingV1 =
+  | { status: "CLEAR"; contract: TaskContract }
+  | { status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1 }
+  | { status: "BLOCKED"; blocker: RepairScopeBlockerReceiptV1; check: ValidationCheck };
+
+/**
+ * H-NEW-11 planner declaration routing (DETERMINISTIC orchestration, MODEL
+ * content). Plan-level `filesNeededOutsideScope` flows to the EXISTING
+ * repairer amendment/suspend machinery — the same
+ * `resolveRepairScopeBlockerViaProductChoice` path repairers use (durable
+ * receipt with write-then-verify, suspend HUMAN_REQUIRED with bounded
+ * approve-exact-set/decline choices, Owner approval, amendment + reseal,
+ * single retry). No parallel flow is invented; planner declarations are
+ * plan-scoped and bound to the op task (`planner:<taskId>` work unit).
+ *
+ * In-scope confusion is stripped and traced exactly like the repairer path
+ * (partitionRepairScopeBlockerFiles); only genuinely-blocked files reach the
+ * receipt. With no managed operation to suspend, a genuinely-blocked
+ * declaration is BLOCKED fail-closed. Any resolver/suspend/apply throw is
+ * BLOCKED citing the blocker (never a silent pass, never an expansion).
+ */
+export async function resolvePlannerScopeDeclarations(input: {
+  root: string;
+  controlRoot: string;
+  config: HarnessProjectConfig;
+  contract: TaskContract;
+  plan: PlannerOutput;
+  operationId?: string;
+}): Promise<PlannerScopeDeclarationRoutingV1> {
+  const declared = input.plan.filesNeededOutsideScope ?? [];
+  if (!declared.length) return { status: "CLEAR", contract: input.contract };
+  const allowedScope = [...(input.contract.scope?.allowed ?? ["**"])];
+  const forbiddenScope = [
+    ...(input.contract.scope?.forbidden ?? []),
+    ...(input.contract.scope?.frozen ?? []),
+    ...(input.config.validation?.frozenPaths ?? []),
+    ...repairProtectedPaths(input.config, input.contract),
+  ];
+  const partitioned = partitionRepairScopeBlockerFiles(declared, allowedScope, forbiddenScope);
+  if (partitioned.stripped.length) {
+    await recordEvent(input.controlRoot, input.config, "harness.plan.scope-blocker-stripped", {
+      taskId: input.contract.task.id,
+      stripped: partitioned.stripped.map((entry) => entry.path),
+      strippedCount: partitioned.stripped.length,
+    }).catch(() => undefined);
+  }
+  if (!partitioned.genuinelyBlocked.length) return { status: "CLEAR", contract: input.contract };
+  const operationId = input.operationId ?? currentOperationContext().id;
+  const blocker = createRepairScopeBlockerReceipt({
+    operationId: operationId ?? `planner:${input.contract.task.id}`,
+    taskId: input.contract.task.id,
+    workUnitId: `planner:${input.contract.task.id}`,
+    filesNeededOutsideScope: partitioned.genuinelyBlocked,
+  });
+  if (!operationId) {
+    return { status: "BLOCKED", blocker, check: repairScopeBlockerValidationCheck(blocker) };
+  }
+  let resolution: Awaited<ReturnType<typeof resolveRepairScopeBlockerViaProductChoice>>;
+  try {
+    const receiptFile = await writeRepairScopeBlockerReceipt(input.controlRoot, input.config, blocker);
+    const persisted: unknown = JSON.parse(await fs.readFile(receiptFile, "utf8"));
+    assertRepairScopeBlockerReceipt(persisted);
+    if ((persisted as RepairScopeBlockerReceiptV1).digest !== blocker.digest) {
+      throw new AehError(
+        "PARTICIPANT_PLAN_INVALID",
+        `REPAIR_SCOPE_RECEIPT_NOT_DURABLE: persisted blocker receipt digest does not match the declared blocker (${receiptFile}).`,
+      );
+    }
+    await recordEvent(input.controlRoot, input.config, "harness.plan.scope-blocked", {
+      taskId: input.contract.task.id,
+      blockerDigest: blocker.digest,
+      filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+      source: "planner-declaration",
+    }).catch(() => undefined);
+    resolution = await resolveRepairScopeBlockerViaProductChoice({
+      root: input.root,
+      controlRoot: input.controlRoot,
+      operationId,
+      config: input.config,
+      contract: input.contract,
+      blocker,
+    });
+  } catch (error) {
+    const check = repairScopeBlockerValidationCheck(blocker);
+    await recordEvent(input.controlRoot, input.config, "harness.repair.scope-blocked", {
+      taskId: input.contract.task.id, attempt: 0, status: "BLOCKED",
+      blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+      source: "planner-declaration",
+      error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+    }).catch(() => undefined);
+    return { status: "BLOCKED", blocker, check };
+  }
+  if (resolution.status === "BLOCKED") {
+    await recordEvent(input.controlRoot, input.config, "harness.repair.scope-blocked", {
+      taskId: input.contract.task.id, attempt: 0, status: "BLOCKED",
+      blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+      source: "planner-declaration",
+      choiceId: resolution.choiceId ?? "denied-or-timed-out",
+    }).catch(() => undefined);
+    return { status: "BLOCKED", blocker, check: resolution.check };
+  }
+  await recordEvent(input.controlRoot, input.config, "harness.repair.scope-amended", {
+    taskId: resolution.contract.task.id, attempt: 0, blockerDigest: blocker.digest,
+    exemptedPaths: resolution.amendment.exemptedPaths, decisionId: resolution.amendment.decisionId,
+    requestId: resolution.amendment.requestId, decidedActor: resolution.amendment.decidedActor,
+    source: "planner-declaration",
+  }).catch(() => undefined);
+  return { status: "AMENDED", contract: resolution.contract, amendment: resolution.amendment };
+}
+function buildPlannerPrompt(contract: TaskContract): string { const requirements = (contract.requirements ?? []).map((item) => `- ${item.id}: ${item.description ?? ""}`).join("\n") || "- none"; return `Create the implementation WorkGraph for ${contract.task.id}: ${contract.task.title}.\nThe TaskContract and sealed sources are immutable. Produce the smallest dependency-aware workUnits, concrete path scopes, competencies, risk tags and changeKinds. Scope shape: use an exact file path or 'dir/**'; a bare directory path never matches children. Repo-tree evidence artifacts require explicit 'dir/**' scope AND a write claim; otherwise write to the controller-owned scratch dir (/tmp/aeh-scratch-*, disclosed as 'AEH private scratch directory') or the operation evidence dir (.harness/evidence, .harness/operations/<operationId>/workspace-evidence/latest). Each workUnits[].objective must be concise, non-empty, and no longer than 500 characters, matching the Planner output schema and WorkGraph compiler. Map every requirement ID to at least one work unit. If the planned work needs hard-protected files (validators, tests, policy, .harness/project.yaml, seals), scope them in the needing work unit AND declare each exact file via top-level filesNeededOutsideScope[{path, reason}] (max 8, one reason per file); undeclared hard-protected scopes are rejected at compile, and a declaration routes to Owner-approved amendment rather than widening scope by itself. If validation meaning is needed, emit typed validationRequirements[{version,id,property,kind,scope,evidenceNeeded,requirementRefs,acceptanceRefs}]; state what must be demonstrated, never a command or provider. If a work unit requires exclusive or ordered access to a shared mutable resource (database schema, migration sequence, package lock, deployment environment, public API contract, generated client, shared config, external mutable resource), emit resourceClaims[{version,resource,mode,order}] with mode SHARED_READ, EXCLUSIVE_WRITE or ORDERED_SEQUENCE and a non-negative order for ORDERED_SEQUENCE. The deterministic scheduler validates and enforces claims; you cannot widen scheduling by claiming a resource. The deterministic resolver will choose approved project scripts, validators or providers. Do not select agents, reviewers, validators, commands, tools or credentials by name, and do not create product requirements. If formalization is required, set formalizationNeed=REQUIRED with one typed formalizationReason and formalizationEvidenceRefs.\nRequirements:\n${requirements}\nAllowed scope: ${(contract.scope?.allowed ?? ["**"]).join(", ")}\nReturn output matching the planner contract; when native structured output is unavailable, use one final AEH_RESULT_JSON=<json> line.`; }
 function buildDelegationPrompt(contract: TaskContract, task: WorkUnitOutput, operationalSkills?: import("../capabilities/operationalSkills.js").OperationalSkillProjectionV1): string {
   const guidance = operationalSkills?.skills.length ? `\nOperational guidance selected for this role and WorkUnit (guidance only; it grants no tools or authority):\n${operationalSkills.skills.map((skill) => `- ${skill.name} v${skill.version} [${skill.certificationStatus}${skill.accessMode === "CONTROLLER_GUIDANCE" ? ", controller-guidance-only" : ""}]: ${skill.procedure.join("; ")}${skill.recovery.length ? ` Recovery: ${skill.recovery.map((item) => `${item.failureClass} → ${item.steps.join("; ")}`).join(" | ")}` : ""}`).join("\n")}` : "";
   return `Implement only work unit ${task.id} for parent ${contract.task.id}.\nObjective: ${task.objective}\nAllowed task scope: ${task.scope.join(", ")}\nScope shape: use an exact file path or 'dir/**'; a bare directory path never matches children. Repo-tree evidence writes require explicit 'dir/**' scope; otherwise write temporary output to the controller-owned scratch dir (/tmp/aeh-scratch-*, disclosed as 'AEH private scratch directory') or the operation evidence dir (.harness/evidence).\nDependencies already integrated: ${task.dependencies.join(", ") || "none"}\nAcceptance references: ${task.acceptanceRefs.join(", ") || "none"}\nRequired competencies: ${task.competencies.join(", ") || "general engineering"}\nRisk: ${task.risk}.${guidance}\nThe parent TaskContract, SDD and control-plane snapshot are frozen. Do not edit outside the declared scope, do not commit, push, rebase or change requirements. Run focused tests when practical and leave the worktree with only the implementation diff.`;

@@ -418,6 +418,13 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     if (operationId) await runStage(operationStateRoot, operationId, "planning", "RUNNING");
     waveResult = await executePlannerWaves({ root: workspaceRoot, stateRoot: controlRoot, config: effectiveConfig, contract: effectiveContract, plannerSelection, librarianSelection, implementationSelection: planningSelection, executionCatalog, capabilityRegistry, controller, precomputedPlan: options?.planning, projectStack, semanticAssessment: impactAssessmentRuntime, onScopeEscape, revalidate: async () => { await prepareValidationWorkspace(); return verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, planningSelection); } });
     executionSessions = [...waveResult.sessions];
+    // H-NEW-11 planner declaration routing: when plan-level
+    // filesNeededOutsideScope resolved to AMENDED inside executePlannerWaves,
+    // adopt the resealed contract here (mirrors the repair AMENDED adoption
+    // below) so validation, assurance, and the repair loop all run against
+    // the amended scope. Without this the durable amendment exists but the
+    // run would keep enforcing the stale allowlist.
+    if (waveResult.amendedContract) effectiveContract = waveResult.amendedContract;
     if (waveResult.blueprint?.resolvedOperationPolicy) assurancePolicySource = waveResult.blueprint.resolvedOperationPolicy;
     if (operationId) {
       const current = (await loadOperation(operationStateRoot, operationId)).candidateRevision;
