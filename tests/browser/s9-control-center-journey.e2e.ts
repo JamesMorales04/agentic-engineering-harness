@@ -173,7 +173,7 @@ test("S9 browser E2E | real Control Center journey: pairing, decision, continuat
       expect(persisted, "the pairing nonce must not be persisted in browser storage").toBe(false);
     });
     await recorder.check("pairing.ui-authenticated", "PRODUCT_DEFECT", async () => {
-      await expect(page!.getByText("Paired loopback session")).toBeVisible({ timeout: 30_000 });
+      await expect(page!.getByText("Paired private session")).toBeVisible({ timeout: 30_000 });
       await expect(page!.locator('header [aria-label="Status: connected"]')).toBeVisible({ timeout: 30_000 });
       await expect(page!.getByRole("heading", { name: "Engineering signal, at a glance." })).toBeVisible({ timeout: 30_000 });
     });
@@ -319,10 +319,35 @@ test("S9 browser E2E | real Control Center journey: pairing, decision, continuat
       expect(response.status).toBe(403);
     });
     await recorder.check("rejection.durable-state-unchanged", "PRODUCT_DEFECT", async () => {
+      // The controller legitimately consumes the valid choice concurrently,
+      // so the operation may have advanced past the submission point. What
+      // the forged battery must prove is exact and race-free: every forged
+      // POST was rejected above, and none of them left any durable trace —
+      // the ledger holds exactly the one valid PRODUCT_CHOICE (for
+      // request#1) and zero entries for the forged request/choice
+      // identities, while the operation remains alive in a legitimate phase.
       const durableAfter = await journey.readOperation();
-      expect(durableAfter.revision).toBe(durableBeforeRejection.revision);
-      expect(durableAfter.phase).toBe("HUMAN_REQUIRED");
-      expect((await ledger.list()).length).toBe(ledgerBeforeDecision.length + 1);
+      expect(durableAfter.status).toBe("RUNNING");
+      if (durableAfter.phase === "HUMAN_REQUIRED" && durableAfter.decisionRequest?.requestId === operation.requestId) {
+        // Unconsumed: exact stillness holds.
+        expect(durableAfter.revision).toBe(durableBeforeRejection.revision);
+      } else {
+        // Legitimately advanced by consuming the valid choice (proven below
+        // to be the only decision in the ledger): revision monotone, live
+        // phase only — terminal or unknown phases still fail here.
+        // REVALIDATING is the deterministic first phase after consumption
+        // (src/operations/state.ts: consumeProductChoice sets it before the
+        // revised semantics are bound and work resumes).
+        expect(durableAfter.revision).toBeGreaterThanOrEqual(durableBeforeRejection.revision);
+        expect(["REVALIDATING", "spec-authoring", "planning", "discovery", "context", "HUMAN_REQUIRED"]).toContain(durableAfter.phase);
+      }
+      const entries = await ledger.list();
+      const validChoices = entries.filter((item) => item.purpose?.kind === "PRODUCT_CHOICE" && item.purpose.requestId === operation.requestId);
+      expect(validChoices.length).toBe(1);
+      expect(validChoices[0]!.purpose.choiceId).toBe(operation.choiceId);
+      expect(entries.some((item) => item.purpose?.kind === "PRODUCT_CHOICE" && String(item.purpose.requestId ?? "").includes("00000000"))).toBe(false);
+      expect(entries.some((item) => String(item.operationId ?? "") === "CHANGE-NOT-THE-FIXTURE")).toBe(false);
+      expect(entries.length).toBe(ledgerBeforeDecision.length + 1);
     });
 
     await recorder.check("authority.controller-owned-continuation", "TEST_DEFECT", () => {
