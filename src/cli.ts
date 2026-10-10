@@ -28,6 +28,7 @@ import { dedupeFindings, extractFindings } from "./agents/findings.js";
 import { inspectGithubIssue } from "./issues/intake.js";
 import { executeIssueWorkflow as executeManagedIssueWorkflow, importIssueThroughManagedOperation } from "./issues/workflow.js";
 import { VERSION } from "./version.js";
+import { assertInteractiveRunSelfHostingV1 } from "./operations/selfHostingCharter.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "./semantic/runtime.js";
 import { CodexAgentProvider } from "./certification/codex.js";
 import { createCommandOracle, runExternalSelfDogfood } from "./certification/bootstrap.js";
@@ -95,6 +96,7 @@ program.command("seal").argument("<taskId>").argument("[directory]", "Project di
 program.command("verify").argument("<taskId>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); const contract = await loadTaskContract(root, taskId, config); const report = await verifyTask(root, config, contract); printChecks(report.checks); console.log(`\n${report.status} — report written to ${(config.sdd?.reportsDir ?? ".harness/reports")}/${taskId}.json`); if (report.status === "FAIL") process.exitCode = 1; });
 program.command("run").argument("[taskId]").option("--issue <number>", "Import and execute an existing GitHub issue").option("--profile <profile>").option("--refresh-issue").option("--force-issue-refresh").argument("[directory]", "Project directory", ".").description("Execute TaskContract/SDD or an existing GitHub issue through routing, deterministic validation and quality convergence").action(async (taskId: string | undefined, directory: string, options: { issue?: string; profile?: string; refreshIssue?: boolean; forceIssueRefresh?: boolean }) => {
   const root = path.resolve(directory); const config = await loadProjectConfig(root);
+  await assertInteractiveRunSelfHostingV1(root);
   if (options.issue) { const executed = await executeIssueWorkflow(root, parseIssueNumber(options.issue), { profile: options.profile, refresh: options.refreshIssue, force: options.forceIssueRefresh }); printRunResult(executed.result, executed.contract.routing?.route ?? "DIRECT"); return; }
   if (!taskId) throw new Error("run requires <taskId> or --issue <number>.");
   const contract = await loadTaskContract(root, taskId, config); const result = await runTask(root, config, contract, { profile: options.profile }); printRunResult(result, contract.routing?.route ?? "DIRECT");

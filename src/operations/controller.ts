@@ -49,6 +49,7 @@ import type { ChangePreflightV1 } from "../core/triage.js";
 import { computeWorktreeDigest, resolveBaseRef } from "../core/git.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
+import { assertIsolatedSelfHostingCharterV1, assertSelfHostingExecutionV1, bindSelfHostingCharterV1 } from "./selfHostingCharter.js";
 import { executeGatedAction } from "../security/gatedAction.js";
 import { reconcileToolAction } from "../security/actionReconciliation.js";
 import { controllerActorId, listUnresolvedToolActionIntents, type ToolActionAuthorityEvidenceV1 } from "../security/toolActionGate.js";
@@ -178,6 +179,16 @@ export async function startDetachedOperation(
 ): Promise<OperationRecordV2> {
   const absoluteRoot = path.resolve(root);
   const config = await loadProjectConfigIfPresent(absoluteRoot);
+  // Isolated self-hosting charter gate (MECHANISM: DETERMINISTIC). Source
+  // checkouts refuse mutating operations by default; an Owner-authorized,
+  // digest-pinned controller-side charter covering exactly this control
+  // root admits them under full governance, and its digest is bound to the
+  // operation below for execution-time re-verification. Runs before any
+  // durable write and before any semantic-assessor spend, on every entry
+  // path (CLI, MCP, issue workflow).
+  const selfHostingCharter = kind === "change" || kind === "run"
+    ? await assertIsolatedSelfHostingCharterV1(absoluteRoot, kind)
+    : undefined;
   const suppliedDecision = "intentDecision" in payload ? payload.intentDecision : undefined;
   const initiator = options.initiator ?? (options.completionAgentId ? { kind: "LEAD" as const, agentId: options.completionAgentId } : { kind: "CLI" as const });
   const leadInitiated = initiator.kind === "LEAD" || Boolean(suppliedDecision && suppliedDecision.source !== "explicit-cli");
@@ -234,6 +245,7 @@ export async function startDetachedOperation(
 
   const now = new Date().toISOString();
   const id = createOperationId(kind, JSON.stringify(payload));
+  if (selfHostingCharter) await bindSelfHostingCharterV1(absoluteRoot, id, selfHostingCharter);
   const createAndPersistRecord = async (recoveryParent?: OperationRecordV2): Promise<OperationRecordV2> => {
     const origin = await createOperationOrigin(absoluteRoot, kind, payload, initiator, now, config, options.ownerResolutionOperationIds, recoveryParent);
     const initial: OperationRecordV2 = {
@@ -389,6 +401,11 @@ async function executeOperationWithEnvironment(
   process.env.AEH_OPERATION_ID = operationId;
   const trace = deps.trace ?? recordPaseoTrace;
   let record = await loadOperation(absoluteRoot, operationId);
+  // Self-hosting execution binding: a CHANGE/RUN record on a source
+  // checkout executes only with its start-time binding plus a
+  // currently-valid controller-side charter of the same digest. Runs before
+  // any execution write (including terminal-orphan reconciliation).
+  await assertSelfHostingExecutionV1(absoluteRoot, record);
   if (isTerminalOperation(record.status)) {
     // Crash-recovery reconciliation: a controller that died between
     // terminalization and cleanup leaves a durable terminal operation whose
