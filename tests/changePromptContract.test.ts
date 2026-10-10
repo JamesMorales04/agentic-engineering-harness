@@ -67,13 +67,30 @@ describe("change prompt contracts (AEH-V2-0125)", () => {
   });
 
   it("requires exactly one AEH_RESULT_JSON= final line in the Planner prompt", () => {
-    const prompt = buildPlannerPrompt("CHANGE-TEST-1", contract, payload, explorerEvidence, []);
+    const prompt = buildPlannerPrompt("CHANGE-TEST-1", contract, payload, explorerEvidence, [], ["/work/tree", "/work/tree/.git"]);
     const markerLines = prompt.split("\n").filter((line) => line.includes("AEH_RESULT_JSON="));
     expect(markerLines).toHaveLength(1);
     expect(markerLines[0]).toContain("exactly one line beginning AEH_RESULT_JSON=");
     expect(prompt).toContain("PLANNER_RESULT_ARTIFACT_MISSING");
     expect(prompt).toContain("CHANGE-TEST-1-R1");
     expect(prompt).toContain("no longer than 500 characters");
+  });
+
+  it("pins the Planner filesystem boundary to the frozen readable roots (planner OUTSIDE regression)", () => {
+    // CHANGE-20261010T050025Z-a8d37efa: the Planner prompt listed no frozen
+    // roots (unlike Explorer), so the model strayed outside the lease on its
+    // first tool call and died on external_directory OUTSIDE. The Planner
+    // prompt must carry the same boundary contract.
+    const prompt = buildPlannerPrompt("CHANGE-TEST-1", contract, payload, explorerEvidence, [], ["/work/tree", "/work/tree/.git"]);
+    expect(prompt).toContain("Frozen readable roots");
+    expect(prompt).toContain("/work/tree");
+    expect(prompt).toContain("/work/tree/.git");
+    expect(prompt).toContain("Do not search prior or sibling worktrees");
+    expect(prompt).toContain("Symlinks do not grant access");
+    expect(prompt).not.toContain("/work/sibling");
+    // Recovery continuations cite parent operations: parent context lives in
+    // the allowed control-root durable copy, never in a parent worktree.
+    expect(prompt).toContain(".harness/operations");
   });
 
   it("keeps the Spec Manager canonical OpenSpec and normative-language instruction", () => {

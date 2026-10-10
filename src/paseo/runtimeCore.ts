@@ -1036,8 +1036,11 @@ function timeoutMs(seconds?: number): number { return (seconds ?? 1800) * 1000; 
 function secondsFromMs(ms?: number): number | undefined { return ms === undefined ? undefined : Math.max(1, Math.ceil(ms / 1000)); }
 function providerStopDetail(status?: string, permission?: import("./sdk.js").PaseoSdkPermissionStop): string | undefined {
   if (status !== "permission" && status !== "waiting") return undefined;
+  const roots = permission?.authorizedRoots?.length
+    ? ` roots=[${permission.authorizedRoots.slice(0, 8).join(",")}${permission.authorizedRoots.length > 8 ? `+${permission.authorizedRoots.length - 8}` : ""}]`
+    : "";
   const descriptor = permission
-    ? [permission.name, `scope=${permission.scopeRelation}`, permission.requestedScopeDigest ? `scopeDigest=${permission.requestedScopeDigest}` : undefined, permission.sessionId ? `session=${permission.sessionId}` : undefined, permission.turnId ? `turn=${permission.turnId}` : undefined].filter(Boolean).join(" ")
+    ? [permission.name, `scope=${permission.scopeRelation}`, permission.requestedScopeDigest ? `scopeDigest=${permission.requestedScopeDigest}` : undefined, permission.sessionId ? `session=${permission.sessionId}` : undefined, permission.turnId ? `turn=${permission.turnId}` : undefined].filter(Boolean).join(" ") + roots
     : undefined;
   return `provider session stopped on an unapproved '${status}' prompt${descriptor ? ` (${descriptor})` : ""}; the turn produced no result`;
 }
