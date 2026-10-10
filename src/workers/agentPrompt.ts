@@ -21,6 +21,7 @@ import {
   recordParticipantReceipt,
   registerOperationAgent,
   updateOperationParticipant,
+  activeOperationSupervisor,
   updateRegisteredOperationParticipant, type OperationKind } from "../operations/state.js";
 import { compilePaseoAgentLaunchSpec } from "../paseo/launchSpec.js";
 import { classifyProviderTurnKillReason } from "../paseo/firstActivityDeadline.js";
@@ -811,7 +812,7 @@ async function executeDirect(root: string, config: HarnessProjectConfig, selecti
   throw new Error(`No direct runtime adapter for ${selection.runtimeAdapter}`);
 }
 
-async function recordProviderTurnStarted(root: string, options: AgentPromptOptions, provider: string): Promise<void> {
+export async function recordProviderTurnStarted(root: string, options: AgentPromptOptions, provider: string): Promise<void> {
   const binding = options.executionBinding;
   if (!binding) return;
   const admittedUntil = Date.now() + Math.max(1, (await loadOperation(root, binding.operationId)).resolvedOperationPolicy?.executionLiveness.progressLeaseMs ?? 15 * 60_000);
@@ -819,8 +820,40 @@ async function recordProviderTurnStarted(root: string, options: AgentPromptOptio
     const operation = await loadOperation(root, binding.operationId);
     if (operation.ownerEconomicBoundary) throw new Error(`OWNER_DECISION_REQUIRED: ${operation.ownerEconomicBoundary.reason}`);
     const participant = operation.participants[binding.participantId];
+    // Supervisor execution identity lives in operation.agents[], not
+    // operation.participants[] (registerOperationAgent keeps the canonical
+    // Operation Supervisor out of the work-participant map). A
+    // participants-only lookup rejects every supervisor continuation
+    // deterministically, stranding review consolidation after rotation.
+    const supervisorAgent = !participant
+      ? (operation.agents ?? []).find((agent) => agent.id === binding.participantId && agent.role === "Operation Supervisor")
+      : undefined;
+    if (!participant && !supervisorAgent) {
+      throw new Error(`PARTICIPANT_BINDING_ABSENT: no participant or supervisor entry owns binding ${binding.participantId} (carried digest ${(binding.digest ?? "").slice(0, 12)}).`);
+    }
+    if (supervisorAgent) {
+      if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(operation.status)) throw new Error("PARTICIPANT_PROVIDER_TURN_START_REJECTED: operation reached a terminal state during bounded recovery.");
+      if (supervisorAgent.executionBinding?.digest !== binding.digest) {
+        throw new Error(`SUPERVISOR_BINDING_MISMATCH: supervisor binding for ${binding.participantId} does not match the durable entry (carried ${(binding.digest ?? "").slice(0, 12)}, persisted ${(supervisorAgent.executionBinding?.digest ?? "none").slice(0, 12)}).`);
+      }
+      const active = activeOperationSupervisor(operation);
+      if (!active || active.agentId !== binding.runtime?.sessionId) {
+        throw new Error(`SUPERVISOR_GENERATION_NOT_ACTIVE: supervisor turn carries session ${binding.runtime?.sessionId ?? "none"} but the ACTIVE generation is ${active?.agentId ?? "none"}; draining generations start no new turns.`);
+      }
+      const hardDeadline = Date.parse(operation.origin?.rootHardDeadlineAt ?? new Date(Date.parse(operation.createdAt) + (operation.resolvedOperationPolicy?.executionLiveness.hardDeadlineMs ?? 8 * 60 * 60_000)).toISOString());
+      if (Date.now() >= hardDeadline) throw new Error("OPERATION_HARD_DEADLINE_REACHED: no provider turn may start beyond the Owner-delegated hard deadline.");
+      // No liveness/budget gates: supervisors have no executionLiveness or
+      // provider-turn budget model (activity recording is participant-map
+      // only and no-ops for supervisors). The ACTIVE-generation + digest +
+      // deadline checks above are the complete supervisor turn boundary.
+      return;
+    }
     const liveness = participant?.executionLiveness;
-    if (!participant?.executionBinding || participant.executionBinding.digest !== binding.digest || !liveness) throw new Error("PARTICIPANT_PROVIDER_TURN_START_REJECTED: the frozen participant binding is stale or terminal.");
+    if (!participant?.executionBinding) throw new Error(`PARTICIPANT_BINDING_ABSENT: participant ${binding.participantId} has no durable execution binding.`);
+    if (participant.executionBinding.digest !== binding.digest) {
+      throw new Error(`PARTICIPANT_BINDING_DIGEST_MISMATCH: participant ${binding.participantId} binding changed (carried ${(binding.digest ?? "").slice(0, 12)}, persisted ${(participant.executionBinding.digest ?? "none").slice(0, 12)}); rebind before starting a turn.`);
+    }
+    if (!liveness) throw new Error(`PARTICIPANT_LIVENESS_ABSENT: participant ${binding.participantId} has a current binding but no execution liveness record.`);
     if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(operation.status) || ["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"].includes(participant.status)) throw new Error("PARTICIPANT_PROVIDER_TURN_START_REJECTED: operation or participant reached a terminal state during bounded recovery.");
     const hardDeadline = Date.parse(operation.origin?.rootHardDeadlineAt ?? new Date(Date.parse(operation.createdAt) + (operation.resolvedOperationPolicy?.executionLiveness.hardDeadlineMs ?? 8 * 60 * 60_000)).toISOString());
     if (Date.now() >= hardDeadline) throw new Error("OPERATION_HARD_DEADLINE_REACHED: no provider turn may start beyond the Owner-delegated hard deadline.");
