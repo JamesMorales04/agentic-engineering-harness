@@ -1026,7 +1026,7 @@ function reviewSelection(logicalAgent: string, role: AgentExecutionSelection["ro
     modelAlias: "test", modelId: "fake", modelName: "fake", transport: "direct",
     skills: [], mcps: [],
     permissions: {
-      read: "allow", write: role === "Reviewer" ? "deny" : "allow", shell: "allow",
+      read: "allow", write: role === "Reviewer" ? "deny" : "allow", shell: role === "Reviewer" ? "deny" : "allow",
       network: "deny", delegate: "deny", review: role === "Reviewer" ? "allow" : "deny", gitWrite: "deny",
     },
     outputContract: role === "Repairer" ? "repair-result" : role === "Reviewer" ? "reviewer" : "implementer",

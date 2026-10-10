@@ -299,7 +299,7 @@ function contract(): TaskContract {
 }
 
 function selection(logicalAgent: string, role: AgentExecutionSelection["role"]): AgentExecutionSelection {
-  return { logicalAgent, role, domains: [], runtimeName: "test", runtimeAdapter: "codex", paseoProvider: "codex", modelAlias: "test", modelId: "fake", modelName: "fake", transport: "direct", skills: [], mcps: [], permissions: { read: "allow", write: role === "Reviewer" ? "deny" : "allow", shell: role === "Reviewer" ? "allow" : "allow", network: "deny", delegate: "deny", review: role === "Reviewer" ? "allow" : "deny" }, outputContract: role === "Repairer" ? "repair-result" : role === "Reviewer" ? "reviewer" : "implementer", args: [], runtimeCapabilities: {} };
+  return { logicalAgent, role, domains: [], runtimeName: "test", runtimeAdapter: "codex", paseoProvider: "codex", modelAlias: "test", modelId: "fake", modelName: "fake", transport: "direct", skills: [], mcps: [], permissions: { read: "allow", write: role === "Reviewer" ? "deny" : "allow", shell: role === "Reviewer" ? "deny" : "allow", network: "deny", delegate: "deny", review: role === "Reviewer" ? "allow" : "deny" }, outputContract: role === "Repairer" ? "repair-result" : role === "Reviewer" ? "reviewer" : "implementer", args: [], runtimeCapabilities: {} };
 }
 
 function finding() {
