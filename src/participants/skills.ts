@@ -165,6 +165,28 @@ export const DEFAULT_SKILL_SEED_V1 = {
     },
     {
       version: 1,
+      id: "prompt-drift-audit",
+      name: "Prompt drift audit",
+      description: "Detect drift among source topology, prompts, skills, routing and generated runtime artifacts.",
+      kind: "cross-cutting",
+      proceduralSteps: ["check source-to-generated consistency and referenced prompt/skill paths", "verify role charters match routing ownership and generated files are unedited", "prefer deterministic drift checks; use semantic review only for irreducible contradictions"],
+      competencies: [
+        { id: "prompt-drift-audit", description: "Detect drift among source topology, prompts, skills, routing and generated runtime artifacts.", level: "PROFICIENT" }
+      ]
+    },
+    {
+      version: 1,
+      id: "aeh-browser-e2e",
+      name: "AEH browser E2E",
+      description: "Execute and review the governed real-browser E2E journey against the candidate Control Center.",
+      kind: "cross-cutting",
+      proceduralSteps: ["follow the golden path in order with a real browser, server, and governed operation", "never substitute API-only, source-inspection, or jsdom evidence for browser evidence", "keep Paseo Web UI, Paseo-native browser tools, and AEH real-browser validation separate"],
+      competencies: [
+        { id: "aeh-browser-e2e", description: "Execute and review governed real-browser E2E evidence for the Control Center.", level: "PROFICIENT" }
+      ]
+    },
+    {
+      version: 1,
       id: "typescript-node",
       name: "TypeScript / Node.js",
       description: "TypeScript and Node.js implementation, testing, module, and toolchain practice.",
