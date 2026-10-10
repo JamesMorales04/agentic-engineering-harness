@@ -388,14 +388,30 @@ export function remediationBudgetReached(rounds: number, config: HarnessProjectC
   return rounds >= remediationBudgetRounds(config);
 }
 
+/**
+ * Deterministic reviewer assignment authority. Reviewers are read-only by
+ * canonical role definition (canExecute:false, command-execute forbidden);
+ * a selection carrying source-write OR shell authority contradicts the
+ * Reviewer ceiling (execute exceeds it) and dies mid-review at capability
+ * preparation — fail fast here with the assignment reason instead.
+ */
+export function assertReviewerSelectionAuthority(
+  selection: AgentExecutionSelection,
+  name: string,
+  implementerLogicalAgent: string,
+): void {
+  if (!selection || selection.role !== "Reviewer") throw new Error(`REVIEW_AUTHORITY_REQUIRED: '${name}' is not a frozen canonical Reviewer selection.`);
+  if (selection.logicalAgent === implementerLogicalAgent) throw new Error("REVIEW_INDEPENDENCE_REQUIRED: the Implementer cannot review its own candidate.");
+  if (selection.permissions.write !== "deny") throw new Error(`REVIEW_AUTHORITY_REQUIRED: Reviewer '${name}' must have denied source-write authority.`);
+  if (selection.permissions.shell === "allow") throw new Error(`REVIEW_AUTHORITY_REQUIRED: Reviewer '${name}' must have denied shell authority (execute exceeds the read-only Reviewer capability ceiling).`);
+}
+
 async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>, implementationSelection: AgentExecutionSelection, supervisorSelection: AgentExecutionSelection | undefined, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number, checks: ValidationCheck[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>, assuranceAssignments: readonly CandidateAssuranceReviewAssignmentV1[] = []): Promise<ReviewRoundResult> {
   if (!report.candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
   const assuranceByIdentity = new Map(assuranceAssignments.map((assignment) => [assignment.reviewerIdentity, assignment]));
   const outputs = await Promise.all(reviewerNames.map(async (name) => {
     const selection = reviewerSelections[name];
-    if (!selection || selection.role !== "Reviewer") throw new Error(`REVIEW_AUTHORITY_REQUIRED: '${name}' is not a frozen canonical Reviewer selection.`);
-    if (selection.logicalAgent === implementationSelection.logicalAgent) throw new Error("REVIEW_INDEPENDENCE_REQUIRED: the Implementer cannot review its own candidate.");
-    if (selection.permissions.write !== "deny") throw new Error(`REVIEW_AUTHORITY_REQUIRED: Reviewer '${name}' must have denied source-write authority.`);
+    assertReviewerSelectionAuthority(selection, name, implementationSelection.logicalAgent);
     const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
     const capabilityIssues = validateExecutionCapabilities(selection, transport);
     if (capabilityIssues.length) throw new Error(`REVIEW_EXECUTION_INVALID: Reviewer '${name}' is not executable: ${capabilityIssues.join("; ")}`);

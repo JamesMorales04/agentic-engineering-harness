@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateFinalQualityGate } from "../src/agents/qualityConvergence.js";
-import { remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1 } from "../src/agents/reviewLifecycle.js";
+import { assertReviewerSelectionAuthority, remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1 } from "../src/agents/reviewLifecycle.js";
+import type { AgentExecutionSelection } from "../src/agents/types.js";
 import { operationFailureDetail, validationFailureDetail } from "../src/core/run.js";
 import type { NormalizedFinding } from "../src/agents/outputContracts.js";
 import type { HarnessProjectConfig, ValidationCheck, ValidationReport } from "../src/core/types.js";
@@ -63,5 +64,50 @@ describe("review round check reconciliation", () => {
     const checks = [check("candidate.assurance.reviewer.1.reviewer", "PASS")];
     replaceSupersededReviewerChecksV1(checks, 0, "reviewer", check("candidate.assurance.reviewer.0.reviewer", "FAIL"));
     expect(checks.map((item) => item.id).sort()).toEqual(["candidate.assurance.reviewer.0.reviewer", "candidate.assurance.reviewer.1.reviewer"]);
+  });
+});
+
+describe("reviewer selection authority (reviewer shell=allow regression)", () => {
+  // CHANGE-20261010T063726Z-873e30d9: harness-reviewer carried shell=allow,
+  // requested the execute capability, and died at the Reviewer role ceiling
+  // mid-review. Reviewers are read-only by canonical definition
+  // (canExecute:false, command-execute forbidden); fail fast at assignment.
+  function selection(overrides: Record<string, unknown> = {}, logicalAgent = "reviewer"): AgentExecutionSelection {
+    return {
+      logicalAgent,
+      role: "Reviewer",
+      permissions: { read: "allow", write: "deny", shell: "deny", network: "deny", ...overrides },
+    } as AgentExecutionSelection;
+  }
+  it("admits a read-only reviewer selection", () => {
+    expect(() => assertReviewerSelectionAuthority(selection(), "reviewer", "implementer")).not.toThrow();
+  });
+  it("rejects a reviewer with source-write authority", () => {
+    expect(() => assertReviewerSelectionAuthority(selection({ write: "allow" }), "reviewer", "implementer")).toThrow(
+      /REVIEW_AUTHORITY_REQUIRED/,
+    );
+  });
+  it("rejects a reviewer with shell authority (execute exceeds the Reviewer ceiling)", () => {
+    expect(() => assertReviewerSelectionAuthority(selection({ shell: "allow" }), "harness-reviewer", "implementer")).toThrow(
+      /REVIEW_AUTHORITY_REQUIRED/,
+    );
+  });
+  it("rejects self-review", () => {
+    expect(() => assertReviewerSelectionAuthority(selection({}, "implementer"), "implementer", "implementer")).toThrow(
+      /REVIEW_INDEPENDENCE_REQUIRED/,
+    );
+  });
+
+  it("ships harness-reviewer without shell authority (read-only Reviewer ceiling)", async () => {
+    // The shipped topology is the production source of reviewer selections;
+    // a shell=allow Reviewer dies mid-review at the capability ceiling.
+    const { readFile } = await import("node:fs/promises");
+    const { default: path } = await import("node:path");
+    const raw = await readFile(path.resolve(import.meta.dirname, "..", ".harness", "agents.source.jsonc"), "utf8");
+    const parsed = JSON.parse(raw.replace(/\/\/.*/g, "")) as {
+      agents: Record<string, { role?: string; permissions?: { shell?: string } }>;
+    };
+    expect(parsed.agents["harness-reviewer"]?.role).toBe("Reviewer");
+    expect(parsed.agents["harness-reviewer"]?.permissions?.shell).toBe("deny");
   });
 });
