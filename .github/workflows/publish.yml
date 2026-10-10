@@ -99,14 +99,23 @@ jobs:
           # repair-release job owns the SHA-bound Release creation after verify).
           TAG="v${RELEASE_VERSION}"
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          if ! git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+          # SIGPIPE-safe existence check: query the exact ref and test for
+          # nonempty output. The previous full-namespace ls-remote piped to
+          # grep -q misdetected existing tags under `pipefail` (grep -q
+          # closes the pipe while git is still streaming, git dies 141).
+          # The awk exact-match filter keeps this correct even if a server
+          # answers a ref query with pattern/suffix matches (awk consumes
+          # all stdin, so it cannot SIGPIPE the producer).
+          TAG_REF="refs/tags/${TAG}"
+          REMOTE_REF="$(git ls-remote origin "$TAG_REF" | awk -v want="$TAG_REF" '$2 == want')"
+          if [ -z "$REMOTE_REF" ]; then
             echo "Refusing to create GitHub Release for v${RELEASE_VERSION} without in-workflow verification." >&2
             echo "The bump=current repair path cannot skip verification: re-run the full release pipeline so commit -> verify (by SHA) -> tag + npm publish -> release all succeed in one workflow run." >&2
             exit 1
           fi
-          PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk '{print $1}')"
+          PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk -v want="refs/tags/${TAG}^{}" '$2 == want {print $1}')"
           if [ -z "$PEELED_SHA" ]; then
-            PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk '{print $1}')"
+            PEELED_SHA="$(git ls-remote origin "$TAG_REF" | awk -v want="$TAG_REF" '$2 == want {print $1}')"
           fi
           HEAD_SHA="$(git rev-parse HEAD)"
           if [ "$PEELED_SHA" != "$HEAD_SHA" ]; then
@@ -330,10 +339,18 @@ jobs:
           test -n "$RELEASE_SHA"
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           TAG="v${RELEASE_VERSION}"
-          if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
-            PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk '{print $1}')"
+          # SIGPIPE-safe existence check (same pattern as the repair gate):
+          # exact-ref query with an emptiness test, no full-namespace pipe
+          # under `pipefail`.
+          TAG_REF="refs/tags/${TAG}"
+          # Standalone assignment (not embedded in `[ ... ]`): under
+          # `set -euo pipefail` a failed lookup is fatal here (fail-closed
+          # UNKNOWN) instead of silently selecting the "tag absent" branch.
+          TAG_LOOKUP="$(git ls-remote origin "$TAG_REF" | awk -v want="$TAG_REF" '$2 == want')"
+          if [ -n "$TAG_LOOKUP" ]; then
+            PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk -v want="refs/tags/${TAG}^{}" '$2 == want {print $1}')"
             if [ -z "$PEELED_SHA" ]; then
-              PEELED_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk '{print $1}')"
+              PEELED_SHA="$(git ls-remote origin "$TAG_REF" | awk -v want="$TAG_REF" '$2 == want {print $1}')"
             fi
             if [ "$PEELED_SHA" = "$RELEASE_SHA" ]; then
               echo "Tag ${TAG} already points at $RELEASE_SHA; resuming idempotently (no recreation, never force-move)."
@@ -343,7 +360,21 @@ jobs:
               exit 1
             fi
           else
-            git tag -a "${TAG}" -m "${TAG}" "$RELEASE_SHA"
+            # Idempotent local creation: a retry whose checkout already
+            # fetched the tag resumes instead of failing with
+            # `fatal: tag 'vX' already exists` (run 37989905139). A
+            # pre-existing local tag MUST bind to this run's RELEASE_SHA or
+            # the job fails WITHOUT pushing (never publish a divergent tag;
+            # the TAG_SHA bind below remains normative in all cases).
+            if git rev-parse -q --verify "$TAG_REF" >/dev/null; then
+              LOCAL_SHA="$(git rev-list -n 1 "$TAG_REF")"
+              if [ "$LOCAL_SHA" != "$RELEASE_SHA" ]; then
+                echo "Local tag ${TAG} at ${LOCAL_SHA} does not match RELEASE_SHA ${RELEASE_SHA}; refusing to push a divergent tag (never force-move)." >&2
+                exit 1
+              fi
+            else
+              git tag -a "${TAG}" -m "${TAG}" "$RELEASE_SHA"
+            fi
             git push origin "${TAG}"
           fi
           TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
