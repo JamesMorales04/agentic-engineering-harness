@@ -93,6 +93,20 @@ describe("change prompt contracts (AEH-V2-0125)", () => {
     expect(prompt).toContain(".harness/operations");
   });
 
+  it("introduces the plan-level filesNeededOutsideScope declaration channel (undeclared-scope regression)", () => {
+    // Repeated terminals (PLANNER_PROTECTED_SCOPE_UNDECLARED): planners
+    // scoped test-file edits without declaring them, although the output
+    // schema carries plan-level filesNeededOutsideScope (H-NEW-11). The
+    // prompt must introduce the declare-first channel before the failure.
+    const prompt = buildPlannerPrompt("CHANGE-TEST-1", contract, payload, explorerEvidence, [], ["/work/tree"]);
+    expect(prompt).toContain("filesNeededOutsideScope");
+    expect(prompt).toContain("hard-protected");
+    // Glob scopes intersecting protected patterns are rejected outright and
+    // no declaration satisfies them: the planner must enumerate exact files.
+    expect(prompt).toContain("Glob scopes intersecting any hard-protected pattern are rejected outright");
+    expect(prompt).toContain("enumerate each needed file as an exact-file work-unit scope");
+  });
+
   it("keeps the Spec Manager canonical OpenSpec and normative-language instruction", () => {
     const prompt = buildSpecManagerPrompt(payload, "change-test-1", undefined, undefined, []);
     expect(prompt).toContain("## ADDED Requirements");
