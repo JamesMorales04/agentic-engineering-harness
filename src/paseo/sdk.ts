@@ -69,6 +69,8 @@ export interface PaseoSdkPermissionStop {
   name?: string;
   scopeRelation: "OUTSIDE" | "INSIDE" | "UNKNOWN";
   requestedScopeDigest?: string;
+  /** Harness-side frozen projection active at the stop (bounded, refs-only). */
+  authorizedRoots?: string[];
   sessionId?: string;
   turnId?: string;
 }

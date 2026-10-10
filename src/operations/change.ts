@@ -812,7 +812,7 @@ export async function runDiscovery(
 }
 
 /** Deterministic Planner prompt contract (AEH-V2-0125 regression surface). */
-export function buildPlannerPrompt(operationId: string, contract: TaskContract, payload: ChangeOperationPayload, explorerEvidence: DurableAgentEvidence<ExplorerOutput> | undefined, inputs: ChangeInputReference[]): string {
+export function buildPlannerPrompt(operationId: string, contract: TaskContract, payload: ChangeOperationPayload, explorerEvidence: DurableAgentEvidence<ExplorerOutput> | undefined, inputs: ChangeInputReference[], readRoots: string[] = []): string {
   const explorerContext = explorerEvidence
     ? [`Explorer durable result artifact: ${explorerEvidence.artifact}`, `Explorer evidence projection:\n${compactJson(explorerEvidence.payload, 12_000)}`].join("\n")
     : "Explorer is disabled/unavailable by topology; no explorer result was expected.";
@@ -823,6 +823,8 @@ export function buildPlannerPrompt(operationId: string, contract: TaskContract, 
     "Produce planning/triage evidence only for this CHANGE operation. Do not implement or author the specification.",
     `Operation: ${operationId}`,
     `Request: ${payload.request}`,
+    `Frozen readable roots (exact projection):\n${readRoots.length ? readRoots.map((root) => `- ${root}`).join("\n") : "- unavailable; do not search outside the current repository root"}`,
+    "Use repository-relative paths in evidence. Search only the frozen readable roots listed above. Do not search prior or sibling worktrees, home directories, /tmp, or any other path outside this lease. Parent operations are referenced by id only: their durable records live under .harness/operations/ inside the allowed roots — never read a parent or sibling worktree directly. Symlinks do not grant access to their targets outside these roots. If a tool raises an out-of-scope permission prompt, do not approve it; produce the plan from in-scope evidence only.",
     changeInputsPrompt(inputs),
     explorerContext,
     `Sealed TaskContract requirement ids (immutable; map every id to at least one work unit and use only these exact ids in requirementRefs and acceptanceRefs):\n${requirementLines}`,
@@ -845,8 +847,11 @@ export async function runPlanning(
 ): Promise<DurableAgentEvidence<PlannerOutput> | undefined> {
   if (!selection) return undefined;
   // Frozen identical inputs across the bounded retry: the prompt is built once so the
-  // fresh-session retry carries no hints and no prompt changes.
-  const prompt = buildPlannerPrompt(operationId, contract, payload, explorerEvidence, inputs);
+  // fresh-session retry carries no hints and no prompt changes. The frozen
+  // readable roots mirror the Explorer boundary (planner OUTSIDE regression:
+  // an unbounded planner strayed outside the lease on its first tool call).
+  const readRoots = await projectedAuthorizedReadRoots(root, selection, controlRoot);
+  const prompt = buildPlannerPrompt(operationId, contract, payload, explorerEvidence, inputs, readRoots);
   // Durable stall budget (fail-closed, pre-claim protocol): same
   // cross-invocation ledger as discovery. UNKNOWN ledger throws EXHAUSTED;
   // marker-write failure throws coded with zero attempts.

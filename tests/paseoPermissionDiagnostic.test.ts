@@ -50,4 +50,17 @@ describe("frozen permission scope classification", () => {
     expect(await createPermissionStopDiagnostic("external_directory", ["/tmp/*"], ["/tmp"])).toMatchObject({ scopeRelation: "INSIDE" });
     expect(await createPermissionStopDiagnostic("external_directory", ["relative/*"], [root])).toMatchObject({ scopeRelation: "UNKNOWN" });
   });
+
+  it("persists the Harness-side projection snapshot with the stop (bounded, refs-only)", async () => {
+    // Planner OUTSIDE regression: the next stop must name the active lease
+    // roots alongside the digest. Raw provider patterns stay redacted.
+    const root = await tempDir();
+    const diag = await createPermissionStopDiagnostic("external_directory", ["/elsewhere/x"], [root, `${root}/.git`]);
+    expect(diag).toMatchObject({ scopeRelation: "OUTSIDE" });
+    expect(diag?.authorizedRoots).toEqual([root, `${root}/.git`]);
+    expect(JSON.stringify(diag)).not.toContain("/elsewhere/x");
+    // Non-absolute and oversized entries never persist.
+    const dirty = await createPermissionStopDiagnostic("external_directory", ["/elsewhere/x"], ["relative", `${root}`, `/${"a".repeat(400)}`]);
+    expect(dirty?.authorizedRoots).toEqual([`${root}`]);
+  });
 });

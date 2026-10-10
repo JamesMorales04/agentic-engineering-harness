@@ -16,7 +16,15 @@ export function redactPermissionStopDiagnostic(value: unknown, fallbackSessionId
   const safeId = (item: unknown): string | undefined => typeof item === "string" && /^[A-Za-z0-9._:-]{1,120}$/.test(item) ? item : undefined;
   const sessionId = safeId(record.sessionId) ?? safeId(fallbackSessionId);
   const turnId = safeId(record.turnId);
-  return { name, scopeRelation: relation, ...(requestedScopeDigest ? { requestedScopeDigest } : {}), ...(sessionId ? { sessionId } : {}), ...(turnId ? { turnId } : {}) };
+  // Harness-side projection snapshot (bounded absolute paths only): makes the
+  // next OUTSIDE attributable to its active lease without persisting
+  // provider-supplied paths. Raw request patterns stay redacted by design.
+  const authorizedRoots = Array.isArray(record.authorizedRoots)
+    ? record.authorizedRoots
+      .filter((item): item is string => typeof item === "string" && item.startsWith("/") && item.length <= 300)
+      .slice(0, 16)
+    : undefined;
+  return { name, scopeRelation: relation, ...(requestedScopeDigest ? { requestedScopeDigest } : {}), ...(authorizedRoots?.length ? { authorizedRoots } : {}), ...(sessionId ? { sessionId } : {}), ...(turnId ? { turnId } : {}) };
 }
 
 /** Redact provider scope data while classifying it against the frozen launch projection. */
@@ -34,6 +42,7 @@ export async function createPermissionStopDiagnostic(
     ...(name ? { name } : {}),
     scopeRelation,
     ...(requestedScopeDigest ? { requestedScopeDigest } : {}),
+    ...(authorizedRoots?.length ? { authorizedRoots } : {}),
     sessionId,
     turnId
   }, sessionId);
