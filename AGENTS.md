@@ -66,7 +66,19 @@ Do not use the informational exception for an ad-hoc engineering review. In a
 consumer project, do not bypass the Harness by editing directly. When the
 repository being changed is AEH itself, the external Codex controller, shell,
 TypeScript and tests are the development authority; do not launch AEH
-operations against this checkout.
+operations against this checkout — except through the narrow isolated
+self-hosting charter: a CHANGE/RUN operation whose control root is an
+isolated AEH worktree covered by a valid Owner-authorized charter in the
+external controller checkout (`.harness/self-hosting-charters/*.json`,
+exact target-root match, digest-pinned, unexpired, running-version-bound)
+runs under full governance, and the deterministic start gate enforces this
+(`SELF_HOSTING_CHARTER_REQUIRED` / `SELF_HOSTING_CHARTER_STALE` fail
+closed; the live controller checkout itself is frozen as
+`SELF_HOSTING_CONTROLLER_FROZEN` even with a charter; the accepted digest
+is bound to the operation and re-verified on execution). Target-local
+charter files are not authoritative. Without a valid charter, surface the
+exact gate error and request an Owner charter through `HUMAN_REQUIRED`;
+never work around the gate with direct edits.
 
 ### Harness-spawned bounded-participant exception
 
