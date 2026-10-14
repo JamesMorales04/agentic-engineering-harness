@@ -73,6 +73,15 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
   let candidateImpact = input.candidateImpact;
   let candidateAssurance = input.candidateAssurance;
   let assuranceGateCheck = input.assuranceGateCheck;
+  // Defense in depth (independent-review boundary caveat): a BLOCKED
+  // compilation must never produce review turns, even if this lifecycle is
+  // invoked directly with a passing report and non-empty assignments. The
+  // sole production caller guards on a PASS report, but the lifecycle itself
+  // refuses blocked assurance first, before any candidate check or session.
+  // MECHANISM: DETERMINISTIC.
+  if (candidateAssurance?.status === "BLOCKED") {
+    throw new Error(`REVIEW_ASSURANCE_BLOCKED: candidate assurance is BLOCKED (${candidateAssurance.blockers.join("; ") || "no blockers recorded"}); review turns require a READY compilation with satisfied specialization coverage.`);
+  }
   const requiredAssignments = candidateAssurance?.reviewAssignments ?? [];
   if (policy?.enabled === false && requiredAssignments.length === 0) return emptyResult(report, checks, sessions);
 

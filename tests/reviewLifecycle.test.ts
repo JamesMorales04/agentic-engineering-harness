@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateFinalQualityGate } from "../src/agents/qualityConvergence.js";
-import { assertReviewerSelectionAuthority, assertReviewerSetSpecializationCoverage, assertReviewerSpecializationAuthority, remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1 } from "../src/agents/reviewLifecycle.js";
+import { assertReviewerSelectionAuthority, assertReviewerSetSpecializationCoverage, assertReviewerSpecializationAuthority, remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1, runReviewLifecycle } from "../src/agents/reviewLifecycle.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import { operationFailureDetail, validationFailureDetail } from "../src/core/run.js";
 import type { NormalizedFinding } from "../src/agents/outputContracts.js";
@@ -185,5 +185,47 @@ describe("reviewer round collective specialization coverage (multi-specializatio
       [assignment("reviewer", ["cross-cutting"])],
       [],
     )).not.toThrow();
+  });
+});
+
+describe("review lifecycle refuses BLOCKED assurance at entry (defense in depth)", () => {
+  // DETERMINISTIC: even a direct call with a passing report and non-empty
+  // assignments must not produce review turns from a BLOCKED compilation.
+  it("throws REVIEW_ASSURANCE_BLOCKED before any review turn", async () => {
+    const blockedCompilation = {
+      version: 1,
+      candidate: { candidateId: "candidate:OP:r1", revision: 1, identityDigest: "digest" },
+      impactDigest: "impact",
+      policyDigest: "policy",
+      minimumAssurance: "STANDARD",
+      reviewAssignments: [{
+        reviewerIdentity: "high-assurance-reviewer",
+        provider: "provider-high-assurance-reviewer",
+        dimensions: ["authentication/authorization"],
+        candidate: { candidateId: "candidate:OP:r1", revision: 1, identityDigest: "digest" },
+        impactDigest: "impact",
+        policyDigest: "policy",
+        satisfiedSpecializations: ["high-assurance"],
+      }],
+      validationRequirements: [],
+      acceptanceAssertions: [],
+      evidenceStrength: { level: "STANDARD" },
+      blockers: ["MISSING_REQUIRED_REVIEW_SPECIALIZATION: typescript-node"],
+      status: "BLOCKED",
+      digest: "digest",
+    } as never;
+    const input = {
+      root: "/work/tree",
+      config,
+      contract: { version: 1, task: { id: "T", title: "t" }, routing: { route: "DELEGATED" } },
+      route: { ruleIds: [], review: [], reviewers: [], reasons: [] },
+      reviewerSelections: {},
+      implementationSelection: {},
+      report: { version: 1, taskId: "T", status: "PASS", checks: [], candidate: { candidateId: "candidate:OP:r1", revision: 1, identityDigest: "digest", sourceDigest: "source" } },
+      candidateAssurance: blockedCompilation,
+      revalidate: async () => { throw new Error("must not revalidate"); },
+    } as never;
+    await expect(runReviewLifecycle(input)).rejects.toThrow(/REVIEW_ASSURANCE_BLOCKED/);
+    await expect(runReviewLifecycle(input)).rejects.toThrow(/typescript-node/);
   });
 });
