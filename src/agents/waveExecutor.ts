@@ -53,7 +53,10 @@ import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { FileKnowledgeCacheV1, resolveKnowledgeGate, validateKnowledgePack, type KnowledgeCacheV1, type KnowledgeLookupResultV1, type KnowledgeModeV1, type KnowledgePackV1, type KnowledgeResolutionV1 } from "../knowledge/index.js";
 import { defaultSkillSeed } from "../participants/index.js";
-import { dropUnresolvablePlanValidationRequirementsV1, resolveValidationRequirements, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
+import { contractValidationRequirementsV1, mergeContractValidationRequirementsV1, resolveValidationRequirements, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
+import { contractValidationSourcesForContractV1, partitionMergedValidationRequirementsV1 } from "../core/contract.js";
+import { directRouteMultiUnitBlockedV1 } from "./routingV2.js";
+import { projectedAuthorizedReadRoots } from "../paseo/launchSpec.js";
 import type { ProjectStackProfileV1 } from "../participants/stack.js";
 import { compilePlannerWorkGraphWithOneCorrection, PlannerWorkGraphCorrectionError } from "./plannerWorkGraphCorrection.js";
 import {
@@ -188,8 +191,16 @@ export function classifyWaveCorrectionDeclarationV1(input: {
   return { blocked: true, blocker, strippedCount: partitioned.stripped.length };
 }
 
-export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; capabilityRegistry: CapabilityRegistryV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void }): Promise<PlannerWaveResult> {
+export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; capabilityRegistry: CapabilityRegistryV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; plannerPromptContext?: { operationId?: string; request?: string; explorerContext?: string; inputsPrompt?: string; readRoots?: readonly string[] }; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void }): Promise<PlannerWaveResult> {
   const planning = input.config.workflow?.planning;
+  // AEH-V2-0128 residual (single source `directRouteMultiUnitBlockedV1`): a
+  // DIRECT/NO_AGENT-sealed contract decomposed into more than one work unit
+  // must never silently execute as DIRECT. The no-planning short-circuit below
+  // would drop the multi-unit plan on the floor, so refuse fail-closed first.
+  if (directRouteMultiUnitBlockedV1(input.contract.routing?.route, input.precomputedPlan?.workUnits.length ?? 0)) {
+    const units = input.precomputedPlan!.workUnits.length;
+    return { used: true, waves: [], sessions: [], preExecutionFailure: true, aggregateSession: aggregate([], 1, `DIRECT_MULTI_UNIT_ESCALATION_REQUIRED: sealed route '${input.contract.routing?.route}' decomposed into ${units} work units; escalate/re-seal to DELEGATED before execution, refusing to silently DIRECT-execute multi-unit work.`) };
+  }
   if (planning?.enabled === false || input.contract.routing?.route === "DIRECT" || input.contract.routing?.route === "NO_AGENT") return { used: false, waves: [], sessions: [] };
   if (!input.precomputedPlan && !input.plannerSelection) return { used: false, waves: [], sessions: [] };
   const sessions: WorkerSession[] = [];
@@ -198,7 +209,25 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     try { plan = plannerOutputSchema.parse(input.precomputedPlan); }
     catch (error) { return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Invalid Planner output schema: ${String(error)}`) }; }
   } else {
-    const plannerSession = await executeAgentPrompt(input.root, input.config, input.contract, input.plannerSelection!, buildPlannerPrompt(input.contract), { outputContract: "planner", phase: "planning", requireExecutionAuthority: true });
+    // FAM-PROMPT unification: without a precomputed plan the fallback planner
+    // turn uses the shared canonical prompt (operation id + frozen readRoots +
+    // explorer evidence + competency allowlist + AEH_RESULT_JSON marker),
+    // never the legacy contract-only variant. Frozen roots gate fail-closed
+    // (PR#164 lease semantics): without a frozen readable boundary the planner
+    // turn is refused before any provider session launches.
+    const frozenRoots = input.plannerPromptContext?.readRoots ?? await projectedAuthorizedReadRoots(input.root, input.plannerSelection!, input.stateRoot);
+    if (!frozenRoots.length) {
+      return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, "PLANNER_FROZEN_ROOTS_REQUIRED: Planner planning requires frozen readable roots (projected lease); planning without a frozen root boundary is refused fail-closed.") };
+    }
+    const prompt = buildCanonicalPlannerPromptV1({
+      operationId: input.plannerPromptContext?.operationId ?? currentOperationContext().id ?? input.contract.task.id,
+      contract: input.contract,
+      request: input.plannerPromptContext?.request ?? input.contract.request ?? input.contract.task.title,
+      explorerContext: input.plannerPromptContext?.explorerContext ?? "Explorer is disabled/unavailable by topology; no explorer result was expected.",
+      inputsPrompt: input.plannerPromptContext?.inputsPrompt ?? "Controller-resolved durable inputs: none.",
+      readRoots: frozenRoots
+    });
+    const plannerSession = await executeAgentPrompt(input.root, input.config, input.contract, input.plannerSelection!, prompt, { outputContract: "planner", phase: "planning", requireExecutionAuthority: true });
     sessions.push(plannerSession);
     if (plannerSession.exitCode !== 0) return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, "Planner runtime failed.") };
     try { plan = plannerOutputSchema.parse(extractMarkedJson(plannerSession.stdout, plannerSession.stderr)); } catch (error) { return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Invalid planner output: ${String(error)}`) }; }
@@ -256,19 +285,25 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     if (!candidateRevision || typeof controllerEpoch !== "number" || !Number.isSafeInteger(controllerEpoch) || controllerEpoch < 0 || operation?.operationExecutionRevision === undefined) {
       throw new AehError("EXECUTION_BLUEPRINT_INVALID", "A managed CandidateRevision and controller epoch are required before compiling an execution blueprint.");
     }
-    validationResolution = await resolveValidationRequirements({ root: input.root, requirements: plan.validationRequirements, config: input.config, contract: input.contract, projectStack: input.projectStack });
-    // A planner-declared validation requirement that no approved project script, configured
-    // command, validator, or provider can resolve is advisory plan intent, not a frozen gate. The
-    // frozen contract's own validators are compiled and enforced independently, so an unresolvable
-    // advisory requirement must not reject the whole participant plan before implementation (it is
-    // not repairable by any implementation change). Drop it with a durable deterministic record and
-    // keep the resolvable subset; a genuine inconsistency between the remaining set still fails
-    // closed below.
+    // FAM-REACH: compile the frozen-contract-derived requirements BEFORE the
+    // blueprint (same single semantic as the downstream oracle path), so
+    // blueprint.validationRequirements/validationResolution ⊇ the downstream
+    // oracle inputs instead of the oracle rejecting what the blueprint never
+    // contained (AEH-V2-0099 class). A planner-declared requirement that no
+    // approved project script, configured command, validator, or provider can
+    // resolve stays advisory plan intent and is dropped with a durable
+    // deterministic record — but a CONTRACT-derived requirement is a frozen
+    // gate and must never be dropped silently (`partitionMerged...` fails
+    // closed on it instead).
+    const contractDerivedValidationRequirements = contractValidationRequirementsV1(contractValidationSourcesForContractV1(input.contract, input.config));
+    const mergedValidationRequirements = mergeContractValidationRequirementsV1(plan.validationRequirements, contractDerivedValidationRequirements);
+    plan = { ...plan, validationRequirements: mergedValidationRequirements };
+    validationResolution = await resolveValidationRequirements({ root: input.root, requirements: mergedValidationRequirements, config: input.config, contract: input.contract, projectStack: input.projectStack });
     if (validationResolution.blocked.length) {
-      const partition = dropUnresolvablePlanValidationRequirementsV1(plan.validationRequirements, validationResolution);
+      const partition = partitionMergedValidationRequirementsV1(mergedValidationRequirements, contractDerivedValidationRequirements, validationResolution);
       await recordEvent(input.stateRoot, input.config, "harness.plan.validation-requirements-dropped", { taskId: input.contract.task.id, dropped: partition.dropped.map((requirement) => ({ id: requirement.id, kind: requirement.kind })), reasons: validationResolution.blocked });
       plan = { ...plan, validationRequirements: partition.kept };
-      validationResolution = await resolveValidationRequirements({ root: input.root, requirements: plan.validationRequirements, config: input.config, contract: input.contract, projectStack: input.projectStack });
+      validationResolution = await resolveValidationRequirements({ root: input.root, requirements: partition.kept, config: input.config, contract: input.contract, projectStack: input.projectStack });
       if (validationResolution.blocked.length) throw new AehError("VALIDATION_REQUIREMENT_BLOCKED", validationResolution.blocked.map((item) => `${item.requirementId}: ${item.reason}`).join("; "), { details: { validationResolution } });
     }
     const executionSemanticsDigest = sha256Canonical({ workGraph: graph, plannerPlan: plan, executionCatalogDigest: input.executionCatalog.digest, validationResolution, knowledge: knowledgeResolutions.map((resolution) => ({ packDigest: resolution.pack?.packDigest, trustDecisionDigest: resolution.acceptedSkill?.trustDecision.decisionDigest })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), contextPolicy: input.config.context ?? null });
@@ -1176,7 +1211,45 @@ export async function resolvePlannerScopeDeclarations(input: {
   }).catch(() => undefined);
   return { status: "AMENDED", contract: resolution.contract, amendment: resolution.amendment };
 }
-function buildPlannerPrompt(contract: TaskContract): string { const requirements = (contract.requirements ?? []).map((item) => `- ${item.id}: ${item.description ?? ""}`).join("\n") || "- none"; return `Create the implementation WorkGraph for ${contract.task.id}: ${contract.task.title}.\nThe TaskContract and sealed sources are immutable. Produce the smallest dependency-aware workUnits, concrete path scopes, competencies, risk tags and changeKinds. Scope shape: use an exact file path or 'dir/**'; a bare directory path never matches children. Repo-tree evidence artifacts require explicit 'dir/**' scope AND a write claim; otherwise write to the controller-owned scratch dir (/tmp/aeh-scratch-*, disclosed as 'AEH private scratch directory') or the operation evidence dir (.harness/evidence, .harness/operations/<operationId>/workspace-evidence/latest). Each workUnits[].objective must be concise, non-empty, and no longer than 500 characters, matching the Planner output schema and WorkGraph compiler. Map every requirement ID to at least one work unit. If the planned work needs hard-protected files (validators, tests, policy, .harness/project.yaml, seals), scope them in the needing work unit AND declare each exact file via top-level filesNeededOutsideScope[{path, reason}] (max 8, one reason per file); undeclared hard-protected scopes are rejected at compile, and a declaration routes to Owner-approved amendment rather than widening scope by itself. If validation meaning is needed, emit typed validationRequirements[{version,id,property,kind,scope,evidenceNeeded,requirementRefs,acceptanceRefs}]; state what must be demonstrated, never a command or provider. If a work unit requires exclusive or ordered access to a shared mutable resource (database schema, migration sequence, package lock, deployment environment, public API contract, generated client, shared config, external mutable resource), emit resourceClaims[{version,resource,mode,order}] with mode SHARED_READ, EXCLUSIVE_WRITE or ORDERED_SEQUENCE and a non-negative order for ORDERED_SEQUENCE. The deterministic scheduler validates and enforces claims; you cannot widen scheduling by claiming a resource. The deterministic resolver will choose approved project scripts, validators or providers. Do not select agents, reviewers, validators, commands, tools or credentials by name, and do not create product requirements. If formalization is required, set formalizationNeed=REQUIRED with one typed formalizationReason and formalizationEvidenceRefs.\nRequirements:\n${requirements}\nAllowed scope: ${(contract.scope?.allowed ?? ["**"]).join(", ")}\nReturn output matching the planner contract; when native structured output is unavailable, use one final AEH_RESULT_JSON=<json> line.`; }
+export interface CanonicalPlannerPromptInputV1 {
+  operationId: string;
+  contract: TaskContract;
+  request: string;
+  explorerContext: string;
+  inputsPrompt: string;
+  readRoots: readonly string[];
+}
+
+/**
+ * Canonical deterministic Planner prompt (single source for the CHANGE
+ * `runPlanning` path and the `executePlannerWaves` fallback path). Carries the
+ * normative planning contract: operation id, frozen readable roots (exact
+ * projection), explorer evidence, sealed requirement ids, the controlled
+ * competency allowlist, the hard-protected declaration rule, and the exact
+ * `AEH_RESULT_JSON=` marker contract.
+ * MECHANISM: DETERMINISTIC.
+ */
+export function buildCanonicalPlannerPromptV1(input: CanonicalPlannerPromptInputV1): string {
+  const requirementLines = (input.contract.requirements ?? []).map((requirement) => `- ${requirement.id}: ${requirement.description ?? ""}`).join("\n")
+    || "- none: the sealed TaskContract declares no requirement ids, so leave requirementRefs and acceptanceRefs empty.";
+  const knownCompetencyIds = [...new Set(defaultSkillSeed().skills.flatMap((skill) => skill.competencies.map((competency) => competency.id)))].sort();
+  return [
+    "Produce planning/triage evidence only for this CHANGE operation. Do not implement or author the specification.",
+    `Operation: ${input.operationId}`,
+    `Request: ${input.request}`,
+    `Frozen readable roots (exact projection):\n${input.readRoots.length ? input.readRoots.map((root) => `- ${root}`).join("\n") : "- unavailable; do not search outside the current repository root"}`,
+    "Use repository-relative paths in evidence. Search only the frozen readable roots listed above. Do not search prior or sibling worktrees, home directories, /tmp, or any other path outside this lease. Parent operations are referenced by id only: their durable records live under .harness/operations/ inside the allowed roots — never read a parent or sibling worktree directly. Symlinks do not grant access to their targets outside these roots. If a tool raises an out-of-scope permission prompt, do not approve it; produce the plan from in-scope evidence only.",
+    "When the planned work needs hard-protected paths (validators, tests, policy, .harness/project.yaml, seals), enumerate each needed file as an exact-file work-unit scope and declare each exact file with a per-file reason in plan-level filesNeededOutsideScope (max 8). Glob scopes intersecting any hard-protected pattern are rejected outright and no declaration can satisfy them: replace every such glob with enumerated exact protected file scopes first. The declaration never widens scope by itself; it routes to Owner-approved amendment. Work-unit scopes touching hard-protected paths without a matching declaration are rejected at plan validation.",
+    input.inputsPrompt,
+    input.explorerContext,
+    `Sealed TaskContract requirement ids (immutable; map every id to at least one work unit and use only these exact ids in requirementRefs and acceptanceRefs):\n${requirementLines}`,
+    `Known competency ids (use only these controlled ids for workUnits[].competencies when the work matches; a competency outside this set must genuinely require researched knowledge and will be checked by the deterministic KnowledgeGate): ${knownCompetencyIds.join(", ")}`,
+    "Identify affected areas, dependencies, bounded implementer ownership, reviewers and deterministic validation gates. Keep normative requirements unchanged. Every workUnits[].objective must be concise, non-empty, and no longer than 500 characters, matching the Planner output schema and WorkGraph compiler.",
+    "If a work unit requires exclusive or ordered access to a shared mutable resource (database schema, migration sequence, package lock, deployment environment, public API contract, generated client, shared config, external mutable resource), emit resourceClaims[{version,resource,mode,order}] with mode SHARED_READ, EXCLUSIVE_WRITE or ORDERED_SEQUENCE and a non-negative order for ORDERED_SEQUENCE. The deterministic scheduler validates and enforces claims; you cannot widen scheduling by claiming a resource.",
+    "The deterministic resolver will choose approved project scripts, validators or providers. Do not select agents, reviewers, validators, commands, tools or credentials by name, and do not create product requirements. If validation meaning is needed, emit typed validationRequirements[{version,id,property,kind,scope,evidenceNeeded,requirementRefs,acceptanceRefs}]; state what must be demonstrated, never a command or provider. If formalization is required, set formalizationNeed=REQUIRED with one typed formalizationReason and formalizationEvidenceRefs.",
+    "Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object matching the planner output contract; a turn without that marker is rejected as PLANNER_RESULT_ARTIFACT_MISSING."
+  ].join("\n\n");
+}
 function buildDelegationPrompt(contract: TaskContract, task: WorkUnitOutput, operationalSkills?: import("../capabilities/operationalSkills.js").OperationalSkillProjectionV1): string {
   const guidance = operationalSkills?.skills.length ? `\nOperational guidance selected for this role and WorkUnit (guidance only; it grants no tools or authority):\n${operationalSkills.skills.map((skill) => `- ${skill.name} v${skill.version} [${skill.certificationStatus}${skill.accessMode === "CONTROLLER_GUIDANCE" ? ", controller-guidance-only" : ""}]: ${skill.procedure.join("; ")}${skill.recovery.length ? ` Recovery: ${skill.recovery.map((item) => `${item.failureClass} → ${item.steps.join("; ")}`).join(" | ")}` : ""}`).join("\n")}` : "";
   return `Implement only work unit ${task.id} for parent ${contract.task.id}.\nObjective: ${task.objective}\nAllowed task scope: ${task.scope.join(", ")}\nScope shape: use an exact file path or 'dir/**'; a bare directory path never matches children. Repo-tree evidence writes require explicit 'dir/**' scope; otherwise write temporary output to the controller-owned scratch dir (/tmp/aeh-scratch-*, disclosed as 'AEH private scratch directory') or the operation evidence dir (.harness/evidence).\nDependencies already integrated: ${task.dependencies.join(", ") || "none"}\nAcceptance references: ${task.acceptanceRefs.join(", ") || "none"}\nRequired competencies: ${task.competencies.join(", ") || "general engineering"}\nRisk: ${task.risk}.${guidance}\nThe parent TaskContract, SDD and control-plane snapshot are frozen. Do not edit outside the declared scope, do not commit, push, rebase or change requirements. Run focused tests when practical and leave the worktree with only the implementation diff.`;

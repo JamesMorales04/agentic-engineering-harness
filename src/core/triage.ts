@@ -7,7 +7,7 @@ import { createSemanticEvidenceReceiptV1, decisionMechanismSchema, semanticAsses
 import { z } from "zod";
 
 export type TriageFlag = "architecture" | "security" | "authentication" | "authorization" | "schema" | "migration" | "public-api" | "breaking-change" | "new-dependency" | "cross-module" | "ambiguous";
-export interface TriageEvidence { request: string; files?: string[]; domains?: string[]; risk?: "low" | "medium" | "high"; flags?: TriageFlag[]; }
+export interface TriageEvidence { request: string; files?: string[]; domains?: string[]; risk?: "low" | "medium" | "high"; flags?: TriageFlag[]; expectedWorkUnits?: number; }
 export interface TriageDecision {
   route: ImplementationRoute;
   assurance: AssuranceLevel;
@@ -122,7 +122,11 @@ export async function triageChangeWithSemanticAssessment(
   });
   if (assessment.judgment?.type !== "ROUTE") throw new AehError("SEMANTIC_ASSESSMENT_INVALID", "ROUTE assessment did not contain a typed route judgment.");
   const judgment = assessment.judgment;
-  const deterministicDelegationFloor = requiresDelegatedPlanningV1({ files, crossModule: flags.includes("cross-module"), scopeConfidence: judgment.scopeClarity === "LOW" ? "low" : "high", decompositionNeed: judgment.decompositionNeed, coordinationNeed: judgment.coordinationNeed });
+  // AEH-V2-0128: the semantic DIRECT recommendation consumes the same explicit
+  // work-unit count as the deterministic floor (single predicate
+  // `requiresDelegatedPlanningV1`); a multi-unit decomposition can never stay
+  // DIRECT on the semantic path either.
+  const deterministicDelegationFloor = requiresDelegatedPlanningV1({ files, crossModule: flags.includes("cross-module"), scopeConfidence: judgment.scopeClarity === "LOW" ? "low" : "high", expectedWorkUnits: input.expectedWorkUnits, decompositionNeed: judgment.decompositionNeed, coordinationNeed: judgment.coordinationNeed });
   const recommendedRoute = deterministicDelegationFloor && judgment.recommendedRoute === "DIRECT" ? "DELEGATED" : judgment.recommendedRoute;
   const semanticAssessment: RouteAssessmentV1 = { ...judgment, recommendedRoute };
   return {
@@ -155,6 +159,7 @@ function triageChangeUsingAssessment(config: HarnessProjectConfig, input: Triage
     architecture: flags.includes("architecture") || domains.some((domain) => /architecture/i.test(domain)),
     crossModule: flags.includes("cross-module") || files.length > maxFiles,
     scopeConfidence: files.length === 0 || nonConcrete.length > 0 ? "low" : "high",
+    expectedWorkUnits: input.expectedWorkUnits,
     risk,
     publicContractImpact: flags.includes("public-api") || flags.includes("breaking-change") || domains.some((domain) => /public-api|breaking|contract/i.test(domain)),
     dataOrSchemaImpact: flags.includes("schema") || flags.includes("migration") || domains.some((domain) => /schema|migration|database/i.test(domain)),

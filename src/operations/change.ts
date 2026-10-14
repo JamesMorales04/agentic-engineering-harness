@@ -21,7 +21,6 @@ import { createDelegatedFeatureCapsule, persistFeatureCapsule } from "../archite
 import { findScopeDirectoryPatternWarnings, formatScopeDirectoryPatternWarning } from "../architecture/workGraph.js";
 import { findScopeProtectedGrantWarnings, formatScopeProtectedGrantWarning, repairHardProtectedPaths } from "../candidates/repairScope.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
-import { defaultSkillSeed } from "../participants/skills.js";
 import { compileOpenSpecChange, persistOpenSpecAuthoringContentV1, preflightOpenSpec, prepareOpenSpecChange, validateOpenSpecAuthoringContentCanonicalityV1, validateOpenSpecTasksCanonicalityV1, type OpenSpecPreflightResult } from "../spec/openspec.js";
 import { recordEvent } from "../telemetry/events.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
@@ -72,6 +71,7 @@ import {
   stallRetryEffectiveDeadlineMs,
 } from "./stallRetryBudget.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "../semantic/runtime.js";
+import { buildCanonicalPlannerPromptV1 } from "../agents/waveExecutor.js";
 import { launchManagedPaseoAgent } from "../paseo/runtime.js";
 import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
 import { sha256Canonical } from "../core/digest.js";
@@ -93,6 +93,35 @@ export interface PreparedChangeOperation {
   semanticRuntime: Awaited<ReturnType<typeof createSemanticAssessmentRuntimeV1>>;
 }
 
+/**
+ * Content-bound CHANGE intent digest. Binds the normalized request identity
+ * AND the effective agent profile plus the semantic policy revision, so two
+ * payloads that differ only in profile (or a policy rotation between preflight
+ * and prepare) never share a binding: the preflight equality gate in
+ * `prepareChangeOperation` then fails closed STALE instead of reusing a
+ * route/assurance triage computed under different authority.
+ * MECHANISM: DETERMINISTIC.
+ */
+export function buildChangeIntentDigestV1(input: {
+  request: string;
+  files: readonly string[];
+  domains: readonly string[];
+  risk: "low" | "medium" | "high";
+  flags: readonly string[];
+  profile?: string;
+  policyRevision?: string;
+}): string {
+  return sha256Canonical({
+    request: input.request,
+    files: [...input.files],
+    domains: [...input.domains],
+    risk: input.risk,
+    flags: [...input.flags],
+    profile: normalizeAgentProfile(input.profile) ?? null,
+    policyRevision: input.policyRevision ?? null
+  });
+}
+
 export async function resolveChangePreflightV1(
   root: string,
   config: HarnessProjectConfig,
@@ -106,7 +135,7 @@ export async function resolveChangePreflightV1(
   const repositoryBinding = await createSemanticRepositoryBindingV1(root, config);
   const binding = {
     ...repositoryBinding,
-    intentDigest: sha256Canonical({ request: payload.request, files: normalized.files, domains: normalized.domains, risk: normalized.risk, flags: normalized.flags })
+    intentDigest: buildChangeIntentDigestV1({ request: payload.request, files: normalized.files, domains: normalized.domains, risk: normalized.risk, flags: normalized.flags, profile: payload.profile, policyRevision: semanticRuntime.policyRevision })
   };
   const triage = await triageChangeWithSemanticAssessment(config, evidence, { service: semanticRuntime.service, binding, policyRevision: semanticRuntime.policyRevision });
   if (triage.route === "DELEGATED") delegatedCapsuleObjectiveV1(payload);
@@ -168,7 +197,7 @@ export async function prepareChangeOperation(
   const repositoryBinding = await createSemanticRepositoryBindingV1(root, config);
   const expectedBinding = {
     ...repositoryBinding,
-    intentDigest: sha256Canonical({ request: payload.request, files: normalized.files, domains: normalized.domains, risk: normalized.risk, flags: normalized.flags })
+    intentDigest: buildChangeIntentDigestV1({ request: payload.request, files: normalized.files, domains: normalized.domains, risk: normalized.risk, flags: normalized.flags, profile: payload.profile, policyRevision: semanticRuntime.policyRevision })
   };
   if (!operation.changePreflight) throw new Error("CHANGE_PREFLIGHT_REQUIRED: detached CHANGE operations must carry pre-operation route/assurance evidence.");
   const preflight = assertChangePreflightV1(operation.changePreflight, { binding: expectedBinding, evidence });
@@ -811,28 +840,12 @@ export async function runDiscovery(
   }
 }
 
-/** Deterministic Planner prompt contract (AEH-V2-0125 regression surface). */
+/** Deterministic Planner prompt contract (AEH-V2-0125 regression surface). Single source is `buildCanonicalPlannerPromptV1`: this wrapper only renders the CHANGE-operation evidence (explorer projection, durable inputs) into the shared canonical content, so both planning entries carry identical normative sections. */
 export function buildPlannerPrompt(operationId: string, contract: TaskContract, payload: ChangeOperationPayload, explorerEvidence: DurableAgentEvidence<ExplorerOutput> | undefined, inputs: ChangeInputReference[], readRoots: string[] = []): string {
   const explorerContext = explorerEvidence
     ? [`Explorer durable result artifact: ${explorerEvidence.artifact}`, `Explorer evidence projection:\n${compactJson(explorerEvidence.payload, 12_000)}`].join("\n")
     : "Explorer is disabled/unavailable by topology; no explorer result was expected.";
-  const requirementLines = (contract.requirements ?? []).map((requirement) => `- ${requirement.id}: ${requirement.description ?? ""}`).join("\n")
-    || "- none: the sealed TaskContract declares no requirement ids, so leave requirementRefs and acceptanceRefs empty.";
-  const knownCompetencyIds = [...new Set(defaultSkillSeed().skills.flatMap((skill) => skill.competencies.map((competency) => competency.id)))].sort();
-  return [
-    "Produce planning/triage evidence only for this CHANGE operation. Do not implement or author the specification.",
-    `Operation: ${operationId}`,
-    `Request: ${payload.request}`,
-    `Frozen readable roots (exact projection):\n${readRoots.length ? readRoots.map((root) => `- ${root}`).join("\n") : "- unavailable; do not search outside the current repository root"}`,
-    "Use repository-relative paths in evidence. Search only the frozen readable roots listed above. Do not search prior or sibling worktrees, home directories, /tmp, or any other path outside this lease. Parent operations are referenced by id only: their durable records live under .harness/operations/ inside the allowed roots — never read a parent or sibling worktree directly. Symlinks do not grant access to their targets outside these roots. If a tool raises an out-of-scope permission prompt, do not approve it; produce the plan from in-scope evidence only.",
-    "When the planned work needs hard-protected paths (validators, tests, policy, .harness/project.yaml, seals), enumerate each needed file as an exact-file work-unit scope and declare each exact file with a per-file reason in plan-level filesNeededOutsideScope (max 8). Glob scopes intersecting any hard-protected pattern are rejected outright and no declaration can satisfy them: replace every such glob with enumerated exact protected file scopes first. The declaration never widens scope by itself; it routes to Owner-approved amendment. Work-unit scopes touching hard-protected paths without a matching declaration are rejected at plan validation.",
-    changeInputsPrompt(inputs),
-    explorerContext,
-    `Sealed TaskContract requirement ids (immutable; map every id to at least one work unit and use only these exact ids in requirementRefs and acceptanceRefs):\n${requirementLines}`,
-    `Known competency ids (use only these controlled ids for workUnits[].competencies when the work matches; a competency outside this set must genuinely require researched knowledge and will be checked by the deterministic KnowledgeGate): ${knownCompetencyIds.join(", ")}`,
-    "Identify affected areas, dependencies, bounded implementer ownership, reviewers and deterministic validation gates. Keep normative requirements unchanged. Every workUnits[].objective must be concise, non-empty, and no longer than 500 characters, matching the Planner output schema and WorkGraph compiler.",
-    "Your final output MUST contain exactly one line beginning AEH_RESULT_JSON= followed by the JSON object matching the planner output contract; a turn without that marker is rejected as PLANNER_RESULT_ARTIFACT_MISSING."
-  ].join("\n\n");
+  return buildCanonicalPlannerPromptV1({ operationId, contract, request: payload.request, explorerContext, inputsPrompt: changeInputsPrompt(inputs), readRoots });
 }
 
 export async function runPlanning(
