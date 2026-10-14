@@ -300,6 +300,43 @@ function stripRejectedJsonSchemaDialect(schema: Record<string, unknown>): Record
   return schema;
 }
 
+/**
+ * STRICT_DEVIATION record (Director decision, P1a follow-up — explicit and
+ * reviewable, not silent). The SOLE documented deviation from the OpenAI
+ * strict-root rule ("root objects must not be anyOf and must be an object";
+ * enforced e.g. by openai-agents-python `_ensure_strict_root`, which rejects
+ * ANY root `anyOf`, even sibling to `type: "object"`) is the root-level
+ * `anyOf` on exactly 6 contracts: explorer, spec-authoring, implementer,
+ * repair-result, reviewer, supervisor. Planner carries no root `anyOf`
+ * (its non-vacuous gate is per-field `minItems:1`) and is fully root-clean.
+ *
+ * Rationale: every one of those 6 gates is a CROSS-FIELD implication over
+ * the exact same flat property set (explorer 1-of-7 non-empty; spec READY ->
+ * artifacts; implementer/repair-result no-mutation invariant; reviewer
+ * FAIL -> findings; supervisor SAFE -> empty unresolved/missingEvidence).
+ * Per-node strict keywords constrain single values only and cannot relate
+ * two fields; the only surviving composition keyword is `anyOf`
+ * (`oneOf`/`not`/`if`-`then`/`contains` are rejected per
+ * docs/evidence/model-routing/). The gate spans all top-level properties,
+ * so the only dominating node is root — pushing `anyOf` down requires a
+ * new envelope property or discriminator field, i.e. a breaking payload-
+ * shape change. Breaking shipped shapes to satisfy one provider's root rule
+ * was judged worse than the deviation (FAM-WIRE invariant — wire carries
+ * every deterministic gate — is satisfied as-is).
+ *
+ * Enforcement split: the deterministic Zod validator (`schemas` above, with
+ * matching superRefine gates) is the AUTHORITATIVE second layer and accepts
+ * every legacy shape. For OpenAI-strict submission, serve the base
+ * `type: "object"` node WITHOUT the root `anyOf` gate branch — Zod still
+ * enforces the gate on receipt. Nested `anyOf` elsewhere (semantic-assessment
+ * judgment union) is strict-legal per OpenAI and is NOT part of this
+ * deviation. No payload shape, Zod schema, or gate changes with this record;
+ * the deviation surface (root-only `anyOf`,
+ * otherwise strict-legal branches) is pinned by
+ * tests/wireSchemaStrictShape.test.ts ("documented root-anyOf deviation
+ * surface").
+ */
+
 const jsonSchemas: Record<string, Record<string, unknown>> = {  explorer: { type: "object", additionalProperties: false, required: ["summary", "relevantFiles", "findings", "moduleBoundaries", "tests", "dependencies", "risks", "openQuestions"], properties: { summary: { type: "string" }, relevantFiles: { type: "array", items: explorerFileJson }, findings: { type: "array", items: explorerFindingJson }, moduleBoundaries: stringArray, tests: stringArray, dependencies: stringArray, risks: stringArray, openQuestions: stringArray },
     // DETERMINISTIC non-vacuous-discovery wire gate (mirrors zod EXPLORER_EMPTY_RESULT):
     // at least one evidence array must be non-empty. Encoded as anyOf

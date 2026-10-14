@@ -172,4 +172,71 @@ describe("wire schema strict-shape (every shipped contract)", () => {
       expect(props[key]).toMatchObject({ type: "array", minItems: 1 });
     });
   });
+
+  it("documented root-anyOf deviation surface is exactly as recorded (STRICT_DEVIATION)", () => {
+    // Pins src/agents/outputContracts.ts STRICT_DEVIATION: root-level `anyOf`
+    // on exactly the 6 cross-field-gate contracts is the SOLE deviation from
+    // the OpenAI strict-root rule. Nested `anyOf` elsewhere is strict-legal
+    // per OpenAI ("for anyOf, the nested schemas must each be a valid JSON
+    // Schema") and pre-existing (semantic-assessment judgment union) — it is
+    // NOT part of the deviation. Within the 6 gate contracts, `anyOf` appears
+    // exactly once (at root); any nested anyOf/oneOf there fails here.
+    const documented = ["explorer", "implementer", "repair-result", "reviewer", "spec-authoring", "supervisor"];
+    const withRootAnyOf: string[] = [];
+    const violations: string[] = [];
+    for (const contract of knownOutputContracts()) {
+      const schema = schemaFor(contract);
+      walk(schema, (node, path) => {
+        if ("oneOf" in node) violations.push(`${contract} ${path}: oneOf`);
+        if (Array.isArray(node["anyOf"])) {
+          if (path === "root") {
+            withRootAnyOf.push(contract);
+          } else if (documented.includes(contract)) {
+            violations.push(`${contract} ${path}: nested anyOf (deviation allows root only)`);
+          }
+        }
+      });
+    }
+    // Exactly the 6 documented contracts; planner (minItems:1 gate) stays root-clean.
+    expect(withRootAnyOf.sort()).toEqual(
+      ["explorer", "implementer", "repair-result", "reviewer", "spec-authoring", "supervisor"],
+    );
+    // Every branch object is otherwise strict-legal: object type,
+    // additionalProperties:false, required covers every properties key, and
+    // no other banned composition keyword inside the branch subtree.
+    for (const contract of withRootAnyOf) {
+      const schema = schemaFor(contract);
+      const branches = (schema as { anyOf: unknown[] }).anyOf;
+      for (const branch of branches) {
+        walk(branch, (node, path) => {
+          if (node.type === "object") {
+            if (node.additionalProperties !== false) {
+              violations.push(`${contract} branch ${path}: additionalProperties !== false`);
+            }
+            if (node.properties && typeof node.properties === "object") {
+              const props = Object.keys(node.properties as Record<string, unknown>);
+              const required = node.required;
+              if (!Array.isArray(required)) {
+                violations.push(`${contract} branch ${path}: missing required`);
+              } else {
+                for (const key of props) {
+                  if (!(required as unknown[]).includes(key)) {
+                    violations.push(`${contract} branch ${path}: property '${key}' not in required`);
+                  }
+                }
+              }
+            }
+          }
+          for (const keyword of ["oneOf", "not", "if", "propertyNames", "$ref", "$defs", "discriminator"] as const) {
+            if (keyword in node) violations.push(`${contract} branch ${path}: ${keyword}`);
+          }
+          if ("contains" in node) violations.push(`${contract} branch ${path}: contains`);
+          if (Array.isArray(node["anyOf"]) && path !== "root") {
+            violations.push(`${contract} branch ${path}: nested anyOf`);
+          }
+        }, `${contract}-branch`);
+      }
+    }
+    expect(violations).toEqual([]);
+  });
 });
