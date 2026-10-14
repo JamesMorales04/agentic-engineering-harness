@@ -126,10 +126,13 @@ describe("H-NEW-11 planner plan-level filesNeededOutsideScope", () => {
       workUnits: [unit],
       filesNeededOutsideScope: Array.from({ length: 9 }, (_, i) => ({ path: `src/v${i}.ts`, reason: "x" })),
     })).toThrow();
-    // Wire schema carries the channel (provider-facing), still optional.
+    // Wire schema carries the channel (provider-facing), strict-required:
+    // OpenAI strict subset demands required cover every property key, so the
+    // Zod-optional channel keys travel required-present (empty = absent).
+    // Zod stays authoritative: legacy payloads omitting them still parse.
     const wire = outputJsonSchema("planner") as { required?: string[]; properties?: Record<string, unknown> };
     expect(wire.properties?.["filesNeededOutsideScope"]).toBeDefined();
-    expect(wire.required).toEqual(["workUnits", "affectedAreas", "reviewDimensions", "validationRequirements", "outOfScopeImprovements"]);
+    expect(wire.required).toEqual(["workUnits", "affectedAreas", "reviewDimensions", "validationRequirements", "outOfScopeImprovements", "filesNeededOutsideScope", "formalizationNeed", "formalizationReason", "formalizationEvidenceRefs"]);
   });
 
   it("rejects undeclared hard-protected WU scope at compile with a precise diagnostic", () => {
