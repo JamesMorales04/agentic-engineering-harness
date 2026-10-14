@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   explorerOutputSchema,
+  findingSchema,
   implementerOutputSchema,
   outputJsonSchema,
   plannerOutputSchema,
@@ -484,5 +485,35 @@ describe("P1b nullable round-trip regressions (reviewer exact cases)", () => {
     expect(validateAgentOutput("reviewer", { verdict: "PASS", findings: [zodFinding("medium")], finalizationSafety: "SAFE", followUp: [] }).ok).toBe(true);
     // finding with explicit null exceptionType passes zod too.
     expect(validateAgentOutput("reviewer", { verdict: "FAIL", findings: [{ ...zodFinding(), exceptionType: null }], finalizationSafety: "BLOCKED", followUp: [] }).ok).toBe(true);
+  });
+});
+
+describe("P2 null-to-undefined preprocess (planner formalization + finding exceptionType)", () => {
+  it("infer types stay string|undefined (no null widening)", () => {
+    const planner = plannerOutputSchema.parse({ workUnits: [workUnit()] });
+    const need: string | undefined = planner.formalizationNeed;
+    const reason: string | undefined = planner.formalizationReason;
+    expect(need).toBeUndefined();
+    expect(reason).toBeUndefined();
+    const parsed = findingSchema.parse({ ...zodFinding(), exceptionType: null });
+    const ex: string | undefined = parsed.exceptionType;
+    expect(ex).toBeUndefined();
+    // @ts-expect-error null must not be assignable after preprocess normalization
+    const mustFail: null = planner.formalizationNeed;
+    expect(mustFail).toBeUndefined();
+  });
+
+  it("runtime round-trips: null, omitted, and valued all validate", () => {
+    const base = { workUnits: [workUnit()] };
+    expect(plannerOutputSchema.safeParse({ ...base, formalizationNeed: null, formalizationReason: null }).success).toBe(true);
+    expect(plannerOutputSchema.safeParse(base).success).toBe(true);
+    expect(plannerOutputSchema.safeParse({ ...base, formalizationNeed: "RECOMMENDED", formalizationReason: "OTHER" }).success).toBe(true);
+    expect(plannerOutputSchema.safeParse({ ...base, formalizationNeed: "BOGUS" }).success).toBe(false);
+    const parsedNull = plannerOutputSchema.parse({ ...base, formalizationNeed: null });
+    expect(parsedNull.formalizationNeed).toBeUndefined();
+    expect(findingSchema.safeParse({ ...zodFinding(), exceptionType: null }).success).toBe(true);
+    expect(findingSchema.safeParse(zodFinding()).success).toBe(true);
+    expect(findingSchema.safeParse({ ...zodFinding(), exceptionType: "IMPLEMENTATION_DEFECT" }).success).toBe(true);
+    expect(findingSchema.safeParse({ ...zodFinding(), exceptionType: "BOGUS" }).success).toBe(false);
   });
 });

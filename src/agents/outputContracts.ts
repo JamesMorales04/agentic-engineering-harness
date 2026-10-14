@@ -57,8 +57,8 @@ export const plannerOutputSchema = z.object({
   }).strict()).default([]),
   outOfScopeImprovements: z.array(z.string()).default([]),
   filesNeededOutsideScope: z.array(plannerNeededFileSchema).max(8).default([]),
-  formalizationNeed: z.enum(["NONE", "RECOMMENDED", "REQUIRED"]).nullable().optional(),
-  formalizationReason: z.enum(["PRODUCT_UNCERTAINTY", "ARCHITECTURE_UNCERTAINTY", "REQUIREMENT_CONTRADICTION", "CROSS_COMPONENT_DESIGN", "OTHER"]).nullable().optional(),
+  formalizationNeed: z.preprocess((v) => (v === null ? undefined : v), z.enum(["NONE", "RECOMMENDED", "REQUIRED"]).optional()),
+  formalizationReason: z.preprocess((v) => (v === null ? undefined : v), z.enum(["PRODUCT_UNCERTAINTY", "ARCHITECTURE_UNCERTAINTY", "REQUIREMENT_CONTRADICTION", "CROSS_COMPONENT_DESIGN", "OTHER"]).optional()),
   formalizationEvidenceRefs: z.array(z.string()).max(64).optional()
 }).strict().superRefine((value, ctx) => {
   // DETERMINISTIC non-vacuous-plan gate (H-NEW-2): the planner is only invoked
@@ -209,7 +209,7 @@ export const repairResultOutputSchema = z.object({
     ctx.addIssue({ code: "custom", message: "REPAIR_SCOPE_BLOCKER_CONFLICT: filesNeededOutsideScope is a no-mutation report path; filesChanged must be empty when needed files are declared.", path: ["filesChanged"] });
   }
 });
-export const findingSchema = z.object({ id: z.string().min(1), severity: z.enum(["critical", "high", "medium", "low", "note"]), category: z.string().min(1), location: z.object({ file: z.string().min(1), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }), evidence: z.string().min(1), impact: z.string().min(1), recommendedFix: z.string().min(1), requiredCompetencies: z.array(z.string()).min(1), reviewDimensions: z.array(z.string()).default([]), exceptionType: exceptionTypeSchema.nullable().optional() });
+export const findingSchema = z.object({ id: z.string().min(1), severity: z.enum(["critical", "high", "medium", "low", "note"]), category: z.string().min(1), location: z.object({ file: z.string().min(1), startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }), evidence: z.string().min(1), impact: z.string().min(1), recommendedFix: z.string().min(1), requiredCompetencies: z.array(z.string()).min(1), reviewDimensions: z.array(z.string()).default([]), exceptionType: z.preprocess((v) => (v === null ? undefined : v), exceptionTypeSchema.optional()) });
 export const reviewerOutputSchema = z.object({ verdict: z.enum(["PASS", "FAIL", "PASS_WITH_WARNINGS"]), findings: z.array(findingSchema), finalizationSafety: z.enum(["SAFE", "BLOCKED", "RISK_KNOWN"]), confidence: z.string().optional(), followUp: z.array(z.string()).default([]) }).superRefine((value, ctx) => {
   // DETERMINISTIC reviewer coherence gates (H-NEW-2, hoisted from the change
   // and audit lane inline checks so every schema consumer agrees): a FAIL
@@ -335,6 +335,19 @@ function stripRejectedJsonSchemaDialect(schema: Record<string, unknown>): Record
  * otherwise strict-legal branches) is pinned by
  * tests/wireSchemaStrictShape.test.ts ("documented root-anyOf deviation
  * surface").
+ *
+ * STRICT-CHANNEL PROJECTION (P1 fix): strict-enforcing submission channels
+ * (OpenAI strict `response_format`, enforced e.g. by openai-agents-python
+ * `_ensure_strict_root`) reject ANY root `anyOf`, even sibling to
+ * `type: "object"`. `outputStrictChannelSchema(name)` returns the base
+ * `type: "object"` node WITHOUT the root `anyOf` gate branch — payload
+ * shapes unchanged (same properties/required; only the root composition
+ * keyword dropped). The deterministic Zod validator (with matching
+ * superRefine gates) remains authoritative on receipt via existing repair
+ * turns, so no gate is lost. Used ONLY at strict-channel submission sinks:
+ * Codex `--output-schema` (src/workers/agentPrompt.ts executeCodex).
+ * Non-strict transports (Paseo launch/continue paths, MCP inputSchema reuse,
+ * provenance digests) keep serving the full `outputJsonSchema` with gates.
  */
 
 const jsonSchemas: Record<string, Record<string, unknown>> = {  explorer: { type: "object", additionalProperties: false, required: ["summary", "relevantFiles", "findings", "moduleBoundaries", "tests", "dependencies", "risks", "openQuestions"], properties: { summary: { type: "string" }, relevantFiles: { type: "array", items: explorerFileJson }, findings: { type: "array", items: explorerFindingJson }, moduleBoundaries: stringArray, tests: stringArray, dependencies: stringArray, risks: stringArray, openQuestions: stringArray },
@@ -416,3 +429,10 @@ const jsonSchemas: Record<string, Record<string, unknown>> = {  explorer: { type
 export function validateAgentOutput(contractName: string, value: unknown): { ok: boolean; value?: unknown; issues: string[] } { const schema = schemas[contractName]; if (!schema) return { ok: false, issues: [`Unknown agent output contract: ${contractName}`] }; const parsed = schema.safeParse(value); return parsed.success ? { ok: true, value: parsed.data, issues: [] } : { ok: false, issues: parsed.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`) }; }
 export function knownOutputContracts(): string[] { return Object.keys(schemas).sort(); }
 export function outputJsonSchema(contractName: string): Record<string, unknown> | undefined { const schema = jsonSchemas[contractName]; return schema ? structuredClone(schema) : undefined; }
+/**
+ * Strict-channel projection: base `type: "object"` node WITHOUT the root
+ * `anyOf` gate branch. Payload shapes unchanged — same properties/required;
+ * only the root composition keyword is dropped so strict channels accept it.
+ * Zod remains authoritative on receipt via existing repair turns.
+ */
+export function outputStrictChannelSchema(contractName: string): Record<string, unknown> | undefined { const schema = jsonSchemas[contractName]; if (!schema) return undefined; const projected = structuredClone(schema) as Record<string, unknown>; if ("anyOf" in projected) delete projected["anyOf"]; return projected; }

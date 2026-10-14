@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentExecutionSelection } from "../agents/types.js";
-import { outputJsonSchema, validateAgentOutput } from "../agents/outputContracts.js";
+import { outputJsonSchema, outputStrictChannelSchema, validateAgentOutput } from "../agents/outputContracts.js";
 import { compileOpenCodeRuntimeProjection } from "../agents/permissions.js";
 import { extractMarkedJson, StructuredOutputError } from "../agents/structuredOutput.js";
 import { loadFrozenSkillContext } from "../core/controlPlane.js";
@@ -890,7 +890,10 @@ async function executeCodex(
   startedAt: string,
   executionEnv: Record<string, string>
 ): Promise<WorkerSession> {
-  const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
+  // Strict-channel sink: Codex `--output-schema` enforces the OpenAI strict
+  // root rule (no root anyOf), so serve the strict-channel projection. Zod
+  // remains authoritative on receipt via repair turns.
+  const schema = options.outputContract ? outputStrictChannelSchema(options.outputContract) : undefined;
   const temp = schema ? await fs.mkdtemp(path.join(options.scratchLease?.path ?? os.tmpdir(), "aeh-codex-schema-")) : undefined;
   try {
     const schemaFile = temp ? path.join(temp, "schema.json") : undefined;

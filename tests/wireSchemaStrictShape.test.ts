@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { knownOutputContracts, outputJsonSchema } from "../src/agents/outputContracts.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { knownOutputContracts, outputJsonSchema, outputStrictChannelSchema } from "../src/agents/outputContracts.js";
 
 /**
  * WIRE SCHEMA STRICT-SHAPE: every shipped output contract must survive
@@ -238,5 +241,40 @@ describe("wire schema strict-shape (every shipped contract)", () => {
       }
     }
     expect(violations).toEqual([]);
+  });
+
+  it("strict-channel projection strips ONLY root anyOf (shapes otherwise identical)", () => {
+    for (const contract of knownOutputContracts()) {
+      const full = outputJsonSchema(contract) as Record<string, unknown>;
+      const projected = outputStrictChannelSchema(contract) as Record<string, unknown>;
+      expect(projected).toBeDefined();
+      expect(projected).not.toHaveProperty("anyOf");
+      const { anyOf: _dropped, ...fullRest } = full as Record<string, unknown> & { anyOf?: unknown };
+      expect(projected).toEqual(fullRest);
+      // Payload shapes unchanged: same properties/required keys.
+      expect(projected["properties"]).toEqual(full["properties"]);
+      expect(projected["required"]).toEqual(full["required"]);
+      expect(projected["type"]).toBe("object");
+    }
+    expect(outputStrictChannelSchema("does-not-exist")).toBeUndefined();
+    // Projection returns a clone: mutating it must not affect the full schema.
+    const before = outputJsonSchema("reviewer") as Record<string, unknown>;
+    const proj = outputStrictChannelSchema("reviewer") as Record<string, unknown>;
+    (proj.properties as Record<string, unknown>)["verdict"] = { enum: ["MUTATED"] };
+    expect((before.properties as Record<string, Record<string, unknown>>)["verdict"]).not.toEqual({ enum: ["MUTATED"] });
+  });
+
+  it("strict-channel sink (Codex --output-schema) serves the projection", () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const source = fs.readFileSync(path.join(here, "..", "src", "workers", "agentPrompt.ts"), "utf8");
+    const execCodex = source.slice(source.indexOf("async function executeCodex"));
+    const nextFn = execCodex.indexOf("\nasync function ", 1);
+    const body = nextFn === -1 ? execCodex : execCodex.slice(0, nextFn);
+    expect(body).toContain("outputStrictChannelSchema");
+    expect(body).toContain("--output-schema");
+    expect(body).not.toContain("outputJsonSchema");
+    // Non-strict transports keep the full schema: Paseo paths + provenance digest.
+    const paseoUses = source.match(/outputJsonSchema\(/g) ?? [];
+    expect(paseoUses.length).toBeGreaterThanOrEqual(3);
   });
 });
