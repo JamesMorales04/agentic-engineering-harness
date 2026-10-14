@@ -37,17 +37,23 @@ export async function createPermissionStopDiagnostic(
   patterns: string[] | undefined,
   authorizedRoots: string[] | undefined,
   sessionId?: string,
-  turnId?: string
+  turnId?: string,
+  waitStartedAtOverride?: string
 ): Promise<PaseoSdkPermissionStop | undefined> {
   if (!name && !patterns?.length) return undefined;
   const requestedScopeDigest = patterns?.length ? createHash("sha256").update(JSON.stringify(patterns)).digest("hex") : undefined;
   const scopeRelation = await classifyPermissionScope(patterns, authorizedRoots);
-  // Production wait-start producer: stamp the moment this prompt is observed
-  // pending. The reviewer approval-wait gate arms ONLY on this state; a turn
-  // with no pending prompt carries no diagnostic and therefore no wait-start
-  // evidence. Cleared on resume/grant/deny (those paths produce no diagnostic).
+  // Production wait-start producer: the pending-observed moment is owned by
+  // the mid-turn wait loop that first reports the stop (first-seen pending
+  // state), threaded in as waitStartedAtOverride. Conversion-time stamping
+  // (new Date() here) is only the fallback when the prompt was already
+  // pending at terminal observation with no earlier sighting. The reviewer
+  // approval-wait gate arms ONLY on this state; a turn with no pending
+  // prompt carries no diagnostic and therefore no wait-start evidence.
+  // Cleared on resume/grant/deny (those paths produce no diagnostic).
   // Mechanism: DETERMINISTIC.
-  const waitStartedAt = new Date().toISOString();
+  const overrideMs = waitStartedAtOverride ? Date.parse(waitStartedAtOverride) : Number.NaN;
+  const waitStartedAt = Number.isFinite(overrideMs) ? new Date(overrideMs).toISOString() : new Date().toISOString();
   return redactPermissionStopDiagnostic({
     ...(name ? { name } : {}),
     scopeRelation,

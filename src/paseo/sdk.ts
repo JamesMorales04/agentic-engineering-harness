@@ -23,6 +23,45 @@ import {
   type ProviderTurnKillReason
 } from "./firstActivityDeadline.js";
 
+/**
+ * DETERMINISTIC mid-turn pending-start capture. The wait loop that polls the
+ * provider handle records the moment Paseo FIRST reports a pending approval
+ * prompt mid-turn (first-seen pendingPermissions while the turn is still
+ * running), not the later conversion/terminal observation. That timestamp is
+ * threaded into the stop diagnostic so the approval-wait duration measures
+ * the true prompt age instead of ~1ms at conversion. Cleared when the prompt
+ * clears (resume/grant/deny). Mechanism: DETERMINISTIC.
+ */
+const pendingStartByHandle = new WeakMap<object, string>();
+
+function hasPendingPermissions(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some((entry) => entry !== null && typeof entry === "object");
+  return value !== null && typeof value === "object";
+}
+
+/** Record first-seen pending state for a live handle; returns the tracked start (if any). */
+function notePendingStart(handle: object, pending: unknown): string | undefined {
+  if (hasPendingPermissions(pending)) {
+    let startedAt = pendingStartByHandle.get(handle);
+    if (!startedAt) {
+      startedAt = new Date().toISOString();
+      pendingStartByHandle.set(handle, startedAt);
+    }
+    return startedAt;
+  }
+  pendingStartByHandle.delete(handle);
+  return undefined;
+}
+
+function trackedPendingStart(handle: object): string | undefined {
+  return pendingStartByHandle.get(handle);
+}
+
+/** Test-only: reset the mid-turn pending-start tracker for a handle. */
+export function __testResetSdkPendingStart(handle: object): void {
+  pendingStartByHandle.delete(handle);
+}
+
 export interface PaseoSdkMcpStdioServer {
   type: "stdio";
   command: string;
@@ -1099,11 +1138,17 @@ async function waitForHandle(
   for (;;) {
     const raw = await refreshHandle(handle);
     const status = statusText(raw?.status ?? handle.status);
+    // PENDING-START CAPTURE SITE (sdk poll loop): Paseo first reports the
+    // mid-turn permission stop here, while the turn is still running. The
+    // first-seen pending moment is recorded now so the terminal diagnostic
+    // below measures the true prompt age instead of conversion time.
+    // Mechanism: DETERMINISTIC.
+    const pendingStart = notePendingStart(handle, raw?.pendingPermissions ?? handle.pendingPermissions);
     if (isTerminalStatus(status)) {
       const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
         ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
         : undefined;
-      const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots);
+      const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots, pendingStart ?? trackedPendingStart(handle));
       return {
         id: handle.id,
         workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
@@ -1195,6 +1240,17 @@ async function waitForFinishWithFirstActivityWatch(
           pollTimer = undefined;
         }
       }).catch(() => undefined);
+      // PENDING-START CAPTURE SITE (waitForFinish poll): the opaque provider
+      // wait exposes no mid-turn callback, so each activity poll also records
+      // the first-seen pending prompt. turnResult threads the tracked start
+      // into the diagnostic instead of stamping conversion time.
+      void Promise.resolve()
+        .then(() => refreshHandle(handle).catch(() => undefined))
+        .then((raw) => {
+          if (raw) notePendingStart(handle, (raw as Record<string, unknown>).pendingPermissions ?? handle.pendingPermissions);
+          else notePendingStart(handle, handle.pendingPermissions);
+        })
+        .catch(() => undefined);
     }, pollMs);
     const outcome = await Promise.race([
       waitPromise.then(
@@ -1585,7 +1641,11 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, messag
 }
 
 async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
-  const permission = await permissionStopDiagnostic(turn.final?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots);
+  // Terminal conversion threads the mid-turn first-seen pending start (when
+  // the wait loop observed it) instead of stamping conversion time, so a
+  // prompt pending for minutes measures its true age.
+  const waitStartedAt = trackedPendingStart(handle);
+  const permission = await permissionStopDiagnostic(turn.final?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots, waitStartedAt);
   if (turn.lastMessage) {
     return {
       id: handle.id,
@@ -1605,7 +1665,7 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult,
   const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
     ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
     : undefined;
-  const observedPermission = permission ?? await permissionStopDiagnostic(raw?.pendingPermissions, handle.id, permissionScopeRoots);
+  const observedPermission = permission ?? await permissionStopDiagnostic(raw?.pendingPermissions, handle.id, permissionScopeRoots, waitStartedAt ?? trackedPendingStart(handle));
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
@@ -1620,8 +1680,20 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult,
   };
 }
 
-export async function permissionStopDiagnostic(value: unknown, sessionId?: string, permissionScopeRoots?: string[]): Promise<PaseoSdkPermissionStop | undefined> {
+export async function permissionStopDiagnostic(value: unknown, sessionId?: string, permissionScopeRoots?: string[], observedWaitStartedAt?: string): Promise<PaseoSdkPermissionStop | undefined> {
   const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  // A revalidated diagnostic keeps its original pending-observed marker
+  // (earliest wins) so the wait duration stays anchored to when the prompt
+  // went pending, not to a later re-read.
+  let earliest: string | undefined;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const marker = (entry as Record<string, unknown>).waitStartedAt;
+    if (typeof marker === "string" && Number.isFinite(Date.parse(marker))) {
+      if (!earliest || Date.parse(marker) < Date.parse(earliest)) earliest = marker;
+    }
+  }
+  const waitStartedAt = earliest ?? observedWaitStartedAt;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
@@ -1629,7 +1701,7 @@ export async function permissionStopDiagnostic(value: unknown, sessionId?: strin
     const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
     const patterns = boundedStringArray(input?.patterns);
     if (name || patterns?.length) {
-      return createPermissionStopDiagnostic(name, patterns, permissionScopeRoots, sessionId, typeof record.id === "string" ? record.id : `${sessionId ?? "session"}:pending`);
+      return createPermissionStopDiagnostic(name, patterns, permissionScopeRoots, sessionId, typeof record.id === "string" ? record.id : `${sessionId ?? "session"}:pending`, waitStartedAt);
     }
   }
   return undefined;
@@ -1655,7 +1727,7 @@ async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string
 
 async function handleResult(handle: PaseoSdkAgentHandle, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
   const raw = handle.latest?.() ?? undefined;
-  const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots);
+  const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots, trackedPendingStart(handle));
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),

@@ -8,7 +8,7 @@ import {
   reviewerTurnDeadlineMs,
   workerTurnTerminalDetail,
 } from "../src/workers/agentPrompt.js";
-import { classifyReviewerTurnOutcome, reviewerPermissionWaitEvidence, reviewerPermissionWaitMs } from "../src/agents/reviewLifecycle.js";
+import { classifyReviewerTurnOutcome, reviewerPermissionWaitEvidence, reviewerPermissionWaitMs, awaitReviewerRunWithPermissionWatch } from "../src/agents/reviewLifecycle.js";
 import { effectivePaseoTurnTimeoutMs } from "../src/paseo/launchSpec.js";
 import { classifyParticipantStall, evaluateOperationWake, operationLivenessPolicy } from "../src/operations/livenessV2.js";
 import type { OperationRecordV2 } from "../src/operations/state.js";
@@ -235,6 +235,80 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
     expect(evidence.waitMs).toBeLessThan(permissionTimeout);
     expect(reviewerPermissionWaitMs(session, elapsedMs)).toBeLessThan(permissionTimeout);
     expect(classifyReviewerTurnOutcome(session, elapsedMs, reviewerDeadline, permissionTimeout)).toBe("TURN_DEADLINE_EXCEEDED");
+  });
+
+  it("(R3-i) IN-FLIGHT: 6-min-old pending prompt interrupts mid-wait at the 5-min timer, not the 15-min deadline", async () => {
+    const permissionTimeout = permissionWaitTimeoutMs(baseConfig);
+    const reviewerDeadline = reviewerTurnDeadlineMs(baseConfig);
+    expect(permissionTimeout).toBe(5 * 60_000);
+    // In-flight run that never settles (approval wait hangs the provider
+    // turn); the pending prompt went pending 6 min ago — older than the
+    // short timer — so the watchdog must fire immediately mid-wait instead
+    // of riding the 15-min reviewer deadline.
+    let settled = false;
+    const hangingRun = new Promise<string>(() => {});
+    void hangingRun.then(() => { settled = false; }, () => { settled = false; });
+    const startedAt = Date.now();
+    const result = await awaitReviewerRunWithPermissionWatch(hangingRun, {
+      permissionTimeoutMs: permissionTimeout,
+      isPending: () => true,
+      pendingStartedAtMs: Date.now() - 6 * 60_000,
+      pollMs: 10,
+    });
+    const wallMs = Date.now() - startedAt;
+    expect(settled).toBe(false);
+    expect(result.kind).toBe("permission-wait-exhausted");
+    if (result.kind === "permission-wait-exhausted") {
+      expect(result.pendingWaitMs).toBeGreaterThanOrEqual(6 * 60_000);
+    }
+    // Fired mid-wait on the pending-start watch, far short of the reviewer deadline.
+    expect(wallMs).toBeLessThan(reviewerDeadline);
+    expect(wallMs).toBeLessThan(permissionTimeout);
+  });
+
+  it("(R3-ii) IN-FLIGHT: clean turn past the short timer is never cut (no pending prompt, no arm)", async () => {
+    // Clean reviewer turn: no approval prompt ever pending. Even with a tiny
+    // short timer (far below the 6-min production magnitude asserted via
+    // elapsedMs), the watch must stay disarmed and the run settles normally.
+    const run = new Promise<string>((resolve) => setTimeout(() => resolve("review-evidence"), 60));
+    const result = await awaitReviewerRunWithPermissionWatch(run, {
+      permissionTimeoutMs: 20,
+      isPending: () => false,
+      pollMs: 5,
+    });
+    expect(result).toEqual({ kind: "settled", value: "review-evidence" });
+  });
+
+  it("(R3-iii) IN-FLIGHT: prompt clearing before the timer disarms the watch", async () => {
+    // Pending at first, then cleared (grant/deny/resume) before the short
+    // timer: the run settles normally instead of exhausting.
+    const flapEnd = Date.now() + 30;
+    const run = new Promise<string>((resolve) => setTimeout(() => resolve("late-evidence"), 120));
+    const result = await awaitReviewerRunWithPermissionWatch(run, {
+      permissionTimeoutMs: 200,
+      isPending: () => Date.now() < flapEnd,
+      pollMs: 5,
+    });
+    expect(result).toEqual({ kind: "settled", value: "late-evidence" });
+  });
+
+  it("(R3-iv) IN-FLIGHT: fresh mid-turn pending fires on elapsed-since-pending-start", async () => {
+    // Prompt goes pending mid-turn with no externally observed start: the
+    // watch stamps first-seen pending and fires one short-timer later —
+    // proving the watchdog runs on pending-start, not whole-turn elapsed.
+    const hangingRun = new Promise<string>(() => {});
+    const startedAt = Date.now();
+    const result = await awaitReviewerRunWithPermissionWatch(hangingRun, {
+      permissionTimeoutMs: 80,
+      isPending: () => true,
+      pollMs: 5,
+    });
+    const wallMs = Date.now() - startedAt;
+    expect(result.kind).toBe("permission-wait-exhausted");
+    if (result.kind === "permission-wait-exhausted") {
+      expect(result.pendingWaitMs).toBeGreaterThanOrEqual(80);
+    }
+    expect(wallMs).toBeLessThan(5_000);
   });
 
   it("(P1b) recent heartbeat + expired lease is NOT stalled", () => {

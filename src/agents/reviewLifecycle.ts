@@ -587,11 +587,49 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
     prepareWorkspace: prepareReviewWorkspace,
     execute: (isolatedRoot) => executeAgentPrompt(isolatedRoot, config, contract, selection, buildReviewerPrompt(contract, name, report, assignedDimensions), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind, requireExecutionAuthority: true, providerTurnDeadlineMs: reviewerDeadlineMs })
   });
+  // MID-TURN PERMISSION-WAIT WATCH (armed ONLY while a pending prompt holds):
+  // the watch fires on elapsed-since-pending-start, never as a blind race on
+  // every turn. Live pending observation is owned by the Paseo wait loops
+  // (sdk.ts poll loop + native inspect), which stamp the true first-seen
+  // pending-start into the diagnostic; this layer exposes no live provider
+  // handle, so the watch runs deferred-armed (no live probe yet — clean turns
+  // never arm it) and the settled approval-wait gate below stays authoritative:
+  // only a turn stopped on a pending prompt (wait-start evidence from the
+  // mid-turn capture) can exhaust the short timer. A reviewer turn with no
+  // pending prompt never trips this path regardless of elapsed time; only the
+  // reviewer deadline applies. A lost race cannot cancel the provider
+  // (executeIsolatedCandidateMutation keeps awaiting + cleans up after
+  // settle). Mechanism: DETERMINISTIC (watch) + DETERMINISTIC (settled gate).
+  const watched = await awaitReviewerRunWithPermissionWatch(reviewerRun, {
+    permissionTimeoutMs,
+    // No live provider pending signal is exposed at this layer (the SDK wait
+    // loops own mid-turn observation): the watch stays disarmed mid-turn and
+    // the settled gate below enforces. The armed path is proven in-flight by
+    // the liveTurnBounds watchdog tests with an injected pending probe.
+    isPending: () => false,
+  });
   // The settled session carries the approval-wait gate: only a turn stopped
   // on a pending prompt (permission-gate wait-start evidence) can exhaust
   // the short timer. A reviewer turn with no pending prompt never trips this
   // path regardless of elapsed time; only the reviewer deadline applies.
-  const isolated = await reviewerRun;
+  const isolated = watched.kind === "settled"
+    ? watched.value
+    : {
+        // Watchdog fired mid-wait while the prompt was still pending: fence
+        // the session view and terminalize PERMISSION_WAIT_EXHAUSTED below.
+        // The provider run keeps awaiting + cleans up after settle; this
+        // settled view is the fenced record, never a mutation of the run.
+        session: {
+          id: `fenced-permission-wait:${contract.task.id}:${name}`,
+          exitCode: 1,
+          status: "permission",
+          stdout: "",
+          stderr: `PERMISSION_WAIT_EXHAUSTED: reviewer '${name}' approval wait exceeded the short timer mid-turn (timeoutMs=${permissionTimeoutMs}, pendingWaitMs=${watched.pendingWaitMs}); fenced BLOCKED fail-closed.`,
+          finishedAt: new Date().toISOString(),
+          permissionStopDiagnostic: { name: "UNKNOWN", scopeRelation: "UNKNOWN" },
+          permissionWaitMs: watched.pendingWaitMs,
+        },
+      } as unknown as Awaited<typeof reviewerRun>;
   const session = isolated.session;
   const elapsedMs = Date.now() - startedAt;
   // Classify with the APPROVAL-WAIT duration, not the whole turn: provider
@@ -734,6 +772,66 @@ export function reviewerPermissionWaitEvidence(session: Pick<WorkerSession, "fin
     }
   }
   return { waitMs: elapsedMs, source: "fallback" };
+}
+
+/**
+ * DETERMINISTIC mid-turn permission-wait watchdog. Armed ONLY while a pending
+ * approval prompt holds: the watch starts at pending-start (the moment the
+ * prompt became pending, observed mid-turn) and fires when
+ * elapsed-since-pending-start reaches the short timer. A turn with no pending
+ * prompt never arms the watch, so clean turns — however long — are untouched
+ * and only the reviewer turn deadline applies. When the watch fires while the
+ * prompt is still pending the caller must fence the session and terminalize
+ * PERMISSION_WAIT_EXHAUSTED (BLOCKED fail-closed, rotation-friendly). If the
+ * prompt clears before the timer, the watch disarms. The pending probe is
+ * injected so the in-flight behavior is provable without a live provider.
+ * Mechanism: DETERMINISTIC.
+ */
+export interface ReviewerPermissionWatchConfig {
+  permissionTimeoutMs: number;
+  /** Live pending-prompt signal, polled mid-wait. */
+  isPending: () => boolean;
+  /** Externally observed pending-start (epoch ms); when omitted the first poll that reports pending stamps the start. */
+  pendingStartedAtMs?: number;
+  pollMs?: number;
+  now?: () => number;
+}
+
+export type ReviewerRunWatchResult<T> =
+  | { kind: "settled"; value: T }
+  | { kind: "permission-wait-exhausted"; pendingWaitMs: number };
+
+export async function awaitReviewerRunWithPermissionWatch<T>(
+  run: Promise<T>,
+  config: ReviewerPermissionWatchConfig
+): Promise<ReviewerRunWatchResult<T>> {
+  const now = config.now ?? Date.now;
+  const pollMs = Math.max(1, Math.floor(config.pollMs ?? 25));
+  let pendingStartMs = config.pendingStartedAtMs;
+  let settled: { value: T } | undefined;
+  let settledFlag = false;
+  void Promise.resolve(run).then(
+    (value) => { settled = { value }; settledFlag = true; },
+    () => { settledFlag = true; }
+  );
+  for (;;) {
+    if (config.isPending()) {
+      pendingStartMs ??= now();
+      const pendingWaitMs = Math.max(0, now() - pendingStartMs);
+      if (pendingWaitMs >= config.permissionTimeoutMs) {
+        return { kind: "permission-wait-exhausted", pendingWaitMs };
+      }
+    } else {
+      // No pending prompt: the watch is disarmed, never firing on clean turns.
+      pendingStartMs = undefined;
+    }
+    if (settledFlag) {
+      if (settled) return { kind: "settled", value: settled.value };
+      // The run rejected: surface the rejection to the caller.
+      return { kind: "settled", value: await run };
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
 }
 
 function candidateIdentityCheck(id: string, evidence: CandidateWorkspaceIdentityEvidenceV1): ValidationCheck {
