@@ -8,7 +8,7 @@ import {
   reviewerTurnDeadlineMs,
   workerTurnTerminalDetail,
 } from "../src/workers/agentPrompt.js";
-import { classifyReviewerTurnOutcome, reviewerPermissionWaitMs } from "../src/agents/reviewLifecycle.js";
+import { classifyReviewerTurnOutcome, reviewerPermissionWaitEvidence, reviewerPermissionWaitMs } from "../src/agents/reviewLifecycle.js";
 import { effectivePaseoTurnTimeoutMs } from "../src/paseo/launchSpec.js";
 import { classifyParticipantStall, evaluateOperationWake, operationLivenessPolicy } from "../src/operations/livenessV2.js";
 import type { OperationRecordV2 } from "../src/operations/state.js";
@@ -155,6 +155,86 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
     const elapsedMs = 16 * 60_000;
     expect(classifyReviewerTurnOutcome(session, elapsedMs, reviewerDeadline, permissionTimeout)).toBe("TURN_DEADLINE_EXCEEDED");
     expect(classifyTurnOutcome({ session, elapsedMs, deadlineMs: reviewerDeadline, permissionTimeoutMs: permissionTimeout })).toBe("TURN_DEADLINE_EXCEEDED");
+  });
+
+  it("(R2-i) 6-min approval wait WITH pending prompt (gate evidence) exhausts the short timer while fenced", () => {
+    const now = Date.now();
+    const permissionTimeout = permissionWaitTimeoutMs(baseConfig);
+    const reviewerDeadline = reviewerTurnDeadlineMs(baseConfig);
+    // Production-shaped session: the permission-gate producer stamped the
+    // pending-observed marker 6 min ago; the settled session is the actual
+    // fenced provider session (real session id, BLOCKED fail-closed).
+    const session = {
+      id: "paseo-review-1",
+      exitCode: 1,
+      status: "permission",
+      stderr: "waiting for approval",
+      stdout: "",
+      finishedAt: new Date(now).toISOString(),
+      permissionStopDiagnostic: {
+        name: "shell",
+        scopeRelation: "OUTSIDE",
+        sessionId: "paseo-review-1",
+        waitStartedAt: new Date(now - 6 * 60_000).toISOString(),
+      },
+    } as never;
+    const elapsedMs = 6 * 60_000 + 5_000;
+    expect(elapsedMs).toBeLessThan(reviewerDeadline);
+    const evidence = reviewerPermissionWaitEvidence(session, elapsedMs);
+    expect(evidence.source).toBe("evidence");
+    expect(evidence.waitMs).toBeGreaterThanOrEqual(6 * 60_000);
+    expect(reviewerPermissionWaitMs(session, elapsedMs)).toBeGreaterThanOrEqual(6 * 60_000);
+    expect(classifyReviewerTurnOutcome(session, elapsedMs, reviewerDeadline, permissionTimeout)).toBe("PERMISSION_WAIT_EXHAUSTED");
+  });
+
+  it("(R2-ii) 6-min reviewer turn with NO pending prompt is never cut at 5 min", () => {
+    const permissionTimeout = permissionWaitTimeoutMs(baseConfig);
+    const reviewerDeadline = reviewerTurnDeadlineMs(baseConfig);
+    // Steady-output reviewer turn, 6 min elapsed (past the short timer) but
+    // no approval prompt pending: the short timer must not fire — only the
+    // 15-min reviewer deadline applies.
+    const session = {
+      exitCode: 0,
+      status: "finished",
+      stderr: "",
+      stdout: "review evidence",
+      finishedAt: new Date().toISOString(),
+    } as never;
+    const elapsedMs = 6 * 60_000;
+    expect(elapsedMs).toBeGreaterThan(permissionTimeout);
+    expect(elapsedMs).toBeLessThan(reviewerDeadline);
+    expect(reviewerPermissionWaitEvidence(session, elapsedMs).source).toBe("fallback");
+    expect(classifyReviewerTurnOutcome(session, elapsedMs, reviewerDeadline, permissionTimeout)).toBe("OTHER");
+    // Same guarantee via the shared worker classifier: a non-permission stop
+    // past the short timer is not an exhausted wait.
+    expect(classifyTurnOutcome({ session, elapsedMs, deadlineMs: reviewerDeadline, permissionTimeoutMs: permissionTimeout })).toBe("OTHER");
+  });
+
+  it("(R2-iii) classifier uses gate wait-start evidence, not whole-turn elapsed", () => {
+    const now = Date.now();
+    const permissionTimeout = permissionWaitTimeoutMs(baseConfig);
+    const reviewerDeadline = reviewerTurnDeadlineMs(baseConfig);
+    // Whole turn ran 16 min (past the reviewer deadline) but the gate
+    // marker shows the prompt went pending only 2 min before settlement:
+    // this is a turn-deadline kill, not an exhausted permission wait.
+    const session = {
+      exitCode: 124,
+      status: "permission",
+      stderr: "timed out after steady output; waiting for approval",
+      stdout: "",
+      finishedAt: new Date(now).toISOString(),
+      permissionStopDiagnostic: {
+        name: "shell",
+        scopeRelation: "OUTSIDE",
+        waitStartedAt: new Date(now - 2 * 60_000).toISOString(),
+      },
+    } as never;
+    const elapsedMs = 16 * 60_000;
+    const evidence = reviewerPermissionWaitEvidence(session, elapsedMs);
+    expect(evidence.source).toBe("evidence");
+    expect(evidence.waitMs).toBeLessThan(permissionTimeout);
+    expect(reviewerPermissionWaitMs(session, elapsedMs)).toBeLessThan(permissionTimeout);
+    expect(classifyReviewerTurnOutcome(session, elapsedMs, reviewerDeadline, permissionTimeout)).toBe("TURN_DEADLINE_EXCEEDED");
   });
 
   it("(P1b) recent heartbeat + expired lease is NOT stalled", () => {

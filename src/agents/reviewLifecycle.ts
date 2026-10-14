@@ -565,12 +565,17 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
   const reviewerDeadlineMs = reviewerTurnDeadlineForConfig(config);
   const permissionTimeoutMs = permissionWaitTimeoutForConfig(config);
   const startedAt = Date.now();
-  // DETERMINISTIC permission-wait bound on the ACTIVE wait: the reviewer call
-  // carries the 15-min reviewer deadline, so without this race an approval
-  // prompt would sit until that deadline. The short timer interrupts the wait
-  // at 5 min even mid-turn (fail-closed PERMISSION_WAIT_EXHAUSTED, safe to
-  // rotate with a narrower scope); the provider session stays fenced for
-  // controller cleanup. Mechanism: DETERMINISTIC.
+  // DETERMINISTIC approval-wait gate on ACTUAL pending-prompt state: the
+  // reviewer call carries the 15-min reviewer deadline, which is the ONLY
+  // wall-clock bound on an active turn. A mid-turn timer must never cut a
+  // reviewer turn with no pending approval prompt, and a lost Promise.race
+  // cannot cancel the provider (executeIsolatedCandidateMutation keeps
+  // awaiting + cleans up after settle) — so there is no mid-turn interrupt
+  // here at all. The PERMISSION_WAIT_TIMEOUT fires only in settled
+  // approval-wait state (isReviewerPermissionWaitStop + wait-start evidence
+  // from the permission-gate producer) via classifyReviewerTurnOutcome
+  // below: fenced session + PERMISSION_WAIT_EXHAUSTED, BLOCKED fail-closed,
+  // rotation-friendly. Mechanism: DETERMINISTIC.
   const reviewerRun = executeIsolatedCandidateMutation({
     root,
     operationId: candidate.operationId,
@@ -582,27 +587,11 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
     prepareWorkspace: prepareReviewWorkspace,
     execute: (isolatedRoot) => executeAgentPrompt(isolatedRoot, config, contract, selection, buildReviewerPrompt(contract, name, report, assignedDimensions), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind, requireExecutionAuthority: true, providerTurnDeadlineMs: reviewerDeadlineMs })
   });
-  // Suppress the late settlement of whichever side loses the race.
-  reviewerRun.catch(() => undefined);
-  let permissionTimer: ReturnType<typeof setTimeout> | undefined;
-  const permissionBound = new Promise<never>((_, reject) => {
-    permissionTimer = setTimeout(() => reject(new Error(`PERMISSION_WAIT_EXHAUSTED: reviewer '${name}' approval wait exceeded its short timer (timeoutMs=${permissionTimeoutMs}) while the reviewer turn was still active; wait interrupted mid-turn, BLOCKED fail-closed.`)), permissionTimeoutMs);
-    (permissionTimer as unknown as { unref?: () => void }).unref?.();
-  });
-  permissionBound.catch(() => undefined);
-  let isolated: Awaited<typeof reviewerRun>;
-  try {
-    isolated = await Promise.race([reviewerRun, permissionBound]);
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith("PERMISSION_WAIT_EXHAUSTED")) {
-      const detail = error.message;
-      const timedOutSession = { exitCode: 124, status: "permission", stderr: detail, stdout: "" } as never;
-      return { reviewer: name, session: timedOutSession, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "PERMISSION_WAIT", detail, sessionId: undefined, exitCode: 124 } };
-    }
-    throw error;
-  } finally {
-    if (permissionTimer) clearTimeout(permissionTimer);
-  }
+  // The settled session carries the approval-wait gate: only a turn stopped
+  // on a pending prompt (permission-gate wait-start evidence) can exhaust
+  // the short timer. A reviewer turn with no pending prompt never trips this
+  // path regardless of elapsed time; only the reviewer deadline applies.
+  const isolated = await reviewerRun;
   const session = isolated.session;
   const elapsedMs = Date.now() - startedAt;
   // Classify with the APPROVAL-WAIT duration, not the whole turn: provider
@@ -692,9 +681,12 @@ export function isReviewerPermissionWaitStop(session: Pick<WorkerSession, "statu
 
 export function classifyReviewerTurnOutcome(session: Pick<WorkerSession, "exitCode" | "status" | "stderr" | "stdout" | "finishedAt" | "permissionStopDiagnostic">, elapsedMs: number, deadlineMs: number, permissionTimeoutMs: number, permissionWaitMs?: number): "TURN_DEADLINE_EXCEEDED" | "PERMISSION_WAIT_EXHAUSTED" | "OTHER" {
   if (`${(session as { stderr?: unknown }).stderr ?? ""} ${(session as { stdout?: unknown }).stdout ?? ""}`.includes("TURN_DEADLINE_EXCEEDED")) return "TURN_DEADLINE_EXCEEDED";
-  // DETERMINISTIC: the wait duration (provider wait-start evidence, else the
-  // whole-turn fallback) decides against the short timer — never the whole
-  // turn by default, so a brief late-turn prompt is not misread as exhausted.
+  // DETERMINISTIC: the wait duration (permission-gate wait-start evidence,
+  // else the explicitly-marked whole-turn fallback) decides against the
+  // short timer — never the whole turn by default, so a brief late-turn
+  // prompt is not misread as exhausted. The isReviewerPermissionWaitStop
+  // check gates on ACTUAL pending-prompt state: a turn with no pending
+  // prompt can never yield PERMISSION_WAIT_EXHAUSTED here.
   const waitMs = permissionWaitMs ?? reviewerPermissionWaitMs(session, elapsedMs);
   if (isReviewerPermissionWaitStop(session) && waitMs >= permissionTimeoutMs) return "PERMISSION_WAIT_EXHAUSTED";
   const text = `${(session as { stderr?: unknown }).stderr ?? ""} ${(session as { stdout?: unknown }).stdout ?? ""}`;
@@ -706,22 +698,42 @@ export function classifyReviewerTurnOutcome(session: Pick<WorkerSession, "exitCo
 /**
  * DETERMINISTIC approval-wait duration for a settled reviewer turn. Local
  * mirror of the worker helper (kept local so unit mocks that stub the worker
- * module keep working): prefers provider-reported wait-start evidence, falls
- * back to the whole-turn elapsed fail-closed. Mechanism: DETERMINISTIC.
+ * module keep working). Precedence: explicit numeric wait evidence, then the
+ * permission-gate producer's pending-observed marker
+ * (`permissionStopDiagnostic.waitStartedAt`, stamped when the prompt went
+ * pending), then the legacy top-level wait-start fields, and only last the
+ * whole-turn elapsed fail-closed fallback for sessions with no wait-start
+ * evidence at all. Mechanism: DETERMINISTIC.
  */
-export function reviewerPermissionWaitMs(session: Pick<WorkerSession, "finishedAt">, elapsedMs: number): number {
-  const extended = session as Pick<WorkerSession, "finishedAt"> & { permissionWaitMs?: unknown; approvalWaitMs?: unknown; permissionWaitStartedAt?: unknown; approvalWaitStartedAt?: unknown };
+export function reviewerPermissionWaitMs(session: Pick<WorkerSession, "finishedAt" | "permissionStopDiagnostic">, elapsedMs: number): number {
+  return reviewerPermissionWaitEvidence(session, elapsedMs).waitMs;
+}
+
+/**
+ * DETERMINISTIC wait-evidence source for a settled reviewer turn. Produced
+ * sessions (permission-gate diagnostic present) resolve to "evidence"; the
+ * whole-turn elapsed applies only when no wait-start evidence exists and is
+ * explicitly marked "fallback" so the classifier's fallback path is visible.
+ * Mechanism: DETERMINISTIC.
+ */
+export function reviewerPermissionWaitEvidence(session: Pick<WorkerSession, "finishedAt" | "permissionStopDiagnostic">, elapsedMs: number): { waitMs: number; source: "evidence" | "fallback" } {
+  const extended = session as Pick<WorkerSession, "finishedAt" | "permissionStopDiagnostic"> & { permissionWaitMs?: unknown; approvalWaitMs?: unknown; permissionWaitStartedAt?: unknown; approvalWaitStartedAt?: unknown };
   for (const candidate of [extended.permissionWaitMs, extended.approvalWaitMs]) {
-    if (typeof candidate === "number" && Number.isFinite(candidate)) return Math.max(0, candidate);
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return { waitMs: Math.max(0, candidate), source: "evidence" };
+  }
+  const gateStartedAt = extended.permissionStopDiagnostic?.waitStartedAt;
+  if (typeof gateStartedAt === "string" && Number.isFinite(Date.parse(gateStartedAt))) {
+    const endMs = Date.parse(extended.finishedAt ?? "");
+    return { waitMs: Math.max(0, (Number.isFinite(endMs) ? endMs : Date.now()) - Date.parse(gateStartedAt)), source: "evidence" };
   }
   for (const candidate of [extended.permissionWaitStartedAt, extended.approvalWaitStartedAt]) {
     const startMs = typeof candidate === "number" ? candidate : Date.parse(String(candidate ?? ""));
     if (Number.isFinite(startMs)) {
       const endMs = Date.parse(extended.finishedAt ?? "");
-      return Math.max(0, (Number.isFinite(endMs) ? endMs : Date.now()) - (startMs as number));
+      return { waitMs: Math.max(0, (Number.isFinite(endMs) ? endMs : Date.now()) - (startMs as number)), source: "evidence" };
     }
   }
-  return elapsedMs;
+  return { waitMs: elapsedMs, source: "fallback" };
 }
 
 function candidateIdentityCheck(id: string, evidence: CandidateWorkspaceIdentityEvidenceV1): ValidationCheck {

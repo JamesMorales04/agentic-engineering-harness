@@ -73,6 +73,14 @@ export interface PaseoSdkPermissionStop {
   authorizedRoots?: string[];
   sessionId?: string;
   turnId?: string;
+  /**
+   * DETERMINISTIC approval-wait start marker: stamped by the permission-gate
+   * producer (createPermissionStopDiagnostic) at the moment the prompt is
+   * observed pending. Absent when no prompt is pending (cleared on
+   * resume/grant/deny — those paths carry no diagnostic). Mechanism:
+   * DETERMINISTIC.
+   */
+  waitStartedAt?: string;
 }
 
 export interface PaseoSdkAgentResult {
