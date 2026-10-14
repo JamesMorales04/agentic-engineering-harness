@@ -22,6 +22,8 @@ export {
   DEFAULT_SKILL_SEED_V1,
   defaultSkillSeed,
   skillDefinition,
+  presetSkillCeilingIssue,
+  isCanonicalSeedSkill,
   type CompetencyLevel,
   type CompetencyV1,
   type SkillDefinitionV1,

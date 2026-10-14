@@ -4,6 +4,8 @@ import type { HarnessProjectConfig } from "../core/types.js";
 import { loadAgentTopologySource, resolveAgentTopology } from "./config.js";
 import type { ResolvedAgentTopology } from "./types.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
+import { defaultRoleProfiles } from "../participants/roles.js";
+import { isCanonicalSeedSkill, presetSkillCeilingIssue } from "../participants/skills.js";
 
 export interface TopologyCheckResult { ok: boolean; issues: string[]; output?: string; }
 
@@ -47,12 +49,32 @@ export async function validateAgentTopology(root: string, config: HarnessProject
 
 async function validateReferences(root: string, topology: ResolvedAgentTopology): Promise<string[]> {
   const issues: string[] = [];
+  const specializationsByRole = new Map<string, readonly string[]>(defaultRoleProfiles().map((profile) => [profile.role, profile.specializations]));
+  const assertSpecializationsClosed = (scope: string, owner: string, role: string, specializations: readonly string[] | undefined): void => {
+    const known = specializationsByRole.get(role);
+    if (!known) return;
+    for (const specialization of specializations ?? []) {
+      if (!(known as readonly string[]).includes(specialization)) {
+        issues.push(`${scope} ${owner} references unknown specialization ${specialization} for role ${role}`);
+      }
+    }
+  };
   for (const [name, agent] of Object.entries(topology.agents)) {
     for (const promptPath of [agent.promptPath, agent.orchestratorPromptPath].filter((value): value is string => Boolean(value))) {
       try { await fs.access(path.resolve(root, promptPath)); } catch { issues.push(`Agent ${name} references missing prompt ${promptPath}`); }
     }
+    assertSpecializationsClosed("Agent", name, agent.role, agent.specializations);
     for (const skill of agent.skills ?? []) {
       if (skill === "*") continue;
+      // The canonical skill seed is the registry of record for preset skill
+      // ids (role procedures project from the seed at launch); filesystem
+      // SKILL.md covers non-seed OpenCode skills. A seed skill must also fit
+      // the agent role's ceiling; anything in neither registry still fails.
+      if (isCanonicalSeedSkill(skill)) {
+        const ceilingIssue = presetSkillCeilingIssue(skill, agent.role as Parameters<typeof presetSkillCeilingIssue>[1]);
+        if (ceilingIssue) issues.push(`Agent ${name} references skill outside its role ceiling: ${ceilingIssue}`);
+        continue;
+      }
       let found = false;
       for (const skillRoot of topology.skillRoots) {
         try { await fs.access(path.resolve(root, skillRoot, skill, "SKILL.md")); found = true; break; } catch { /* continue */ }
@@ -63,6 +85,7 @@ async function validateReferences(root: string, topology: ResolvedAgentTopology)
   for (const rule of topology.routing) {
     for (const selector of [rule.select, ...(rule.review ?? [])].filter((value): value is NonNullable<typeof rule.select> => Boolean(value))) {
       if (!Object.values(topology.agents).some((agent) => agent.role === selector.role && !agent.disabled)) issues.push(`Routing rule ${rule.id} selects unavailable role ${selector.role}`);
+      assertSpecializationsClosed("Routing rule", rule.id, selector.role, selector.specializations);
     }
   }
   return [...new Set(issues)];
