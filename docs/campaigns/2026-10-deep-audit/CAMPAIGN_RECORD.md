@@ -92,7 +92,8 @@ AEH-V2-0116 approval-prompt stops (SLICE_BLOCKED_DRIVER).
 | FAM-HERMETIC (F-A/F-B/F-C) | controller bins reach nested controllers; per-turn env never injects | src/utils/process.ts, src/evals/runner.ts, tests/managedChildEnvScrub.test.ts, tests/security/sastEvidence.test.ts | typecheck clean; full unit 356f/2483t green (marked) | Luna xhigh via Paseo — ACCEPT | #169 MERGED (13/13 CI, 2e95baf) | DONE |
 | L1 static gate (Wave 2) | deterministic preflight detects config/contract drift | scripts/preflightL1.mjs, tests/preflightL1.test.ts (branch fix/l1-preflight-gate: 5584f5f + repair f3b2cd2) | self-tests 14/14; 11 checks; real tree: A3/D2 PASS, rest RED (legit) | Luna xhigh via Paseo — REJECT then REPAIR (3H+1M+1L addressed); RE-REVIEW dispatched 2026-10-14 | none | AWAITING VERDICT |
 | Wave-3A preset/ceiling coherence (branch fix/preset-ceiling-coherence @60a8551, rebased onto 591f79c) | ceilings authoritative; least privilege | presets/agents/default.jsonc, src/participants/{roles,skills,index}.ts, src/agents/{compiler,permissions}.ts (+2 fixture migrations + Director-added review:deny flips for supervisor/planner + ceiling test) | typecheck clean; full unit 2498 passed/0 failed (marked); repaired-L1 delta: A1/A2/A3/B/D1/D2 PASS, C1/C2/E/F/G RED (out of scope) | Luna review DISPATCHED 2026-10-14 (Paseo) | none | AWAITING VERDICT |
-| Wave-3B wire parity (branch fix/wire-schema-parity @b6d0f53, on 591f79c) | wire schema carries deterministic gates | src/agents/outputContracts.ts (+197/-5), tests/contractCrossfieldGates.test.ts (+6 schema-level tests) | 16/16 targeted; typecheck clean (full-unit re-verify pending at PR time) | Luna review DISPATCHED 2026-10-14 (Paseo) | none | AWAITING VERDICT |
+| Wave-3B wire parity (branch fix/wire-schema-parity: b6d0f53 + strict reshape dba4ed8) | wire schema carries deterministic gates | src/agents/outputContracts.ts, tests/contractCrossfieldGates.test.ts (+ strict-shape sibling suite) | Luna REJECT (P1 partial-branch strict shapes; P2 positive gaps) → REPAIR: full-object strict-legal branches, strict-shape suite over ALL contracts (fails pre-repair, green after), all-7 explorer + PASS+SAFE positives. Full unit 2498/0. Bonus: pre-existing strict-invalidity (missing required for optionals) reported, NOT silently fixed — needs contract decision | Luna re-review PENDING (to dispatch after L1/3C verdicts to serialize reviewer load) | none | REPAIRED, AWAITING RE-REVIEW |
+| Wave-3A-P2 specialization preservation (commit d902655 on fix/preset-ceiling-coherence) | high-risk review cannot silently downgrade | compiler.ts (selector match), routing.ts (shared matcher + required-specs helper), run.ts (candidate specializations), candidateAssurance (attest/filter/record + BLOCKED), reviewLifecycle (turn gate), 11 new tests | full unit 2509/0 (marked); targeted 55/55 | Luna scoped re-review DISPATCHED (Paseo a60935f6) with Director ruling noted (ANY-match + turn-gate backstop sufficient; zero-assignment edge covered) | none | AWAITING VERDICT |
 
 ## 9. Director verification notes (Wave-3A A1 safety proof)
 
@@ -113,6 +114,14 @@ documents scope. Fixture migrations (2 files) are migrate-don't-shim compliant.
 (`campaign/2026-10-deep-audit`) is the durable home; push after every update. Standing rule for all
 subagents: NEVER run `git clean`, never delete files outside the assigned file list, never touch
 `docs/campaigns/`.
+
+## 11. Worktree discipline (adopted 2026-10-14 after shared-tree stash incident)
+
+Parallel implementation agents MUST use private `git worktree` checkouts (one branch per worktree),
+symlink node_modules (+dist) from the main checkout, export the marking for tests, commit on their
+branch from the worktree, and remove the worktree when done. Validated by Wave-3A-P2 + wire repairs
+(no cross-contamination; `git worktree list` clean). Paseo Luna reviewers use branch REFs
+(`git diff <base>..<branch>`) + private worktrees for execution; never checkout/stash/clean.
 
 ## 11. Preflight certification matrix
 
