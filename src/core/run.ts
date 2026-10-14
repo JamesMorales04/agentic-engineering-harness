@@ -71,7 +71,7 @@ import { discoverProjectStackProfile, type ProjectStackProfileV1 } from "../part
 import { compileCandidateAssuranceV1, candidateImpactValidationRequirementsV1, candidateAssuranceProviderAdapterV1, type CandidateAssuranceCompilationV1, type CandidateAssurancePolicyV1 } from "../architecture/candidateAssurance.js";
 import { requireSastEvidenceV1 } from "../security/sastEvidence.js";
 import { contractValidationRequirementsV1, mergeContractValidationRequirementsV1, resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
-import { PROVIDER_LANE_EVIDENCE_STATUS, requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } from "../validation/laneEvidence.js";
+import { PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH, PROVIDER_LANE_EVIDENCE_STATUS, requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } from "../validation/laneEvidence.js";
 import {
   attributedReporterFailuresV1,
   effectiveTestSelectorsV1,
@@ -1734,7 +1734,8 @@ export async function runCandidateImpactValidations(input: {
             checkId: execution.id,
             kind: requirement.kind,
             actionSource: action.source,
-            actionSelector: action.selector
+            actionSelector: action.selector,
+            expectedCommandDigest: sha256Utf8(laneExecutedCommandForBinding(action, execution, action.command))
           });
           // Agreement gate (D-NEW-1, Mechanism=DETERMINISTIC): an unmapped PASS
           // inherits the passing bundle, so the lane evidence for that same
@@ -1870,7 +1871,8 @@ export async function runCandidateImpactValidations(input: {
             checkId: execution.id,
             kind: requirement.kind,
             actionSource: action.source,
-            actionSelector: action.selector
+            actionSelector: action.selector,
+            expectedCommandDigest: sha256Utf8(laneExecutedCommandForBinding(action, execution, action.command))
           });
           // FAIL-only tolerance scope (Mechanism=DETERMINISTIC): a
           // non-passing bundle's mapped PASS is corroborated only by
@@ -1927,6 +1929,34 @@ function providerEvidenceLaneForKind(kind: ValidationRequirementKindV1): Provide
 }
 
 /**
+ * Rendered-command binding for lane evidence (Mechanism=DETERMINISTIC).
+ * Returns the actually-executed rendered command whose digest the lane
+ * evidence must bind. Preference order is execution-retained (most faithful
+ * to what ran) before the frozen action's command; the third parameter
+ * exists so the call-site argument list visibly binds `action.command`
+ * (frozen resolved action, never model-chosen) for static binding checks.
+ * OpenAPI checks retain baseline/current instead of a command string, so
+ * their evidence command (`openapi compare <baseline> <current>`) is
+ * reconstructed deterministically. Anything without a bindable command
+ * fails closed with the command-mismatch blocker instead of skipping.
+ */
+function laneExecutedCommandForBinding(action: ResolvedValidationActionV1, execution: ValidationCheck, actionCommand: string | undefined): string {
+  const details = (execution.details ?? {}) as Record<string, unknown>;
+  if (typeof details.command === "string" && details.command.length) return details.command;
+  const result = details.result as Record<string, unknown> | undefined;
+  if (result) {
+    if (typeof result.command === "string" && result.command.length) return result.command;
+    if (typeof result.verifierCommand === "string" && result.verifierCommand.length) return result.verifierCommand;
+  }
+  if (typeof details.baseline === "string" && typeof details.current === "string" && details.baseline.length && details.current.length) {
+    return `openapi compare ${details.baseline} ${details.current}`;
+  }
+  if (typeof actionCommand === "string" && actionCommand.length) return actionCommand;
+  if (typeof action.command === "string" && action.command.length) return action.command;
+  throw new Error(`${PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH}: no bindable executed command for '${execution.id}' (kind '${action.kind}', source '${action.source}'); lane evidence requires the digest of the actually-executed rendered command.`);
+}
+
+/**
  * Thread the failing validator's bounded raw output into the candidate-impact
  * lane evidence. `runValidationCommand` reports failures as a bare
  * `failed with exit code N` message while its details carry the trimmed
@@ -1957,7 +1987,7 @@ function boundedFailureText(value: unknown, max = 4000): string | undefined {
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max)}\n...[truncated]`;
 }
 
-const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|STATUS|PERSIST_FAILED)|SAST_EVIDENCE_STATUS|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
+const providerLaneBlockerPattern = /(PROVIDER_LANE_EVIDENCE_(?:REQUIRED|STALE|TAMPERED|STATUS|PERSIST_FAILED|COMMAND_MISMATCH)|SAST_EVIDENCE_STATUS|PROVIDER_LANE_REFERENCE_REQUIRED|PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED|(?:CONTRACT|INTEGRATION|BROWSER|VISUAL)_PROVIDER_UNAVAILABLE)/;
 
 function providerLaneBlockerFromMessage(message: string): string | undefined {
   return message.match(providerLaneBlockerPattern)?.[1];

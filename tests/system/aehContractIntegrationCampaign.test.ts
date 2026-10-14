@@ -7,6 +7,7 @@ import { computeWorktreeDigest } from "../../src/core/git.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import { runCapabilityValidator } from "../../src/providers/validation/registry.js";
 import { runConfiguredValidators } from "../../src/validators/registry.js";
+import { sha256Utf8 } from "../../src/core/digest.js";
 import { requireProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
 
 const root = path.resolve(process.cwd());
@@ -94,7 +95,10 @@ describe("real contract and integration validation campaign", () => {
     const check = checks.find((item) => item.id === "openapi-compat");
     expect(check, JSON.stringify(checks)).toBeDefined();
     expect(check!.status).toBe("PASS");
-    const evidence = await requireProviderLaneEvidenceV1(directory, configured, "CONTRACT", candidate, "openapi-compat");
+    // Command binding: the expected digest is the exact comparison string the
+    // openapi validator persists (openapi.ts: `openapi compare <baseline> <current>`
+    // verbatim from the spec options), not the loaded evidence's own digest.
+    const evidence = await requireProviderLaneEvidenceV1(directory, configured, "CONTRACT", candidate, "openapi-compat", sha256Utf8("openapi compare contracts/before.yaml contracts/after.yaml"));
     expect(evidence.status).toBe("PASS");
     expect(evidence.lane).toBe("CONTRACT");
     expect(evidence.provider.name).toBe("openapi");
@@ -110,7 +114,9 @@ describe("real contract and integration validation campaign", () => {
     const spec: ValidatorSpec = { id: "bdd-real", adapter: "bdd", required: true, command: `node ${path.join(root, "tests/fixtures/bdd/node-runner.mjs")}`, options: { provider: "node-bdd-fixture" } };
     const check = await runCapabilityValidator({ root: directory, config, contract, spec, capability: "bdd", rawArtifactDirectory: ".harness/evidence/raw", baseRef: "HEAD", candidate }, spec.id, "bdd", true);
     expect(check.status).toBe("PASS");
-    const evidence = await requireProviderLaneEvidenceV1(directory, config, "CONTRACT", candidate, "bdd-real");
+    // Command binding: rendered BDD command is spec.command verbatim (no
+    // {taskId}/{baseRef}/{acceptance} tokens), as detected via explicit config.
+    const evidence = await requireProviderLaneEvidenceV1(directory, config, "CONTRACT", candidate, "bdd-real", sha256Utf8(spec.command!));
     expect(evidence.status).toBe("PASS");
     expect(evidence.findings).toEqual([]);
     expect(evidence.commandDigest).toMatch(/^[a-f0-9]{64}$/);
@@ -138,7 +144,9 @@ describe("real contract and integration validation campaign", () => {
     expect(check.status, JSON.stringify(check.details)).toBe("PASS");
     const result = check.details?.result as { lifecycle: Record<string, boolean> };
     expect(result.lifecycle).toMatchObject({ provisioned: true, ready: true, tested: true, cleaned: true });
-    const evidence = await requireProviderLaneEvidenceV1(directory, config, "INTEGRATION", candidate, "integration-lifecycle");
+    // Command binding: the lifecycle plan command is the provision command
+    // (detection returns options.provisionCommand as the plan command).
+    const evidence = await requireProviderLaneEvidenceV1(directory, config, "INTEGRATION", candidate, "integration-lifecycle", sha256Utf8(spec.options?.provisionCommand as string));
     expect(evidence.status).toBe("PASS");
     expect(evidence.lane).toBe("INTEGRATION");
     const cleaned = JSON.parse(await fs.readFile(path.join(directory, ".harness", "integration", "cleaned.json"), "utf8")) as { pid: number; terminated: boolean };

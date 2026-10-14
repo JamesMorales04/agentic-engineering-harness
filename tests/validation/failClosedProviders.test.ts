@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessProjectConfig, TaskContract } from "../../src/core/types.js";
 import { computeWorktreeDigest } from "../../src/core/git.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
-import { requireProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
+import { loadProviderLaneEvidenceV1, requireProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
 import { runConfiguredValidators } from "../../src/validators/registry.js";
 
 const roots: string[] = [];
@@ -200,7 +200,8 @@ describe("specialized validation capabilities fail closed instead of falling thr
     expect(check!.status, JSON.stringify(check)).toBe("PASS");
     await expect(fs.access(path.join(root, ".harness", "configured-bdd", "ran.txt"))).resolves.toBeUndefined();
     await expect(fs.access(path.join(root, ".harness", "package-bdd", "ran.txt"))).rejects.toThrow();
-    const evidence = await requireProviderLaneEvidenceV1(root, configured, "CONTRACT", candidate, "capability:bdd");
+    const bddLoaded = await loadProviderLaneEvidenceV1(root, configured, "CONTRACT", candidate, "capability:bdd");
+    const evidence = await requireProviderLaneEvidenceV1(root, configured, "CONTRACT", candidate, "capability:bdd", bddLoaded!.commandDigest);
     expect(evidence.status).toBe("PASS");
     expect(evidence.provider.name).toBe("configured-bdd-fixture");
   });
@@ -227,5 +228,70 @@ describe("specialized validation capabilities fail closed instead of falling thr
     const check = checks.find((item) => item.id === "optional-pact");
     expect(check!.status).toBe("SKIP");
     expect(check!.details?.blocker).toBe("CONTRACT_PROVIDER_UNAVAILABLE");
+  });
+
+  it("executes a declared command capability through its configured command spec", async () => {
+    const root = await fixture();
+    await fs.writeFile(path.join(root, "hello.mjs"), "console.log('hello');\n");
+    const configured: HarnessProjectConfig = {
+      ...config,
+      validation: { validators: [{ id: "greet", adapter: "command", command: "node hello.mjs", required: true }] }
+    };
+    const contract: TaskContract = { version: 1, task: { id: "FC-CMD-1", title: "command" }, verification: { capabilities: ["command"] } };
+    const checks = await runConfiguredValidators(root, configured, contract, "HEAD", []);
+    // The declared capability is satisfied by the existing command spec, so no
+    // synthetic capability check is produced; the spec itself executes.
+    expect(checks.some((item) => item.id === "capability:command")).toBe(false);
+    const check = checks.find((item) => item.id === "greet");
+    expect(check, JSON.stringify(checks)).toBeDefined();
+    expect(check!.status).toBe("PASS");
+  });
+
+  it("fails a declared command capability closed when no command spec exists", async () => {
+    const root = await fixture();
+    const { providerSpecFor } = await import("../../src/providers/validation/registry.js");
+    expect(providerSpecFor(config, "command")).toBeUndefined();
+    const contract: TaskContract = { version: 1, task: { id: "FC-CMD-2", title: "command-missing" }, verification: { capabilities: ["command"] } };
+    const checks = await runConfiguredValidators(root, config, contract, "HEAD", []);
+    const check = checks.find((item) => item.id === "capability:command");
+    expect(check, JSON.stringify(checks)).toBeDefined();
+    expect(check!.status).toBe("FAIL");
+  });
+
+  it("rejects declared architecture/policy capabilities at authoring with the allowed vocabulary", async () => {
+    const { assertResolvableDeclaredCapabilities, RESOLVABLE_DECLARED_CAPABILITIES } = await import("../../src/providers/validation/registry.js");
+    expect(RESOLVABLE_DECLARED_CAPABILITIES).toContain("command");
+    expect(RESOLVABLE_DECLARED_CAPABILITIES).not.toContain("architecture");
+    expect(RESOLVABLE_DECLARED_CAPABILITIES).not.toContain("policy");
+    for (const capability of ["architecture", "policy"] as const) {
+      const contract: TaskContract = { version: 1, task: { id: `FC-AUTH-${capability}`, title: capability }, verification: { capabilities: [capability] } };
+      expect(() => assertResolvableDeclaredCapabilities(contract)).toThrow(/UNSUPPORTED_DECLARED_CAPABILITY/);
+      try {
+        assertResolvableDeclaredCapabilities(contract);
+      } catch (error) {
+        const message = String(error);
+        for (const allowed of RESOLVABLE_DECLARED_CAPABILITIES) expect(message).toContain(`'${allowed}'`);
+      }
+    }
+    const { resolveValidationRequirements } = await import("../../src/architecture/validationRequirements.js");
+    const root = await fixture();
+    const requirement = { version: 1 as const, id: "REQ-CMD", property: "command must run", kind: "command" as const, scope: ["**"], evidenceNeeded: ["command evidence"], requirementRefs: [], acceptanceRefs: [] };
+    await expect(resolveValidationRequirements({
+      root,
+      requirements: [requirement],
+      config,
+      contract: { version: 1, task: { id: "FC-AUTH-POLICY", title: "policy" }, verification: { capabilities: ["policy"] } }
+    })).rejects.toThrow(/UNSUPPORTED_DECLARED_CAPABILITY/);
+    // Kinds remain separate: kind:architecture still resolves via check:architecture.
+    const architectureRequirement = { version: 1 as const, id: "REQ-ARCH", property: "architecture must hold", kind: "architecture" as const, scope: ["**"], evidenceNeeded: ["architecture evidence"], requirementRefs: [], acceptanceRefs: [] };
+    const architectureConfig: HarnessProjectConfig = { ...config, validation: { commands: [{ id: "architecture", command: "node scripts/architecture.mjs", required: true }] } };
+    const resolution = await resolveValidationRequirements({
+      root,
+      requirements: [architectureRequirement],
+      config: architectureConfig,
+      contract: { version: 1, task: { id: "FC-AUTH-OK", title: "ok" } }
+    });
+    expect(resolution.blocked).toEqual([]);
+    expect(resolution.actions).toMatchObject([{ requirementId: "REQ-ARCH", kind: "architecture" }]);
   });
 });

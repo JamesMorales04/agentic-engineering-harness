@@ -6,6 +6,7 @@ import type { HarnessProjectConfig } from "../../src/core/types.js";
 import { computeWorktreeDigest } from "../../src/core/git.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import {
+  PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH,
   PROVIDER_LANE_EVIDENCE_REQUIRED,
   PROVIDER_LANE_EVIDENCE_STALE,
   PROVIDER_LANE_EVIDENCE_TAMPERED,
@@ -17,6 +18,7 @@ import {
   requireProviderLaneEvidenceV1,
   verifyProviderLaneEvidenceV1
 } from "../../src/validation/laneEvidence.js";
+import { sha256Utf8 } from "../../src/core/digest.js";
 
 const config: HarnessProjectConfig = { version: 1, project: { name: "lane-fixtures" }, evidence: { outputDir: ".harness/evidence" } };
 const roots: string[] = [];
@@ -65,8 +67,8 @@ describe("candidate-bound provider lane evidence", () => {
       expect(evidence.artifacts.some((artifact) => artifact.kind === "screenshot")).toBe(true);
       const loaded = await loadProviderLaneEvidenceV1(root, config, lane, candidate, `${lane.toLowerCase()}-check`);
       expect(loaded?.digest).toBe(evidence.digest);
-      expect((await verifyProviderLaneEvidenceV1(root, config, loaded!, candidate)).ok).toBe(true);
-      expect((await requireProviderLaneEvidenceV1(root, config, lane, candidate, `${lane.toLowerCase()}-check`)).digest).toBe(evidence.digest);
+      expect((await verifyProviderLaneEvidenceV1(root, config, loaded!, candidate, sha256Utf8(`playwright test --grep ${lane}`))).ok).toBe(true);
+      expect((await requireProviderLaneEvidenceV1(root, config, lane, candidate, `${lane.toLowerCase()}-check`, sha256Utf8(`playwright test --grep ${lane}`))).digest).toBe(evidence.digest);
     }
   });
 
@@ -82,10 +84,10 @@ describe("candidate-bound provider lane evidence", () => {
       artifacts: [{ kind: "screenshot", path: screenshot }],
       startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
     });
-    const bareVerification = await verifyProviderLaneEvidenceV1(root, config, bare, candidate);
+    const bareVerification = await verifyProviderLaneEvidenceV1(root, config, bare, candidate, sha256Utf8("visual"));
     expect(bareVerification.ok).toBe(false);
     expect(bareVerification.blockers.every((blocker) => blocker.includes(PROVIDER_LANE_REFERENCE_REQUIRED))).toBe(true);
-    await expect(requireProviderLaneEvidenceV1(root, config, "VISUAL", candidate, "visual-bare")).rejects.toThrow(PROVIDER_LANE_REFERENCE_REQUIRED);
+    await expect(requireProviderLaneEvidenceV1(root, config, "VISUAL", candidate, "visual-bare", sha256Utf8("visual"))).rejects.toThrow(PROVIDER_LANE_REFERENCE_REQUIRED);
     const baseline = path.join(root, ".harness", "inputs", "baseline.png");
     await fs.writeFile(baseline, "baseline");
     const bound = await persistProviderLaneEvidenceV1({
@@ -96,9 +98,9 @@ describe("candidate-bound provider lane evidence", () => {
       comparison: { tool: "playwright-toHaveScreenshot", name: "shot.png", options: { maxDiffPixelRatio: 0.05 } },
       startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
     });
-    expect((await verifyProviderLaneEvidenceV1(root, config, bound, candidate)).ok).toBe(true);
+    expect((await verifyProviderLaneEvidenceV1(root, config, bound, candidate, sha256Utf8("visual"))).ok).toBe(true);
     await fs.writeFile(baseline, "baseline-tampered");
-    const tampered = await verifyProviderLaneEvidenceV1(root, config, bound, candidate);
+    const tampered = await verifyProviderLaneEvidenceV1(root, config, bound, candidate, sha256Utf8("visual"));
     expect(tampered.ok).toBe(false);
     expect(tampered.blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_TAMPERED))).toBe(true);
   });
@@ -107,7 +109,8 @@ describe("candidate-bound provider lane evidence", () => {
     const { root, candidate } = await fixture();
     await expect(requireProviderLaneEvidenceForActionV1({
       root, config, lane: "BROWSER", candidate, checkId: "command.candidate-impact-browser",
-      kind: "browser-test", actionSource: "project-script", actionSelector: "e2e"
+      kind: "browser-test", actionSource: "project-script", actionSelector: "e2e",
+      expectedCommandDigest: sha256Utf8("playwright test")
     })).rejects.toThrow(PROVIDER_LANE_EVIDENCE_REQUIRED);
     const screenshot = path.join(root, ".harness", "inputs", "shot.png");
     await fs.mkdir(path.dirname(screenshot), { recursive: true });
@@ -121,7 +124,8 @@ describe("candidate-bound provider lane evidence", () => {
     });
     await expect(requireProviderLaneEvidenceForActionV1({
       root, config, lane: "BROWSER", candidate, checkId: "command.candidate-impact-browser",
-      kind: "browser-test", actionSource: "project-script", actionSelector: "e2e"
+      kind: "browser-test", actionSource: "project-script", actionSelector: "e2e",
+      expectedCommandDigest: sha256Utf8("playwright test")
     })).resolves.toMatchObject({ lane: "BROWSER", status: "PASS" });
   });
 
@@ -134,8 +138,8 @@ describe("candidate-bound provider lane evidence", () => {
       startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
     });
     expect(await loadProviderLaneEvidenceV1(root, config, "VISUAL", candidate, "journey")).toBeUndefined();
-    await expect(requireProviderLaneEvidenceV1(root, config, "VISUAL", candidate, "journey")).rejects.toThrow(PROVIDER_LANE_EVIDENCE_REQUIRED);
-    await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "missing-check")).rejects.toThrow(PROVIDER_LANE_EVIDENCE_REQUIRED);
+    await expect(requireProviderLaneEvidenceV1(root, config, "VISUAL", candidate, "journey", sha256Utf8("playwright test"))).rejects.toThrow(PROVIDER_LANE_EVIDENCE_REQUIRED);
+    await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "missing-check", sha256Utf8("playwright test"))).rejects.toThrow(PROVIDER_LANE_EVIDENCE_REQUIRED);
   });
 
   it("blocks evidence for a different candidate as stale", async () => {
@@ -147,7 +151,7 @@ describe("candidate-bound provider lane evidence", () => {
       startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
     });
     const other = createCandidateRevisionV1({ operationId: "OP-LANE", candidateId: "CAND-LANE", revision: 2, sourceDigest: candidate.sourceDigest });
-    const verified = await verifyProviderLaneEvidenceV1(root, config, evidence, other);
+    const verified = await verifyProviderLaneEvidenceV1(root, config, evidence, other, sha256Utf8("compare"));
     expect(verified.ok).toBe(false);
     expect(verified.blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_STALE))).toBe(true);
   });
@@ -171,13 +175,13 @@ describe("candidate-bound provider lane evidence", () => {
     const tampered = { ...evidence, status: "FAIL" } as Record<string, unknown>;
     await fs.writeFile(artifactPath, JSON.stringify(tampered));
     const loaded = await loadProviderLaneEvidenceV1(root, config, "VISUAL", candidate, "visual");
-    expect((await verifyProviderLaneEvidenceV1(root, config, loaded!, candidate)).blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_TAMPERED))).toBe(true);
+    expect((await verifyProviderLaneEvidenceV1(root, config, loaded!, candidate, sha256Utf8("visual"))).blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_TAMPERED))).toBe(true);
     await fs.writeFile(artifactPath, JSON.stringify(evidence));
     await fs.appendFile(path.join(root, evidence.rawArtifact), "tampered");
-    expect((await verifyProviderLaneEvidenceV1(root, config, evidence, candidate)).blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_TAMPERED))).toBe(true);
+    expect((await verifyProviderLaneEvidenceV1(root, config, evidence, candidate, sha256Utf8("visual"))).blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_TAMPERED))).toBe(true);
     await fs.writeFile(path.join(root, evidence.rawArtifact), "{\"ok\":true}");
     await fs.rm(screenshot);
-    expect((await verifyProviderLaneEvidenceV1(root, config, evidence, candidate)).blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_TAMPERED))).toBe(true);
+    expect((await verifyProviderLaneEvidenceV1(root, config, evidence, candidate, sha256Utf8("visual"))).blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_TAMPERED))).toBe(true);
   });
 
   it("verify stays integrity-only: non-PASS evidence status still verifies when binding is valid", async () => {
@@ -193,16 +197,93 @@ describe("candidate-bound provider lane evidence", () => {
         status, summary: `browser ${status.toLowerCase()}`, findings: [], rawArtifactText: "{}",
         startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
       });
-      const verification = await verifyProviderLaneEvidenceV1(root, config, evidence, candidate);
+      const verification = await verifyProviderLaneEvidenceV1(root, config, evidence, candidate, sha256Utf8("playwright test"));
       expect(verification.blockers).toEqual([]);
       expect(verification.ok).toBe(true);
-      await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "status-check")).resolves.toMatchObject({
+      await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "status-check", sha256Utf8("playwright test"))).resolves.toMatchObject({
         status,
       });
       await expect(requireProviderLaneEvidenceForActionV1({
         root, config, lane: "BROWSER", candidate, checkId: "status-check",
-        kind: "browser-test", actionSource: "approved-provider", actionSelector: "shared-browser"
+        kind: "browser-test", actionSource: "approved-provider", actionSelector: "shared-browser",
+        expectedCommandDigest: sha256Utf8("playwright test")
       })).resolves.toMatchObject({ status });
+    }
+  });
+
+  it("binds evidence to the executed command: substitution, tampered digest, and missing digest fail closed", async () => {
+    // Happy path: matching digest passes.
+    {
+      const { root, candidate } = await fixture();
+      const evidence = await persistProviderLaneEvidenceV1({
+        root, config, lane: "BROWSER", checkId: "binding-happy", candidate,
+        provider: { name: "playwright", version: "1.62.1" }, command: "playwright test --grep real", status: "PASS",
+        summary: "browser passed", findings: [], rawArtifactText: "{}",
+        startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
+      });
+      expect((await verifyProviderLaneEvidenceV1(root, config, evidence, candidate, sha256Utf8("playwright test --grep real"))).ok).toBe(true);
+      await expect(requireProviderLaneEvidenceForActionV1({
+        root, config, lane: "BROWSER", candidate, checkId: "binding-happy",
+        kind: "browser-test", actionSource: "approved-provider", actionSelector: "real-provider",
+        expectedCommandDigest: sha256Utf8("playwright test --grep real")
+      })).resolves.toMatchObject({ lane: "BROWSER" });
+    }
+    // Substitution: evidence minted for trivial command A consumed for action B fails.
+    {
+      const { root, candidate } = await fixture();
+      await persistProviderLaneEvidenceV1({
+        root, config, lane: "BROWSER", checkId: "binding-sub", candidate,
+        provider: { name: "playwright", version: "1.62.1" }, command: "echo trivial", status: "PASS",
+        summary: "trivial passed", findings: [], rawArtifactText: "{}",
+        startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
+      });
+      const loaded = await loadProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "binding-sub");
+      const verification = await verifyProviderLaneEvidenceV1(root, config, loaded!, candidate, sha256Utf8("playwright test --grep real-action"));
+      expect(verification.ok).toBe(false);
+      expect(verification.blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH))).toBe(true);
+      await expect(requireProviderLaneEvidenceForActionV1({
+        root, config, lane: "BROWSER", candidate, checkId: "binding-sub",
+        kind: "browser-test", actionSource: "approved-provider", actionSelector: "real-provider",
+        expectedCommandDigest: sha256Utf8("playwright test --grep real-action")
+      })).rejects.toThrow(PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH);
+    }
+    // Tampered commandDigest file fails closed.
+    {
+      const { root, candidate } = await fixture();
+      const evidence = await persistProviderLaneEvidenceV1({
+        root, config, lane: "BROWSER", checkId: "binding-tamper", candidate,
+        provider: { name: "playwright", version: "1.62.1" }, command: "playwright test", status: "PASS",
+        summary: "browser passed", findings: [], rawArtifactText: "{}",
+        startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
+      });
+      const artifactPath = providerLaneEvidenceArtifactPath(root, config, "BROWSER", candidate, "binding-tamper");
+      const tampered = { ...evidence, commandDigest: sha256Utf8("echo forged") };
+      await fs.writeFile(artifactPath, JSON.stringify({ ...tampered, digest: evidence.digest }));
+      const loaded = await loadProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "binding-tamper");
+      // Digest mismatch is reported first (tamper), but a forged digest that
+      // collides would still fail the command binding below; assert at least
+      // one fail-closed blocker is present.
+      const verification = await verifyProviderLaneEvidenceV1(root, config, loaded!, candidate, sha256Utf8("playwright test"));
+      expect(verification.ok).toBe(false);
+      expect(verification.blockers.length).toBeGreaterThan(0);
+    }
+    // Missing expected digest at call site fails closed (no undefined default).
+    {
+      const { root, candidate } = await fixture();
+      const evidence = await persistProviderLaneEvidenceV1({
+        root, config, lane: "BROWSER", checkId: "binding-missing", candidate,
+        provider: { name: "playwright", version: "1.62.1" }, command: "playwright test", status: "PASS",
+        summary: "browser passed", findings: [], rawArtifactText: "{}",
+        startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
+      });
+      const verification = await verifyProviderLaneEvidenceV1(root, config, evidence, candidate, undefined as unknown as string);
+      expect(verification.ok).toBe(false);
+      expect(verification.blockers.some((blocker) => blocker.includes(PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH))).toBe(true);
+      await expect(requireProviderLaneEvidenceForActionV1({
+        root, config, lane: "BROWSER", candidate, checkId: "binding-missing",
+        kind: "browser-test", actionSource: "approved-provider", actionSelector: "real-provider",
+        expectedCommandDigest: undefined as unknown as string
+      })).rejects.toThrow(PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH);
     }
   });
 

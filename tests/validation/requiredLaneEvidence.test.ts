@@ -4,12 +4,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../../src/core/types.js";
 import { computeWorktreeDigest } from "../../src/core/git.js";
-import { sha256Canonical } from "../../src/core/digest.js";
+import { sha256Canonical, sha256Utf8 } from "../../src/core/digest.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
 import type { CandidateImpactV1 } from "../../src/candidates/assembler.js";
 import { candidateImpactValidationRequirementsV1, compileCandidateAssuranceV1 } from "../../src/architecture/candidateAssurance.js";
 import { contractValidationRequirementsV1, resolveValidationRequirements, validationRequirementKindValues } from "../../src/architecture/validationRequirements.js";
-import { requireProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
+import { loadProviderLaneEvidenceV1, requireProviderLaneEvidenceV1 } from "../../src/validation/laneEvidence.js";
 import { runCandidateImpactValidations } from "../../src/core/run.js";
 import { runConfiguredValidators } from "../../src/validators/registry.js";
 import { loadProjectConfig } from "../../src/core/config.js";
@@ -135,7 +135,7 @@ describe("required specialized lanes are satisfied only by matching provider exe
       expect(check!.message).toContain("PROVIDER_LANE_EVIDENCE_REQUIRED");
       await expect(fs.access(path.join(root, "project-script-ran.txt"))).resolves.toBeUndefined();
       const lane = label === "browser" ? "BROWSER" : label === "visual" ? "VISUAL" : label === "contract" ? "CONTRACT" : "INTEGRATION";
-      await expect(requireProviderLaneEvidenceV1(root, config, lane, candidate, `command.candidate-impact-impact-review-${slug}`)).rejects.toThrow("PROVIDER_LANE_EVIDENCE_REQUIRED");
+      await expect(requireProviderLaneEvidenceV1(root, config, lane, candidate, `command.candidate-impact-impact-review-${slug}`, sha256Utf8("missing-command"))).rejects.toThrow("PROVIDER_LANE_EVIDENCE_REQUIRED");
     });
   }
 
@@ -147,7 +147,8 @@ describe("required specialized lanes are satisfied only by matching provider exe
     const check = checks.find((item) => item.id === "candidate.assurance.validation.impact-review-ui-browser");
     expect(check, JSON.stringify(checks)).toBeDefined();
     expect(check!.status, JSON.stringify(check)).toBe("PASS");
-    const evidence = await requireProviderLaneEvidenceV1(root, configured, "BROWSER", candidate, `candidate-impact-impact-review-ui-browser`);
+    const browserLoaded = await loadProviderLaneEvidenceV1(root, configured, "BROWSER", candidate, `candidate-impact-impact-review-ui-browser`);
+    const evidence = await requireProviderLaneEvidenceV1(root, configured, "BROWSER", candidate, `candidate-impact-impact-review-ui-browser`, browserLoaded!.commandDigest);
     expect(evidence.provider.name).toBe("playwright");
     expect(evidence.artifacts.some((artifact) => artifact.kind === "screenshot")).toBe(true);
   });
@@ -165,13 +166,14 @@ describe("required specialized lanes are satisfied only by matching provider exe
     const check = checks.find((item) => item.id === "candidate.assurance.validation.impact-review-ui-visual");
     expect(check, JSON.stringify(checks)).toBeDefined();
     expect(check!.status, JSON.stringify(check)).toBe("PASS");
-    const evidence = await requireProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "candidate-impact-impact-review-ui-visual");
+    const visualLoaded = await loadProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "candidate-impact-impact-review-ui-visual");
+    const evidence = await requireProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "candidate-impact-impact-review-ui-visual", visualLoaded!.commandDigest);
     expect(evidence.comparison?.tool).toBe("playwright-toHaveScreenshot");
     expect(evidence.artifacts.some((artifact) => artifact.kind === "baseline")).toBe(true);
     expect(evidence.candidate).toMatchObject({ candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest });
     expect(JSON.parse(await fs.readFile(path.join(root, ".harness/evidence/provider-candidate.json"), "utf8"))).toMatchObject(candidate);
     const otherCandidate = createCandidateRevisionV1({ operationId: candidate.operationId, candidateId: "CAND-S11-OTHER", revision: candidate.revision, sourceDigest: candidate.sourceDigest });
-    await expect(requireProviderLaneEvidenceV1(root, configured, "VISUAL", otherCandidate, "candidate-impact-impact-review-ui-visual")).rejects.toThrow("PROVIDER_LANE_EVIDENCE_REQUIRED");
+    await expect(requireProviderLaneEvidenceV1(root, configured, "VISUAL", otherCandidate, "candidate-impact-impact-review-ui-visual", visualLoaded!.commandDigest)).rejects.toThrow("PROVIDER_LANE_EVIDENCE_REQUIRED");
   });
 
   it("binds a provider capability trace to the exact frozen requirement through candidate assurance", async () => {
@@ -269,7 +271,8 @@ describe("required specialized lanes are satisfied only by matching provider exe
     expect(generated).toHaveLength(1);
     expect(generated[0]!.id).toBe("capability:visual-test");
     expect(generated[0]!.status, JSON.stringify(generated[0])).toBe("PASS");
-    const evidence = await requireProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "capability:visual-test");
+    const generatedLoaded = await loadProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "capability:visual-test");
+    const evidence = await requireProviderLaneEvidenceV1(root, configured, "VISUAL", candidate, "capability:visual-test", generatedLoaded!.commandDigest);
     expect(evidence.comparison?.tool).toBe("playwright-toHaveScreenshot");
     expect(evidence.candidate).toMatchObject({ candidateId: candidate.candidateId, identityDigest: candidate.identityDigest });
     expect(JSON.parse(await fs.readFile(path.join(root, ".harness/evidence/provider-candidate.json"), "utf8"))).toMatchObject(candidate);
@@ -285,7 +288,8 @@ describe("required specialized lanes are satisfied only by matching provider exe
     const check = checks.find((item) => item.id === "candidate.assurance.validation.impact-review-public-api");
     expect(check, JSON.stringify(checks)).toBeDefined();
     expect(check!.status, JSON.stringify(check)).toBe("PASS");
-    const evidence = await requireProviderLaneEvidenceV1(root, configured, "CONTRACT", candidate, "openapi-compat");
+    const openapiLoaded = await loadProviderLaneEvidenceV1(root, configured, "CONTRACT", candidate, "openapi-compat");
+    const evidence = await requireProviderLaneEvidenceV1(root, configured, "CONTRACT", candidate, "openapi-compat", openapiLoaded!.commandDigest);
     expect(evidence.provider.name).toBe("openapi");
   });
 
@@ -315,7 +319,8 @@ describe("required specialized lanes are satisfied only by matching provider exe
     const check = checks.find((item) => item.id === "candidate.assurance.validation.impact-review-operations");
     expect(check, JSON.stringify(checks)).toBeDefined();
     expect(check!.status, JSON.stringify(check)).toBe("PASS");
-    const evidence = await requireProviderLaneEvidenceV1(root, configured, "INTEGRATION", candidate, "integration-lifecycle");
+    const integrationLoaded = await loadProviderLaneEvidenceV1(root, configured, "INTEGRATION", candidate, "integration-lifecycle");
+    const evidence = await requireProviderLaneEvidenceV1(root, configured, "INTEGRATION", candidate, "integration-lifecycle", integrationLoaded!.commandDigest);
     expect(evidence.status).toBe("PASS");
   });
 });

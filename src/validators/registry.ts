@@ -59,6 +59,7 @@ function capabilityForAdapter(adapter: string): string | undefined {
   if (["visual", "visual-test"].includes(adapter)) return "visual-test";
   if (adapter === "opengrep") return "static-security";
   if (adapter === "trivy") return "dependency-security";
+  if (adapter === "command") return "command";
   return undefined;
 }
 function capabilityAdapter(capability: string): string | undefined {
@@ -70,7 +71,8 @@ function capabilityAdapter(capability: string): string | undefined {
     "browser-test": "playwright",
     "visual-test": "visual",
     "static-security": "opengrep",
-    "dependency-security": "trivy"
+    "dependency-security": "trivy",
+    "command": "command"
   };
   return mapping[capability];
 }

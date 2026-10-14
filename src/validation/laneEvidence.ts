@@ -12,11 +12,12 @@ export const PROVIDER_LANE_EVIDENCE_STALE = "PROVIDER_LANE_EVIDENCE_STALE" as co
 export const PROVIDER_LANE_EVIDENCE_TAMPERED = "PROVIDER_LANE_EVIDENCE_TAMPERED" as const;
 // FAIL-only tolerance scope marker for the run.ts partial-green path: a
 // non-passing bundle's mapped PASS is corroborated only by FAIL-status lane
-// evidence. This constant is intentionally NOT enforced by
-// verifyProviderLaneEvidenceV1 (integrity-only, so a FAIL bundle's honestly
+// evidence. This constant is intentionally NOT enforced by the lane verify
+// function (integrity-only, so a FAIL bundle's honestly
 // recorded FAIL evidence still verifies); run.ts applies the status check.
 // Do not re-add a status gate to verify() — that would break partial-green.
 export const PROVIDER_LANE_EVIDENCE_STATUS = "PROVIDER_LANE_EVIDENCE_STATUS" as const;
+export const PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH = "PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH" as const;
 export const PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED = "PROVIDER_LANE_CANDIDATE_BINDING_REQUIRED" as const;
 export const PROVIDER_LANE_REFERENCE_REQUIRED = "PROVIDER_LANE_REFERENCE_REQUIRED" as const;
 export const VISUAL_REFERENCE_BASELINE_REQUIRED = "VISUAL_REFERENCE_BASELINE_REQUIRED" as const;
@@ -253,10 +254,15 @@ export interface ProviderLaneEvidenceVerificationV1 {
   evidence?: ProviderLaneEvidenceV1;
 }
 
-export async function verifyProviderLaneEvidenceV1(root: string, config: HarnessProjectConfig, evidence: ProviderLaneEvidenceV1, expected: CandidateRevisionV1): Promise<ProviderLaneEvidenceVerificationV1> {
+export async function verifyProviderLaneEvidenceV1(root: string, config: HarnessProjectConfig, evidence: ProviderLaneEvidenceV1, expected: CandidateRevisionV1, expectedCommandDigest: string): Promise<ProviderLaneEvidenceVerificationV1> {
   const blockers: string[] = [];
   const { digest, ...payload } = evidence as ProviderLaneEvidenceV1 & Record<string, unknown>;
   if (sha256Canonical(payload) !== digest) blockers.push(`${PROVIDER_LANE_EVIDENCE_TAMPERED}: evidence digest does not match its content.`);
+  if (typeof expectedCommandDigest !== "string" || !/^[a-f0-9]{64}$/.test(expectedCommandDigest)) {
+    blockers.push(`${PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH}: expected executed-command digest is absent or malformed; lane binding requires the digest of the actually-executed rendered command.`);
+  } else if (evidence.commandDigest !== expectedCommandDigest) {
+    blockers.push(`${PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH}: ${evidence.lane} evidence for '${evidence.checkId}' binds commandDigest '${evidence.commandDigest}' but the executed action rendered a different command (expected digest '${expectedCommandDigest}').`);
+  }
   if (evidence.candidate.candidateId !== expected.candidateId || evidence.candidate.revision !== expected.revision || evidence.candidate.identityDigest !== expected.identityDigest) {
     blockers.push(`${PROVIDER_LANE_EVIDENCE_STALE}: ${evidence.lane} evidence is bound to ${evidence.candidate.candidateId} r${evidence.candidate.revision} (${evidence.candidate.identityDigest.slice(0, 12)}) but the current candidate is ${expected.candidateId} r${expected.revision} (${expected.identityDigest.slice(0, 12)}).`);
   }
@@ -278,10 +284,10 @@ export async function verifyProviderLaneEvidenceV1(root: string, config: Harness
   return blockers.length ? { ok: false, blockers: [...new Set(blockers)].sort() } : { ok: true, blockers: [], evidence };
 }
 
-export async function requireProviderLaneEvidenceV1(root: string, config: HarnessProjectConfig, lane: ProviderEvidenceLaneV1, candidate: CandidateRevisionV1, checkId: string): Promise<ProviderLaneEvidenceV1> {
+export async function requireProviderLaneEvidenceV1(root: string, config: HarnessProjectConfig, lane: ProviderEvidenceLaneV1, candidate: CandidateRevisionV1, checkId: string, expectedCommandDigest: string): Promise<ProviderLaneEvidenceV1> {
   const evidence = await loadProviderLaneEvidenceV1(root, config, lane, candidate, checkId);
   if (!evidence) throw new Error(`${PROVIDER_LANE_EVIDENCE_REQUIRED}: required candidate-bound ${lane} evidence '${checkId}' is absent for ${candidate.candidateId} r${candidate.revision}.`);
-  const verification = await verifyProviderLaneEvidenceV1(root, config, evidence, candidate);
+  const verification = await verifyProviderLaneEvidenceV1(root, config, evidence, candidate, expectedCommandDigest);
   if (!verification.ok) throw new Error(verification.blockers.join("; "));
   return evidence;
 }
@@ -295,6 +301,7 @@ export interface RequireProviderLaneEvidenceForActionInputV1 {
   kind: string;
   actionSource: string;
   actionSelector: string;
+  expectedCommandDigest: string;
 }
 
 /**
@@ -309,7 +316,7 @@ export async function requireProviderLaneEvidenceForActionV1(input: RequireProvi
   if (!evidence) {
     throw new Error(`${PROVIDER_LANE_EVIDENCE_REQUIRED}: required ${input.lane} evidence for '${input.checkId}' is absent; requirement kind '${input.kind}' must be satisfied by the matching ${input.lane} provider/adapter execution, but action '${input.actionSource}:${input.actionSelector}' did not produce candidate-bound provider evidence.`);
   }
-  const verification = await verifyProviderLaneEvidenceV1(input.root, input.config, evidence, input.candidate);
+  const verification = await verifyProviderLaneEvidenceV1(input.root, input.config, evidence, input.candidate, input.expectedCommandDigest);
   if (!verification.ok) throw new Error(verification.blockers.join("; "));
   return evidence;
 }

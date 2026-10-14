@@ -779,7 +779,7 @@ describe("project public-api contract validator", () => {
     expect(evidence!.artifact).toBe(laneEvidence?.artifact);
     expect(evidence!.commandDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(evidence!.rawArtifactDigest).toMatch(/^[a-f0-9]{64}$/);
-    const verification = await verifyProviderLaneEvidenceV1(root, config, evidence!, candidate);
+    const verification = await verifyProviderLaneEvidenceV1(root, config, evidence!, candidate, evidence!.commandDigest);
     expect(verification.ok).toBe(true);
   });
 });
@@ -870,13 +870,14 @@ process.stdout.write(JSON.stringify(report));
     } as Parameters<typeof runCandidateImpactValidations>[0]["report"];
     const checks = await runCandidateImpactValidations({ root, config, contract, report, impact, compilation, resolution });
     expect(checks).toMatchObject([{ id: "candidate.assurance.validation.impact-review-ui-browser", status: "PASS" }]);
-    const evidence = await requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "candidate-impact-impact-review-ui-browser");
+    const browserLoaded = await loadProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "candidate-impact-impact-review-ui-browser");
+    const evidence = await requireProviderLaneEvidenceV1(root, config, "BROWSER", candidate, "candidate-impact-impact-review-ui-browser", browserLoaded!.commandDigest);
     expect(evidence.provider.name).toBe("playwright");
     expect(evidence.artifacts.some((artifact) => artifact.kind === "screenshot")).toBe(true);
     expect(evidence.candidate).toMatchObject({ candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest });
     expect(JSON.parse(await fs.readFile(path.join(root, ".harness/evidence/provider-candidate.json"), "utf8"))).toMatchObject(candidate);
     const otherCandidate = createCandidateRevisionV1({ operationId: candidate.operationId, candidateId: "CAND-S9-OTHER", revision: candidate.revision, sourceDigest: candidate.sourceDigest });
-    await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", otherCandidate, "candidate-impact-impact-review-ui-browser")).rejects.toThrow("PROVIDER_LANE_EVIDENCE_REQUIRED");
+    await expect(requireProviderLaneEvidenceV1(root, config, "BROWSER", otherCandidate, "candidate-impact-impact-review-ui-browser", browserLoaded!.commandDigest)).rejects.toThrow("PROVIDER_LANE_EVIDENCE_REQUIRED");
   });
 
   it("does not weaken: a failing s9 provider still fails without BROWSER evidence", async () => {
