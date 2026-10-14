@@ -645,15 +645,20 @@ export function checkSkillRootsExist(skillRoots, dirExists) {
 
 /**
  * L1-C2-SKILL-REF-RESOLVES — every preset skill (except "*") must resolve
- * to `<skillRoot>/<id>/SKILL.md` under at least one configured root
- * (exact parity with src/agents/compiler.ts:54-60).
+ * to `<skillRoot>/<id>/SKILL.md` under at least one configured root,
+ * EXCEPT canonical seed skills: the runtime compiler
+ * (src/agents/compiler.ts:68-78) skips filesystem lookup for seed ids (the
+ * seed is the registry of record; only the role ceiling applies). A seed
+ * skill without materialized files must therefore PASS here (its validity
+ * is L1-A2's verdict); anything in neither registry still fails.
  */
-export function checkSkillRefsResolve(agents, skillRoots, fileExists) {
+export function checkSkillRefsResolve(agents, skillRoots, fileExists, seed) {
   const roots = skillRoots && skillRoots.length ? skillRoots : [".harness/skills"];
   const violations = [];
   for (const [name, agent] of Object.entries(agents)) {
     for (const skill of agent.skills ?? []) {
       if (skill === "*") continue;
+      if (seed && Object.prototype.hasOwnProperty.call(seed, skill)) continue;
       const tried = roots.map((root) => `${root}/${skill}/SKILL.md`);
       if (!tried.some((rel) => fileExists(rel))) {
         violations.push({ agent: name, role: agent.role, skill, tried });
@@ -858,6 +863,7 @@ function explorerWireHolds(schema) {
  */
 function specArtifactsNodeHolds(node) {
   if (!isObject(node)) return false;
+  if (node.type !== "object") return false;
   const required = Array.isArray(node.required) ? node.required : [];
   if (!required.includes("proposal") || !required.includes("tasks")) return false;
   const props = node.properties;
@@ -876,6 +882,31 @@ function specArtifactsNodeHolds(node) {
  * READY)/then(pair) encoding. A bare anyOf branch carrying the pair without a
  * READY tie is a hole (READY payloads may satisfy another branch) and fails.
  */
+/**
+ * True iff a spec disjunction branch rejects every READY-with-empty-artifacts
+ * payload: it either excludes the READY status (const/enum without READY) or
+ * carries the proposal+tasks artifacts node. A vacuous `{}` (or any branch
+ * constraining neither) admits the violator and is NOT safe.
+ */
+function specBranchSafe(branch) {
+  if (!isObject(branch)) return false;
+  const status = isObject(branch) ? branch.properties?.status : undefined;
+  if (isObject(status)) {
+    if (status.const !== undefined && status.const !== "READY") return true;
+    if (Array.isArray(status.enum) && !status.enum.includes("READY")) return true;
+  }
+  return specArtifactsNodeHolds(isObject(branch) ? branch.properties?.artifacts : undefined);
+}
+
+/** True iff the branch ties status to READY and carries the artifacts pair (implies safe). */
+function specBranchQualifies(branch) {
+  if (!isObject(branch)) return false;
+  return (
+    constrainsLiteral(isObject(branch) ? branch.properties?.status : undefined, "READY") &&
+    specArtifactsNodeHolds(isObject(branch) ? branch.properties?.artifacts : undefined)
+  );
+}
+
 function specWireHolds(schema) {
   if (!isObject(schema)) return false;
   if (!schemaRequires(schema, "artifacts")) return false;
@@ -883,10 +914,13 @@ function specWireHolds(schema) {
   if (Array.isArray(schema.allOf) && schema.allOf.some((branch) => specArtifactsNodeHolds(isObject(branch) ? branch.properties?.artifacts : undefined))) {
     return true;
   }
-  for (const branch of disjunctionBranches(schema)) {
-    if (!isObject(branch)) continue;
-    if (!specArtifactsNodeHolds(branch.properties?.artifacts)) continue;
-    if (constrainsLiteral(branch.properties?.status, "READY")) return true;
+  const branches = disjunctionBranches(schema);
+  if (
+    branches.length &&
+    branches.some(specBranchQualifies) &&
+    branches.every(specBranchSafe)
+  ) {
+    return true;
   }
   if (
     constrainsLiteral(schema.if?.properties?.status, "READY") &&
@@ -903,20 +937,28 @@ function specWireHolds(schema) {
  * requires findings nonempty. A vacuous `{}` (or any branch constraining
  * neither) admits the violator and is NOT safe.
  */
-function reviewerBranchSafe(props) {
+function reviewerBranchSafe(branch) {
+  if (!isObject(branch)) return false;
+  const props = branch.properties;
   if (!isObject(props)) return false;
   const verdict = props.verdict;
   if (isObject(verdict)) {
     if (verdict.const !== undefined && verdict.const !== "FAIL") return true;
     if (Array.isArray(verdict.enum) && !verdict.enum.includes("FAIL")) return true;
   }
-  return arrayNonemptyAt(props, "findings");
+  return schemaRequires(branch, "findings") && arrayNonemptyAt(props, "findings");
 }
 
-/** True iff the branch binds verdict to FAIL with findings nonempty (implies safe). */
-function reviewerBranchQualifies(props) {
+/** True iff a branch object binds verdict to FAIL with findings required nonempty (implies safe). */
+function reviewerBranchQualifies(branch) {
+  if (!isObject(branch)) return false;
+  const props = branch.properties;
   if (!isObject(props)) return false;
-  return constrainsLiteral(props.verdict, "FAIL") && arrayNonemptyAt(props, "findings");
+  return (
+    constrainsLiteral(props.verdict, "FAIL") &&
+    schemaRequires(branch, "findings") &&
+    arrayNonemptyAt(props, "findings")
+  );
 }
 
 /**
@@ -942,17 +984,20 @@ function reviewerWireHolds(schema) {
   const branches = disjunctionBranches(schema);
   if (
     branches.length &&
-    branches.some((branch) => reviewerBranchQualifies(isObject(branch) ? branch.properties : undefined)) &&
-    branches.every((branch) => reviewerBranchSafe(isObject(branch) ? branch.properties : undefined))
+    branches.some((branch) => reviewerBranchQualifies(branch)) &&
+    branches.every((branch) => reviewerBranchSafe(branch))
   ) {
     return true;
   }
   // A failing disjunction falls through: top-level if/then applies by
   // conjunction, so a sound if-FAIL-then still constrains payloads that take
   // a vacuous anyOf branch. Without one, the disjunction failure stands.
+  // The FAIL-demanded findings must be required (in `then` or top-level):
+  // a nonempty-typed but omittable findings lets {verdict:FAIL} pass.
   if (
     constrainsLiteral(schema.if?.properties?.verdict, "FAIL") &&
-    arrayNonemptyAt(schema.then?.properties, "findings")
+    arrayNonemptyAt(schema.then?.properties, "findings") &&
+    (schemaRequires(schema.then, "findings") || schemaRequires(schema, "findings"))
   ) {
     return true;
   }
@@ -1595,12 +1640,13 @@ export async function evaluateAll(fx) {
     ? await checkLaneCommandBindingWithBehavioral({ laneSource: fx.laneSource, callSites: fx.callSites, behavioral: fx.laneBehavioral })
     : await checkLaneCommandBindingWithBehavioral({ laneSource: fx.laneSource, callSites: fx.callSites, distStale: fx.distStaleForLane ?? fx.distStale });
   return [
+    checkTopologyResolved(fx.topologyUnresolved),
     checkPermissionCeiling(fx.agents, fx.roles),
     checkSkillRoleFit(fx.agents, fx.skillSeed, fx.skillRoots, fx.fileExists),
     checkNonparticipantConstraints(fx.agents, fx.runtimes, fx.models),
     checkSpecializationsClosed(fx.agents, fx.routing, fx.roles),
     checkSkillRootsExist(fx.skillRoots, fx.dirExists),
-    checkSkillRefsResolve(fx.agents, fx.skillRoots, fx.fileExists),
+    checkSkillRefsResolve(fx.agents, fx.skillRoots, fx.fileExists, fx.skillSeed),
     checkMcpFailClosed(fx.permissionsSource),
     checkMcpRefsConfigured(fx.agents, fx.mcpConfigured),
     checkWireParity(fx.schemas, fx.wireLive, fx.distStale),
@@ -1764,8 +1810,16 @@ export function checkDistBindsSource(identity, source) {
   } else {
     mismatches.push("gitSha binding unavailable (unknown dist sha or unresolvable source HEAD)");
   }
-  if (identity.dirty === true) mismatches.push("dist snapshot was built from a dirty tree");
-  if (source.dirty === true) mismatches.push("inspected source tree is dirty relative to HEAD");
+  // Fail closed on unknown dirty evidence: both sides must carry an explicit
+  // boolean. A missing/non-boolean dist dirty, a missing/non-boolean source
+  // dirty (including a failed dirty probe), or a dirty-true either side
+  // refuses the binding — a failed probe (unknown) must never read as clean.
+  if (identity.dirty !== false) {
+    mismatches.push(identity.dirty === true ? "dist snapshot was built from a dirty tree" : "dist dirty evidence is missing or non-boolean (fail closed on unknown)");
+  }
+  if (source.dirty !== false) {
+    mismatches.push(source.dirty === true ? "inspected source tree is dirty relative to HEAD" : "source dirty evidence is missing or non-boolean (fail closed on unknown)");
+  }
   if (mismatches.length) return { reason: mismatches.join("; ") };
   return null;
 }
@@ -1797,7 +1851,9 @@ async function readSourceHeadSha(root) {
 }
 
 /** Best-effort dirty probe of the inspected root (tracked files only: untracked
- *  worktree scaffolding such as symlinked node_modules must not force stale). */
+ *  worktree scaffolding such as symlinked node_modules must not force stale).
+ *  Returns true/false, or undefined when the probe fails — callers fail
+ *  closed on unknown (a failed probe must never read as a clean tree). */
 async function readSourceDirty(root) {
   try {
     const { execFileSync } = await import("node:child_process");
@@ -1808,7 +1864,7 @@ async function readSourceDirty(root) {
     }).trim();
     return out.length > 0;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -1848,7 +1904,7 @@ export async function loadDistForRoot(root) {
     if (stale) {
       return {
         releaseId,
-        staleDist: { releaseId, reason: stale.reason, identity, source: { packageVersion: sourceVersion, gitSha: sourceSha || null, dirty: sourceDirty } },
+        staleDist: { releaseId, reason: stale.reason, identity, source: { packageVersion: sourceVersion, gitSha: sourceSha || null, dirty: sourceDirty ?? null } },
       };
     }
     const [contracts, lane, digest] = await Promise.all([
@@ -1885,9 +1941,13 @@ export async function loadDistForRoot(root) {
  * aeh:orchestration, relative paths), skillRoots UNION, and per-key
  * agent/runtime/model merges with execution-map merging. Profile overrides
  * are out of scope (base agents govern the checked ceilings). Falls back to
- * presets/agents/default.jsonc when no consumer source exists. Never throws:
- * returns { topology, notes } with parse failures as notes (fail-closed
- * downstream via empty topology + note).
+ * presets/agents/default.jsonc when no consumer source exists. FAILS CLOSED
+ * when the ACTIVE consumer topology exists but cannot be composed: returns
+ * configUnresolved (CONFIG_UNRESOLVED) with an empty topology instead of a
+ * silent fallback-to-default PASS — the gate must never assert against a
+ * preset topology while the consumer believes its own overlay is active.
+ * Never throws: returns { topology, notes, configUnresolved } with parse
+ * failures as notes (fail-closed downstream via empty topology + note).
  */
 export function resolveConsumerTopology(root) {
   const notes = [];
@@ -1934,13 +1994,21 @@ export function resolveConsumerTopology(root) {
     return compose(composed, rest);
   };
   const consumerFile = path.join(root, ".harness", "agents.source.jsonc");
+  let consumerPresent = false;
   try {
-    if (fs.statSync(consumerFile).isFile()) {
+    consumerPresent = fs.statSync(consumerFile).isFile();
+  } catch {
+    consumerPresent = false;
+  }
+  if (consumerPresent) {
+    try {
       const topology = loadComposed(consumerFile, new Set());
-      return { topology, notes };
+      return { topology, notes, configUnresolved: null };
+    } catch (error) {
+      const reason = `CONFIG_UNRESOLVED: active agent topology ${consumerFile} cannot be composed (${String((error && error.message) || error)}); refusing silent fallback-to-default PASS.`;
+      notes.push(`${reason} Falling back to an EMPTY topology (fail closed).`);
+      return { topology: { version: 1 }, notes, configUnresolved: { code: "CONFIG_UNRESOLVED", reason } };
     }
-  } catch (error) {
-    notes.push(`agent topology composition failed (${String((error && error.message) || error)}); falling back to presets/agents/default.jsonc.`);
   }
   try {
     const preset = parseJsonc(fs.readFileSync(path.join(root, "presets", "agents", "default.jsonc"), "utf8"));
@@ -1954,16 +2022,31 @@ export function resolveConsumerTopology(root) {
         routing: preset.routing,
       },
       notes,
+      configUnresolved: null,
     };
   } catch (error) {
     notes.push(`presets/agents/default.jsonc unreadable (${String((error && error.message) || error)}).`);
-    return { topology: { version: 1 }, notes };
+    return { topology: { version: 1 }, notes, configUnresolved: { code: "CONFIG_UNRESOLVED", reason: "no composable agent topology available" } };
   }
+}
+
+/**
+ * L1-CONFIG-RESOLVED — the ACTIVE agent topology must compose. A broken
+ * consumer overlay (.harness/agents.source.jsonc) fails closed with the
+ * explicit CONFIG_UNRESOLVED reason instead of silently falling back to
+ * the default preset and PASSing against a topology the consumer is not
+ * running. Mechanism=DETERMINISTIC.
+ */
+export function checkTopologyResolved(configUnresolved) {
+  const failed = Boolean(configUnresolved);
+  return mkCheck("L1-CONFIG-RESOLVED", failed, {
+    ...(failed ? { code: "CONFIG_UNRESOLVED", reason: configUnresolved?.reason ?? "active topology unresolvable" } : {}),
+  });
 }
 
 /** Load real-tree inputs and evaluate. Throws with a clear message on missing files. */
 export async function loadRealTreeInputs(root) {
-  const { topology, notes: topologyNotes } = resolveConsumerTopology(root);
+  const { topology, notes: topologyNotes, configUnresolved } = resolveConsumerTopology(root);
   const rolesSource = readText(root, "src/participants/roles.ts");
   const skillsSource = readText(root, "src/participants/skills.ts");
   const { roles, parseNotes: roleNotes } = parseRolesProfiles(rolesSource);
@@ -2033,6 +2116,7 @@ export async function loadRealTreeInputs(root) {
     fx: {
       agents: topology.agents ?? {},
       skillRoots: topology.skillRoots ?? [".harness/skills"],
+      topologyUnresolved: configUnresolved ?? null,
       routing: topology.routing ?? [],
       runtimes: topology.runtimes ?? {},
       models: topology.models ?? {},

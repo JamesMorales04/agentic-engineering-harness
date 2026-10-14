@@ -17,6 +17,7 @@ import {
   checkSkillRoleFit,
   checkSpecializationsClosed,
   checkSkillRootsExist,
+  checkTopologyResolved,
   checkWireParity,
   evaluateAll,
   parseRolesProfiles,
@@ -331,7 +332,7 @@ function checkById(checks: any[], id: string) {
 describe("preflight L1 gate", () => {
   it("PASSES every check on a crafted compliant fixture", async () => {
     const checks = await evaluateAll(compliantFixture());
-    expect(checks).toHaveLength(11);
+    expect(checks).toHaveLength(12);
     for (const check of checks) {
       expect(check.status, `${check.id}: ${JSON.stringify(check.evidence)}`).toBe("PASS");
     }
@@ -1087,5 +1088,102 @@ export async function verifyProviderLaneEvidenceV1(root, config, evidence, expec
     expect((lane?.evidence as any).distAvailable).toBe(false);
     const wire = checks.find((c) => c.id === "L1-E-WIRE-PARITY");
     expect(wire?.status).toBe("PASS");
+  });
+
+  it("R4-H1 FAILS L1-E when a qualifying READY spec branch is paired with a vacuous {} alternative", () => {
+    // {status:READY,artifacts:{}} takes the sibling {} branch; every
+    // anyOf/oneOf disjunct must independently qualify-or-reject.
+    const schemas = compliantSchemas();
+    const pair = {
+      required: ["status", "artifacts"],
+      properties: {
+        status: { const: "READY" },
+        artifacts: {
+          type: "object",
+          required: ["proposal", "tasks"],
+          properties: { proposal: { type: "string", minLength: 1 }, tasks: { type: "string", minLength: 1 } },
+        },
+      },
+    };
+    (schemas["spec-authoring"] as any) = {
+      type: "object",
+      required: ["status", "artifacts"],
+      properties: { status: { enum: ["READY", "BLOCKED"] } },
+      anyOf: [pair, {}],
+    };
+    const check = checkWireParity(schemas, undefined);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.missing).toEqual(["spec-ready-artifacts"]);
+  });
+
+  it("R4-H2 FAILS L1-E when the spec artifacts node is not type:object", () => {
+    // {status:READY,artifacts:"oops-string"} passes nested
+    // required/properties checks; the object type is required.
+    const schemas = compliantSchemas();
+    (schemas["spec-authoring"] as any).properties.artifacts = {
+      required: ["proposal", "tasks"],
+      properties: { proposal: { type: "string", minLength: 1 }, tasks: { type: "string", minLength: 1 } },
+    };
+    const check = checkWireParity(schemas, undefined);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.missing).toEqual(["spec-ready-artifacts"]);
+  });
+
+  it("R4-H3 FAILS L1-E when a reviewer FAIL branch carries minItems:1 without required findings", () => {
+    // {verdict:FAIL} without findings satisfies a branch that types
+    // findings nonempty but lets the payload omit the field.
+    const schemas = compliantSchemas();
+    (schemas.reviewer as any) = {
+      type: "object",
+      required: ["verdict"],
+      properties: { verdict: { type: "string", enum: ["PASS", "FAIL"] } },
+      anyOf: [{ required: ["verdict"], properties: { verdict: { const: "FAIL" }, findings: { type: "array", minItems: 1 } } }],
+    };
+    const check = checkWireParity(schemas, undefined);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.missing).toEqual(["reviewer-coherence"]);
+  });
+
+  it("R4-M1 FAILS L1-CONFIG-RESOLVED on a broken consumer topology instead of silent fallback-to-default PASS", async () => {
+    const tmp = fs.mkdtempSync(path.join("/tmp/", "aeh-r4m1-"));
+    fs.mkdirSync(path.join(tmp, ".harness"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, ".harness", "agents.source.jsonc"), "{ extends: [\"aeh:bogus-preset\"] this is not jsonc");
+    const resolved = resolveConsumerTopology(tmp);
+    expect((resolved as any).configUnresolved?.code).toBe("CONFIG_UNRESOLVED");
+    expect(checkTopologyResolved((resolved as any).configUnresolved).status).toBe("FAIL");
+    expect(checkTopologyResolved((resolved as any).configUnresolved).id).toBe("L1-CONFIG-RESOLVED");
+    const fx = compliantFixture();
+    (fx as any).topologyUnresolved = (resolved as any).configUnresolved;
+    const checks = await evaluateAll(fx);
+    expect(checks.find((c) => c.id === "L1-CONFIG-RESOLVED")?.status).toBe("FAIL");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("R4-M2 PASSES L1-C2 for seed-only skills without materialized SKILL.md (compiler semantics)", () => {
+    const agents = { reviewer: { role: "Reviewer", skills: ["independent-review"] } };
+    const seed = { "independent-review": { id: "independent-review", roles: ["Reviewer"] } };
+    const pass = checkSkillRefsResolve(agents, ["skills"], () => false, seed);
+    expect(pass.id).toBe("L1-C2-SKILL-REF-RESOLVES");
+    expect(pass.status).toBe("PASS");
+    const nonSeed = { reviewer: { role: "Reviewer", skills: ["ghost-skill"] } };
+    expect(checkSkillRefsResolve(nonSeed, ["skills"], () => false, seed).status).toBe("FAIL");
+  });
+
+  it("R4-M3 FAILS the dist binder on missing dirty evidence and on a failed dirty probe", () => {
+    const sha = "a".repeat(40);
+    const noDirtyIdentity = { packageVersion: "0.25.8", gitSha: sha, releaseId: "r", buildDigest: "b".repeat(64) };
+    expect(checkDistBindsSource(noDirtyIdentity, { packageVersion: "0.25.8", gitSha: sha, dirty: false })).toMatchObject({
+      reason: expect.stringContaining("dirty"),
+    });
+    expect(
+      checkDistBindsSource({ packageVersion: "0.25.8", gitSha: sha, dirty: false }, { packageVersion: "0.25.8", gitSha: sha }),
+    ).toMatchObject({ reason: expect.stringContaining("dirty") });
+    // A failed dirty probe surfaces as unknown (undefined), never clean.
+    expect(
+      checkDistBindsSource({ packageVersion: "0.25.8", gitSha: sha, dirty: false }, { packageVersion: "0.25.8", gitSha: sha, dirty: undefined }),
+    ).toMatchObject({ reason: expect.stringContaining("dirty") });
   });
 });
