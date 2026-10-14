@@ -1162,6 +1162,30 @@ export async function verifyProviderLaneEvidenceV1(root, config, evidence, expec
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  it("R5 FAILS L1-CONFIG-RESOLVED on a version:2 overlay the runtime layerSchema rejects", async () => {
+    const tmp = fs.mkdtempSync(path.join("/tmp/", "aeh-r5-"));
+    fs.mkdirSync(path.join(tmp, ".harness"), { recursive: true });
+    fs.mkdirSync(path.join(tmp, "presets", "agents"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "presets", "agents", "default.jsonc"),
+      JSON.stringify({ version: 1, runtimes: {}, models: {}, agents: {} }),
+    );
+    // Reviewer's exact probe: syntactically valid but runtime-invalid layer version.
+    fs.writeFileSync(
+      path.join(tmp, ".harness", "agents.source.jsonc"),
+      JSON.stringify({ version: 2, extends: ["aeh:default"] }),
+    );
+    const resolved = resolveConsumerTopology(tmp);
+    expect((resolved as any).configUnresolved?.code).toBe("CONFIG_UNRESOLVED");
+    expect(checkTopologyResolved((resolved as any).configUnresolved).status).toBe("FAIL");
+    expect(checkTopologyResolved((resolved as any).configUnresolved).id).toBe("L1-CONFIG-RESOLVED");
+    const fx = compliantFixture();
+    (fx as any).topologyUnresolved = (resolved as any).configUnresolved;
+    const checks = await evaluateAll(fx);
+    expect(checks.find((c) => c.id === "L1-CONFIG-RESOLVED")?.status).toBe("FAIL");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
   it("R4-M2 PASSES L1-C2 for seed-only skills without materialized SKILL.md (compiler semantics)", () => {
     const agents = { reviewer: { role: "Reviewer", skills: ["independent-review"] } };
     const seed = { "independent-review": { id: "independent-review", roles: ["Reviewer"] } };

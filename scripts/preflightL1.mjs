@@ -1986,6 +1986,26 @@ export function resolveConsumerTopology(root) {
     const next = new Set(stack);
     next.add(absolute);
     const layer = readLayer(absolute);
+    // Mirror the runtime layerSchema (src/agents/config.ts:30, layerSchema
+    // at :43: version: z.literal(1)). The composer below hardcodes
+    // version: 1, so without this check a syntactically valid overlay such
+    // as { version: 2, extends: ["aeh:default"] } would normalize silently
+    // while the runtime loader rejects it. Fail closed (Mechanism=DETERMINISTIC).
+    if (layer === null || typeof layer !== "object" || Array.isArray(layer)) {
+      throw new Error(`Invalid agent topology layer ${absolute}: expected an object layer with version: 1.`);
+    }
+    if (layer.version !== 1) {
+      throw new Error(
+        `Unsupported agent topology layer version ${JSON.stringify(layer.version)} at ${absolute}: expected version: 1.`,
+      );
+    }
+    if (layer.extends !== undefined) {
+      const validExtends =
+        Array.isArray(layer.extends) && layer.extends.every((e) => typeof e === "string" && e.length > 0);
+      if (!validExtends) {
+        throw new Error(`Invalid agent topology layer ${absolute}: "extends" must be an array of non-empty strings.`);
+      }
+    }
     let composed = { version: 1 };
     for (const extension of layer.extends ?? []) {
       composed = compose(composed, loadComposed(resolveExtension(extension, path.dirname(absolute)), next));
@@ -2012,6 +2032,9 @@ export function resolveConsumerTopology(root) {
   }
   try {
     const preset = parseJsonc(fs.readFileSync(path.join(root, "presets", "agents", "default.jsonc"), "utf8"));
+    if (preset === null || typeof preset !== "object" || Array.isArray(preset) || preset.version !== 1) {
+      throw new Error("presets/agents/default.jsonc layer version unsupported: expected version: 1.");
+    }
     return {
       topology: {
         version: 1,
