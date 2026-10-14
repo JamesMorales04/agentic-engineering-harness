@@ -3,40 +3,52 @@
  * AEH L1 preflight gate (stabilization campaign, RED-state reporter).
  *
  * Mechanism classification: DETERMINISTIC. Every check below is a pure,
- * static, reproducible comparison of shipped configuration against
- * deterministic validation logic and runtime behavior: JSONC parsing,
- * source-text inspection, filesystem existence probes, and set-membership
- * comparisons. No network access, no model calls, no randomness, no
- * wall-clock dependence. Identical inputs always produce identical reports.
+ * reproducible comparison of shipped configuration against deterministic
+ * validation logic: JSONC parsing, source-text inspection, filesystem
+ * existence probes, set-membership comparisons, loaded JSON Schema OBJECT
+ * GRAPHS (dist/ imported as DATA, never token-scanned), and bounded
+ * behavioral probes (calling built verify functions with crafted inputs and
+ * asserting on the returned blockers). No network access, no model calls, no
+ * randomness, no wall-clock dependence. Identical inputs (source tree + dist
+ * snapshot) always produce identical reports.
  *
- * Established-pattern note: this is a `.mjs` deterministic gate, so it
- * follows the `scripts/architecture.mjs` / `scripts/publicApiContract.mjs`
- * convention (Node builtins only, static source inspection, JSON report to
- * stdout, drain-safe exit code). It deliberately does NOT import the built
- * `dist/` graph and does NOT require `tsx`: importing compiled modules
- * would execute provider/runtime code inside a read-only gate and would
- * couple the gate to the `dist/current` release pointer. The task brief
- * asked to verify the dist-consumption pattern first: `scripts/build.mjs`
- * emits `dist/main.js` (a launcher) plus `dist/releases/<id>/…`, which no
- * `.mjs` gate imports; `.mjs` gates read source-as-text. See `notes` in
- * the emitted report for this and every other encoding decision/limit.
+ * Established-pattern note: this is a `.mjs` gate following the
+ * `scripts/architecture.mjs` / `scripts/publicApiContract.mjs` convention
+ * (JSON report to stdout, drain-safe exit code). Unlike those gates it DOES
+ * import the built `dist/` graph as DATA for the two behavior-bearing
+ * checks: `dist/releases/<id>/agents/outputContracts.js` (provider-facing
+ * JSON Schemas via outputJsonSchema, plus zod-gate liveness via
+ * validateAgentOutput) and `dist/releases/<id>/validation/laneEvidence.js`
+ * (verifyProviderLaneEvidenceV1 behavioral command-binding probe). The
+ * release is resolved through `dist/current` relative to the INSPECTED root,
+ * so auditing another checkout uses that checkout's snapshot. No `tsx` and
+ * no TypeScript source-text scanning is used for E/F behavior: source text
+ * cannot prove a parameter is consumed. When `dist/` is unavailable the gate
+ * fails E closed and runs F's structural fallback, both explicitly marked in
+ * evidence. See `notes` in the emitted report for every encoding
+ * decision/limit.
  *
  * Usage: `node scripts/preflightL1.mjs [root]` (root defaults to cwd).
  * Stdout is ALWAYS a single machine-readable JSON document:
  *   { version, tool, ruleset, root, node, checks:[{id,status,evidence}],
  *     notes:[...], summary:{total,passed,failed} }
  * `status` is PASS|FAIL per check. Exit code is 0 iff every check PASSES,
- * nonzero otherwise (assigned via `process.exitCode`, never `process.exit`,
- * so piped stdout is never truncated).
+ * 1 when any check FAILs, 2 on load errors (assigned via `process.exitCode`,
+ * never `process.exit`, so piped stdout is never truncated).
  *
  * The core check functions are exported pure functions so
  * `tests/preflightL1.test.ts` can evaluate crafted compliant/violating
- * fixtures without touching the filesystem.
+ * fixtures without touching the filesystem. Dist-backed orchestration
+ * (loadDistForRoot, probeWireLiveness, probeLaneCommandBindingBehavioral,
+ * evaluateAll, loadRealTreeInputs, runPreflight) is async; the per-check
+ * assertions themselves are pure and synchronous except the behavioral lane
+ * probe, which takes an injectable verify function so tests can prove
+ * consumption without a build.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const RULESET = "aeh-preflight-l1-v1";
 export const REPORT_VERSION = 1;
@@ -427,12 +439,16 @@ export function checkPermissionCeiling(agents, roles) {
  * Assessor per src/participants/types.ts canonicalAgentRoleValues vs
  * canonicalRoleValues). Enforces the permissions.ts:55-61 preset-decidable
  * constraints: all of read/write/shell/network/delegate/review/validate/
- * gitWrite explicitly `deny`, plus no skills, no MCPs and no runtime
- * arguments (agent.args or agent.execution.args). Transport/adapter/capability
- * projection (paseo+codex, runtimeConfigInjection/structuredOutput/
- * modelSelection) is runtime-resolved, not preset-decidable, and is a
- * documented residual in `notes`; nativeAgent is likewise runtime-resolved
- * and not checked here.
+ * gitWrite explicitly `deny`, plus no skills, no MCPs, no top-level runtime
+ * arguments, no execution runtime arguments, and no native-agent selection
+ * at either level. execution.nativeAgent IS statically checkable: it is a
+ * configured string (src/agents/config.ts:17 executionSchema) compiled into
+ * selection.nativeAgent (src/agents/routing.ts:8 executionSelectionForAgent),
+ * exactly like execution.args merging into selection.args there. The old
+ * gate checked only `agent.args ?? agent.execution?.args`, which let an
+ * empty top-level `args: []` mask a nonempty `execution.args` (`[]` is not
+ * nullish, so `??` keeps it); both levels are now checked independently and
+ * either nonempty is a violation.
  */
 export function checkNonparticipantConstraints(agents) {
   const violations = [];
@@ -457,9 +473,31 @@ export function checkNonparticipantConstraints(agents) {
     if (mcps.length) {
       violations.push({ agent: name, role: agent.role, reason: "nonparticipant must declare no MCP servers (permissions.ts:61)", mcps });
     }
-    const args = agent.args ?? agent.execution?.args ?? [];
-    if ((args ?? []).length) {
-      violations.push({ agent: name, role: agent.role, reason: "nonparticipant must declare no runtime arguments (permissions.ts:61)", args });
+    const topArgs = Array.isArray(agent.args) ? agent.args : [];
+    if (topArgs.length) {
+      violations.push({ agent: name, role: agent.role, reason: "nonparticipant must declare no top-level runtime arguments (permissions.ts:61)", args: topArgs });
+    }
+    const execArgs = Array.isArray(agent.execution?.args) ? agent.execution.args : [];
+    if (execArgs.length) {
+      violations.push({
+        agent: name,
+        role: agent.role,
+        reason: "nonparticipant must declare no execution runtime arguments (permissions.ts:61; execution.args merges into selection.args per routing.ts:8)",
+        args: execArgs,
+      });
+    }
+    const nativeTop = typeof agent.nativeAgent === "string" ? agent.nativeAgent.trim() : agent.nativeAgent;
+    if (nativeTop) {
+      violations.push({ agent: name, role: agent.role, reason: "nonparticipant must not select a top-level native agent (permissions.ts:61)", nativeAgent: agent.nativeAgent });
+    }
+    const nativeExec = typeof agent.execution?.nativeAgent === "string" ? agent.execution.nativeAgent.trim() : agent.execution?.nativeAgent;
+    if (nativeExec) {
+      violations.push({
+        agent: name,
+        role: agent.role,
+        reason: "nonparticipant must not select an execution native agent (permissions.ts:61; statically configured as execution.nativeAgent per config.ts:17, compiled into selection.nativeAgent per routing.ts:8)",
+        nativeAgent: agent.execution.nativeAgent,
+      });
     }
   }
   return mkCheck("L1-A3-NONPARTICIPANT", violations.length > 0, { violations });
@@ -598,53 +636,23 @@ export function checkMcpRefsConfigured(agents, configured) {
   return mkCheck("L1-D2-MCP-REF-CONFIGURED", violations.length > 0, { violations });
 }
 
-// Semantic wire-parity helpers (decidable approximations; residual limits in notes).
-// JSON Schema cannot express zod superRefine implications exactly (e.g. "if
-// status READY then proposal/tasks non-empty"), so each test below checks the
-// strongest decidable structural+cardinality coupling, not full implication
-// semantics. minItems:0 never satisfies a non-emptiness requirement; only a
-// numeric value >=1 does. maxItems:0 is the empty-enforcement dual.
+// ---------------------------------------------------------------------------
+// L1-E object-graph wire parity (DATA-DRIVEN; no text scanning).
+//
+// The gate loads the provider-facing JSON Schemas as DATA (plain objects
+// returned by outputJsonSchema from the dist/ snapshot) and asserts, per
+// gate, that the EXACT property path in the EXACT branch object carries the
+// EXACT typed constraint. A constraint counts only when path+type+cardinality
+// coincide: `{ minItems: 1 }` without `type: "array"` FAILs, `{ minLength: 1 }`
+// without `type: "string"` FAILs, and a constraint on an unrelated path or in
+// an unrelated disjunction branch FAILs. There is no token search and no
+// co-occurrence counting anywhere in this section.
+//
+// Known evidence array paths for the explorer gate (mirrors the zod
+// superRefine disjunction in outputContracts.ts:98-113).
+// ---------------------------------------------------------------------------
 
-/** Return the object literal block for `field:` inside a contract block, or null. */
-function fieldObjectBlock(block, field) {
-  const idx = block.search(new RegExp(`${field}\\s*:`));
-  if (idx === -1) return null;
-  const brace = block.indexOf("{", idx);
-  if (brace === -1) return null;
-  return matchBrace(block, brace);
-}
-
-/** True iff ANY `field:` object in the block carries `minItems: N` with N>=1 (rejects 0/absent). */
-function fieldHasMinItemsGE1(block, field) {
-  const re = new RegExp(`${field}\\s*:`, "g");
-  let m;
-  while ((m = re.exec(block)) !== null) {
-    const brace = block.indexOf("{", m.index);
-    if (brace === -1) continue;
-    const obj = matchBrace(block, brace);
-    if (!obj) continue;
-    const n = obj.match(/minItems\s*:\s*(\d+)/);
-    if (n && Number(n[1]) >= 1) return true;
-  }
-  return false;
-}
-
-/** True iff ANY `field:` object in the block carries `minLength: N` with N>=1. */
-function fieldHasMinLengthGE1(block, field) {
-  const re = new RegExp(`${field}\\s*:`, "g");
-  let m;
-  while ((m = re.exec(block)) !== null) {
-    const brace = block.indexOf("{", m.index);
-    if (brace === -1) continue;
-    const obj = matchBrace(block, brace);
-    if (!obj) continue;
-    const n = obj.match(/minLength\s*:\s*(\d+)/);
-    if (n && Number(n[1]) >= 1) return true;
-  }
-  return false;
-}
-
-const EXPLORER_EVIDENCE_FIELDS = [
+export const EXPLORER_KNOWN_EVIDENCE_ARRAYS = [
   "relevantFiles",
   "findings",
   "moduleBoundaries",
@@ -654,146 +662,353 @@ const EXPLORER_EVIDENCE_FIELDS = [
   "openQuestions",
 ];
 
-// Enumerated zod-gate → provider-JSON parity list, derived from
-// src/agents/outputContracts.ts superRefine blocks. `zodMarkers` must all be
-// present for the gate to be live; `test` inspects the contract's JSON
-// schema block for the SEMANTIC constraint (cardinality + coupling, not mere
-// token presence: minItems:0, bare anyOf without cardinality, or required
-// without non-emptiness all FAIL).
-const WIRE_GATES = [
+function isObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** properties object carries field with type "array" and integer minItems >= 1. */
+function arrayNonemptyAt(properties, field) {
+  const node = isObject(properties) ? properties[field] : undefined;
+  return (
+    isObject(node) &&
+    node.type === "array" &&
+    Number.isInteger(node.minItems) &&
+    node.minItems >= 1
+  );
+}
+
+/** properties object carries field with type "array" and maxItems === 0 (empty enforcement). */
+function arrayEmptyAt(properties, field) {
+  const node = isObject(properties) ? properties[field] : undefined;
+  return isObject(node) && node.type === "array" && node.maxItems === 0;
+}
+
+/** properties object carries field with type "string" and integer minLength >= 1. */
+function stringNonemptyAt(properties, field) {
+  const node = isObject(properties) ? properties[field] : undefined;
+  return (
+    isObject(node) &&
+    node.type === "string" &&
+    Number.isInteger(node.minLength) &&
+    node.minLength >= 1
+  );
+}
+
+/** Schema node constrains the value to a literal (const or enum-membership). */
+function constrainsLiteral(node, literal) {
+  if (!isObject(node)) return false;
+  if (node.const === literal) return true;
+  return Array.isArray(node.enum) && node.enum.includes(literal);
+}
+
+function disjunctionBranches(schema) {
+  const out = [];
+  if (isObject(schema)) {
+    for (const key of ["anyOf", "oneOf"]) {
+      if (Array.isArray(schema[key])) out.push(...schema[key]);
+    }
+  }
+  return out;
+}
+
+/** Planner zod gate (outputContracts.ts:63-71 PLANNER_EMPTY_RESULT). */
+function plannerWireHolds(schema) {
+  return arrayNonemptyAt(isObject(schema) ? schema.properties : undefined, "workUnits");
+}
+
+/**
+ * Explorer zod gate (outputContracts.ts:98-113 EXPLORER_EMPTY_RESULT).
+ * Accepts a direct binding (one known evidence array required nonempty at
+ * top level — stricter than zod's any-of-seven, documented residual) or a
+ * disjunction whose EVERY branch binds at least one known evidence array
+ * path to type=array+minItems>=1 (a branch that binds nothing is a vacuous
+ * escape hatch and fails the whole gate).
+ */
+function explorerWireHolds(schema) {
+  if (!isObject(schema)) return false;
+  const top = schema.properties;
+  if (EXPLORER_KNOWN_EVIDENCE_ARRAYS.some((field) => arrayNonemptyAt(top, field))) return true;
+  const branches = disjunctionBranches(schema);
+  if (!branches.length) return false;
+  return branches.every((branch) =>
+    EXPLORER_KNOWN_EVIDENCE_ARRAYS.some((field) => arrayNonemptyAt(isObject(branch) ? branch.properties : undefined, field)),
+  );
+}
+
+/**
+ * True iff an artifacts node requires proposal+tasks AND types both as
+ * nonempty strings at the exact paths (required alone allows empty strings;
+ * minLength alone allows absence; untyped minLength is not a string
+ * constraint — all three fail).
+ */
+function specArtifactsNodeHolds(node) {
+  if (!isObject(node)) return false;
+  const required = Array.isArray(node.required) ? node.required : [];
+  if (!required.includes("proposal") || !required.includes("tasks")) return false;
+  const props = node.properties;
+  return stringNonemptyAt(props, "proposal") && stringNonemptyAt(props, "tasks");
+}
+
+/**
+ * Spec READY gate (outputContracts.ts:146-158 SPEC_MANAGER_INCOMPLETE_RESULT).
+ * Accepts: unconditional top-level enforcement (stricter than zod — BLOCKED
+ * payloads would also need proposal/tasks at the wire; documented residual),
+ * an allOf branch carrying the pair (allOf branches all apply), a READY-tied
+ * anyOf/oneOf branch carrying the pair, or an if(status READY)/then(pair)
+ * encoding. A bare anyOf branch carrying the pair without a READY tie is a
+ * hole (READY payloads may satisfy another branch) and fails.
+ */
+function specWireHolds(schema) {
+  if (!isObject(schema)) return false;
+  if (specArtifactsNodeHolds(schema.properties?.artifacts)) return true;
+  if (Array.isArray(schema.allOf) && schema.allOf.some((branch) => specArtifactsNodeHolds(isObject(branch) ? branch.properties?.artifacts : undefined))) {
+    return true;
+  }
+  for (const branch of disjunctionBranches(schema)) {
+    if (!isObject(branch)) continue;
+    if (!specArtifactsNodeHolds(branch.properties?.artifacts)) continue;
+    if (constrainsLiteral(branch.properties?.status, "READY")) return true;
+  }
+  if (
+    constrainsLiteral(schema.if?.properties?.status, "READY") &&
+    specArtifactsNodeHolds(schema.then?.properties?.artifacts)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Reviewer FAIL gate (outputContracts.ts:208-215 REVIEWER_FAIL_WITHOUT_FINDING).
+ * Requires top-level properties.verdict to carry type "string" AND a single
+ * branch object binding verdict to FAIL with findings type=array+minItems>=1
+ * in that SAME branch (anyOf/oneOf branch or if(verdict FAIL)/then). Mere
+ * co-occurrence of a FAIL literal, a findings minItems and a coupling keyword
+ * spread across unrelated branches fails. The critical/high-severity ⇒
+ * not-SAFE gate (outputContracts.ts:216-222 REVIEWER_UNSAFE_PASS) has no
+ * honest object-graph encoding here and is an explicit residual, not a pass.
+ */
+function reviewerWireHolds(schema) {
+  if (!isObject(schema)) return false;
+  const top = schema.properties;
+  if (!isObject(top) || top.verdict?.type !== "string") return false;
+  for (const branch of disjunctionBranches(schema)) {
+    if (!isObject(branch)) continue;
+    const props = branch.properties;
+    if (!isObject(props)) continue;
+    if (constrainsLiteral(props.verdict, "FAIL") && arrayNonemptyAt(props, "findings")) return true;
+  }
+  if (
+    constrainsLiteral(schema.if?.properties?.verdict, "FAIL") &&
+    arrayNonemptyAt(schema.then?.properties, "findings")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Supervisor SAFE gate (outputContracts.ts:237-248 SUPERVISOR_UNSAFE_SAFE).
+ * Requires a single branch object binding finalizationSafety to SAFE with
+ * unresolved AND missingEvidence as type=array+maxItems===0 in that SAME
+ * branch (anyOf/oneOf branch, allOf branch, or if(safety SAFE)/then).
+ * Co-occurrence across unrelated branches fails.
+ */
+function supervisorWireHolds(schema) {
+  if (!isObject(schema)) return false;
+  const safeBranch = (props) => {
+    if (!isObject(props)) return false;
+    return (
+      constrainsLiteral(props.finalizationSafety, "SAFE") &&
+      arrayEmptyAt(props, "unresolved") &&
+      arrayEmptyAt(props, "missingEvidence")
+    );
+  };
+  for (const branch of disjunctionBranches(schema)) {
+    if (safeBranch(isObject(branch) ? branch.properties : undefined)) return true;
+  }
+  if (Array.isArray(schema.allOf)) {
+    for (const branch of schema.allOf) {
+      const props = isObject(branch) ? branch.properties : undefined;
+      if (
+        isObject(props) &&
+        arrayEmptyAt(props, "unresolved") &&
+        arrayEmptyAt(props, "missingEvidence")
+      ) {
+        return true;
+      }
+    }
+  }
+  if (
+    constrainsLiteral(schema.if?.properties?.finalizationSafety, "SAFE") &&
+    arrayEmptyAt(schema.then?.properties, "unresolved") &&
+    arrayEmptyAt(schema.then?.properties, "missingEvidence")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// Enumerated zod-gate → provider-JSON parity list. `test` inspects the loaded
+// schema OBJECT GRAPH (exact path+constraint binding); `liveProbe` describes
+// the behavioral zod-liveness check performed by probeWireLiveness (a removed
+// zod gate is reported stale, never failed).
+export const WIRE_GATES = [
   {
     gate: "planner-nonvacuous",
     zodRef: "src/agents/outputContracts.ts:63-71",
     zodMarkers: ["PLANNER_EMPTY_RESULT"],
     jsonContract: "planner",
-    jsonPath: "planner.workUnits",
-    expectation: "JSON schema requires workUnits minItems>=1 (numeric >=1; 0/absent FAILs)",
-    test: (block) => fieldHasMinItemsGE1(block, "workUnits"),
+    jsonPath: "planner.properties.workUnits (type=array AND minItems>=1)",
+    expectation: "properties.workUnits carries type:array with integer minItems>=1",
+    test: plannerWireHolds,
   },
   {
     gate: "explorer-nonvacuous",
     zodRef: "src/agents/outputContracts.ts:98-113",
     zodMarkers: ["EXPLORER_EMPTY_RESULT"],
     jsonContract: "explorer",
-    jsonPath: "explorer.* (evidence arrays)",
+    jsonPath: "explorer.* (known evidence array paths, type=array AND minItems>=1 per branch)",
     expectation:
-      "JSON schema enforces non-vacuous discovery: an evidence array carries minItems>=1, or an anyOf/oneOf disjunction carries minItems>=1 over evidence arrays (bare anyOf or minItems:0 FAILs)",
-    test: (block) => {
-      if (EXPLORER_EVIDENCE_FIELDS.some((field) => fieldHasMinItemsGE1(block, field))) return true;
-      const hasDisjunction = /(anyOf|oneOf)/.test(block);
-      const hasCardinalityGE1 = /minItems\s*:\s*([1-9]\d*)/.test(block);
-      const mentionsEvidence = EXPLORER_EVIDENCE_FIELDS.some((field) => block.includes(field));
-      return hasDisjunction && hasCardinalityGE1 && mentionsEvidence;
-    },
+      "a known evidence array is bound to type:array+minItems>=1 at top level, or every anyOf/oneOf branch binds >=1 known evidence array path to type:array+minItems>=1",
+    test: explorerWireHolds,
   },
   {
     gate: "spec-ready-artifacts",
     zodRef: "src/agents/outputContracts.ts:146-158",
     zodMarkers: ["SPEC_MANAGER_INCOMPLETE_RESULT"],
     jsonContract: "spec-authoring",
-    jsonPath: "spec-authoring.artifacts.required + proposal/tasks minLength",
+    jsonPath: "spec-authoring artifacts node (required proposal+tasks AND both type=string+minLength>=1)",
     expectation:
-      "JSON schema artifacts.required includes proposal and tasks AND proposal/tasks schemas carry minLength>=1 (required-alone allows empty strings, so it FAILs)",
-    test: (block) => {
-      // Accept either top-level artifacts.required or an anyOf/oneOf branch
-      // encoding (e.g. READY-branch requires proposal+tasks). Search ALL
-      // required-lists in the block for one containing both keys.
-      let hasRequiredPair = false;
-      for (const m of block.matchAll(/required:\s*\[([^\]]*)\]/g)) {
-        if (m[1].includes("proposal") && m[1].includes("tasks")) {
-          hasRequiredPair = true;
-          break;
-        }
-      }
-      if (!hasRequiredPair) return false;
-      return fieldHasMinLengthGE1(block, "proposal") && fieldHasMinLengthGE1(block, "tasks");
-    },
+      "an artifacts node requires proposal+tasks with both typed type:string+minLength>=1 (unconditional, allOf branch, READY-tied anyOf/oneOf branch, or if-READY-then)",
+    test: specWireHolds,
   },
   {
     gate: "reviewer-coherence",
     zodRef: "src/agents/outputContracts.ts:208-223",
     zodMarkers: ["REVIEWER_FAIL_WITHOUT_FINDING", "REVIEWER_UNSAFE_PASS"],
     jsonContract: "reviewer",
-    jsonPath: "reviewer (verdict FAIL → findings minItems>=1; verdict/finalizationSafety coupling)",
+    jsonPath: "reviewer branch binding verdict=FAIL with findings type=array+minItems>=1 (same branch) + top-level verdict type=string",
     expectation:
-      "JSON schema couples verdict↔findings↔finalizationSafety with anyOf/allOf/oneOf/if AND mentions FAIL AND enforces findings minItems>=1 AND mentions finalizationSafety (severity-level critical/high coupling is NOT decidably verified: residual)",
-    test: (block) => {
-      const hasCoupling = /(anyOf|allOf|oneOf|\bif\b)/.test(block);
-      const hasFail = /\bFAIL\b/.test(block);
-      const hasFindingsNonempty = fieldHasMinItemsGE1(block, "findings");
-      const hasSafety = /finalizationSafety/.test(block);
-      return hasCoupling && hasFail && hasFindingsNonempty && hasSafety;
-    },
+      "properties.verdict carries type:string AND one anyOf/oneOf branch (or if-FAIL-then) binds verdict to FAIL with findings type:array+minItems>=1 in the same branch object",
+    test: reviewerWireHolds,
   },
   {
     gate: "supervisor-coherence",
     zodRef: "src/agents/outputContracts.ts:237-248",
     zodMarkers: ["SUPERVISOR_UNSAFE_SAFE"],
     jsonContract: "supervisor",
-    jsonPath: "supervisor (SAFE → unresolved/missingEvidence empty)",
+    jsonPath: "supervisor branch binding finalizationSafety=SAFE with unresolved+missingEvidence type=array+maxItems===0 (same branch)",
     expectation:
-      "JSON schema couples finalizationSafety with unresolved/missingEvidence via anyOf/allOf/oneOf/if AND mentions SAFE AND mentions both fields AND enforces emptiness with maxItems:0",
-    test: (block) => {
-      const hasCoupling = /(anyOf|allOf|oneOf|\bif\b)/.test(block);
-      const hasSafe = /\bSAFE\b/.test(block);
-      const hasUnresolved = /unresolved/.test(block);
-      const hasMissing = /missingEvidence/.test(block);
-      const hasEmptyEnforcement = /maxItems\s*:\s*0/.test(block);
-      return hasCoupling && hasSafe && hasUnresolved && hasMissing && hasEmptyEnforcement;
-    },
+      "one anyOf/oneOf/allOf branch (or if-SAFE-then) binds finalizationSafety to SAFE with unresolved and missingEvidence type:array+maxItems===0 in the same branch object",
+    test: supervisorWireHolds,
   },
 ];
 
-function findContractBlock(schemasText, name) {
-  for (const key of [`${name}:`, `"${name}":`]) {
-    const idx = schemasText.indexOf(key);
-    if (idx === -1) continue;
-    const brace = schemasText.indexOf("{", idx);
-    if (brace === -1) continue;
-    const block = matchBrace(schemasText, brace);
-    if (block) return block;
-  }
-  return null;
-}
-
 /**
- * L1-E-WIRE-PARITY — every live zod superRefine coherence gate must have a
- * corresponding provider-facing JSON schema constraint. FAILs listing each
- * missing gate. Gates whose zod markers vanished are reported as stale in
- * `evidence.stale` (and notes) rather than failed: the enumeration follows
- * the source, never a frozen list.
+ * L1-E-WIRE-PARITY — every live zod coherence gate must have a corresponding
+ * provider-facing JSON schema constraint, asserted on the loaded schema
+ * OBJECT GRAPH (exact path+constraint binding, no text scanning). `schemas`
+ * maps contract name → JSON Schema object (as returned by outputJsonSchema);
+ * a missing/falsy `schemas` fails closed with distAvailable:false (no
+ * source-text fallback is attempted — text cannot prove parity). `live` maps
+ * gate id → boolean (behaviorally probed by probeWireLiveness on the real
+ * tree; defaults to all-live for pure evaluation). Gates with live===false
+ * are reported as stale, never failed: the enumeration follows the
+ * deterministic validator, never a frozen assumption.
  */
-export function checkWireParity(contractsSource) {
-  const anchor = contractsSource.indexOf("const jsonSchemas");
-  let schemasText = null;
-  if (anchor !== -1) {
-    const brace = contractsSource.indexOf("{", anchor);
-    schemasText = brace !== -1 ? matchBrace(contractsSource, brace) : null;
-  }
+export function checkWireParity(schemas, live) {
+  const liveMap = live ?? {};
   const gates = [];
   const missing = [];
   const stale = [];
+  const liveGates = WIRE_GATES.filter((def) => liveMap[def.gate] !== false);
   for (const def of WIRE_GATES) {
-    const live = def.zodMarkers.every((marker) => contractsSource.includes(marker));
-    if (!live) {
+    if (liveMap[def.gate] === false) {
       stale.push(def.gate);
       continue;
     }
-    const block = schemasText ? findContractBlock(schemasText, def.jsonContract) : null;
-    const found = block ? def.test(block) : false;
-    gates.push({ gate: def.gate, zod: def.zodRef, jsonPath: def.jsonPath, expectation: def.expectation, found });
+  }
+  if (!isObject(schemas)) {
+    for (const def of liveGates) missing.push(def.gate);
+    return mkCheck("L1-E-WIRE-PARITY", true, {
+      distAvailable: false,
+      reason: "provider JSON Schemas unavailable (dist/ snapshot missing): object-graph parity cannot be asserted without the schema objects; failing closed with no source-text fallback.",
+      gates: liveGates.map((def) => ({ gate: def.gate, zod: def.zodRef, jsonPath: def.jsonPath, expectation: def.expectation, live: true, found: false })),
+      missing,
+      stale,
+    });
+  }
+  for (const def of WIRE_GATES) {
+    if (liveMap[def.gate] === false) continue;
+    let found = false;
+    try {
+      found = def.test(schemas[def.jsonContract]) === true;
+    } catch {
+      found = false;
+    }
+    gates.push({ gate: def.gate, zod: def.zodRef, jsonPath: def.jsonPath, expectation: def.expectation, live: true, found });
     if (!found) missing.push(def.gate);
   }
-  const failed = missing.length > 0 || !schemasText;
-  const evidence = { gates, missing, stale };
-  if (!schemasText) evidence.parseError = "jsonSchemas record not found in outputContracts source.";
-  return mkCheck("L1-E-WIRE-PARITY", failed, evidence);
+  return mkCheck("L1-E-WIRE-PARITY", missing.length > 0, { distAvailable: true, gates, missing, stale });
+}
+
+/** Violating payloads proving each zod gate is live (behavioral, no text scan). */
+export const WIRE_LIVENESS_PROBES = [
+  { gate: "planner-nonvacuous", contract: "planner", marker: "PLANNER_EMPTY_RESULT", payload: { workUnits: [] } },
+  { gate: "explorer-nonvacuous", contract: "explorer", marker: "EXPLORER_EMPTY_RESULT", payload: { summary: "liveness probe" } },
+  {
+    gate: "spec-ready-artifacts",
+    contract: "spec-authoring",
+    marker: "SPEC_MANAGER_INCOMPLETE_RESULT",
+    payload: { change: "probe", status: "READY", artifacts: { specs: [] }, decisionRequests: [], validationReady: true },
+  },
+  {
+    gate: "reviewer-coherence",
+    contract: "reviewer",
+    marker: "REVIEWER_FAIL_WITHOUT_FINDING",
+    payload: { verdict: "FAIL", findings: [], finalizationSafety: "BLOCKED" },
+  },
+  {
+    gate: "supervisor-coherence",
+    contract: "supervisor",
+    marker: "SUPERVISOR_UNSAFE_SAFE",
+    payload: { summary: "liveness probe", finalizationSafety: "SAFE", unresolved: ["probe"] },
+  },
+];
+
+/**
+ * Probe zod-gate liveness behaviorally: a gate is live iff the deterministic
+ * validator rejects the violating payload with the gate's marker code. Takes
+ * the built validateAgentOutput (sync). Gates that accept their violating
+ * payload are stale (removed upstream) and must not fail E. If the validator
+ * is unavailable, every gate is assumed live (fail-closed direction).
+ */
+export function probeWireLiveness(validateAgentOutput) {
+  const live = {};
+  for (const probe of WIRE_LIVENESS_PROBES) {
+    if (typeof validateAgentOutput !== "function") {
+      live[probe.gate] = true;
+      continue;
+    }
+    try {
+      const result = validateAgentOutput(probe.contract, probe.payload);
+      live[probe.gate] = !(result && result.ok === true);
+      if (result && result.ok !== true) {
+        const text = JSON.stringify(result.issues ?? []);
+        if (!text.includes(probe.marker)) live[probe.gate] = true;
+      }
+    } catch {
+      live[probe.gate] = true;
+    }
+  }
+  return live;
 }
 
 /**
- * L1-F-LANE-COMMAND-BINDING — parameter-flow command-binding check for
- * provider lane evidence (src/validation/laneEvidence.ts verify currently
- * takes no command parameter and never compares commandDigest). Precisely:
+ * L1-F-LANE-COMMAND-BINDING — structural fallback (static parameter-flow
+ * shape; used ONLY when the dist/ snapshot is unavailable and explicitly
+ * marked mode:"structural-fallback" by evaluateAll). Precisely:
  * (i) parse the `verifyProviderLaneEvidenceV1` signature for a command
  * parameter (name matching /command/i, e.g. expectedCommand/command); the
  * body must contain a SINGLE comparison expression (one `===`/`!==`
@@ -806,10 +1021,12 @@ export function checkWireParity(contractsSource) {
  * value reference inside those parens (`command`/`expectedCommand` key or
  * `*.command`/`command` value bound to the verified parameter). A `command:`
  * token on a nearby line outside the call parens does NOT satisfy this.
- * Residuals (in `notes`): aliasing, re-exports, wrapper indirection,
- * digest-function name variations beyond sha256-plus-suffix, and runtime-passed
- * values are not traced; this proves static parameter-flow shape, not runtime
- * binding correctness.
+ * Known false-pass classes of this fallback (it is NOT the enforcement;
+ * the behavioral probe is): single-line compound comparisons that mention
+ * both sides without relating them (e.g. `commandDigest !== sha256(seed) &&
+ * expectedCommand !== ""`), aliasing, re-exports, wrapper indirection,
+ * digest-function name variations, and runtime-passed values are not traced.
+ * This proves static parameter-flow shape, not runtime binding correctness.
  */
 export function parseVerifyCommandParam(laneSource) {
   const fnAnchor = laneSource.indexOf("verifyProviderLaneEvidenceV1");
@@ -926,12 +1143,204 @@ export function checkLaneCommandBinding(laneSource, callSites) {
     .map((site) => ({ file: site.file, line: site.line }));
   const failed = !verifyCompares || sitesMissing.length > 0;
   return mkCheck("L1-F-LANE-COMMAND-BINDING", failed, {
+    mode: "structural-fallback",
     verifyComparesCommandDigest: verifyCompares,
     verifyDetail: verifyNote,
     verifiedCommandParam: commandParam,
-    ref: "src/validation/laneEvidence.ts:256-279",
+    ref: "src/validation/laneEvidence.ts",
     consumerCallSitesMissingCommand: sitesMissing,
     consumerCallSitesChecked: (callSites ?? []).length,
+  });
+}
+
+/** Blocker-code substring the command-binding probe requires (canonical fix contract). */
+export const LANE_COMMAND_MISMATCH_MARKER = "COMMAND_MISMATCH";
+
+/**
+ * Build a synthetic but candidate-bound lane evidence document for the
+ * behavioral probe. `helpers` provides the built digest/directory functions
+ * ({ sha256Utf8, sha256Canonical, providerLaneEvidenceDirectory }) so tests
+ * can inject fakes and the real tree uses dist code. The document carries
+ * artifacts:[] (no fixture files needed) and a directory-correct artifact
+ * path, so a correct verifier returns ok:true on the matching digest for
+ * integrity reasons alone; only the command-digest cases discriminate.
+ */
+export function buildLaneProbeEvidence(helpers, root, config, commandText) {
+  const { sha256Utf8, sha256Canonical, providerLaneEvidenceDirectory } = helpers;
+  const candidate = { candidateId: "preflight-probe", revision: 1, identityDigest: "a".repeat(64) };
+  const lane = "CONTRACT";
+  const checkId = "preflight-command-binding-probe";
+  const expected = { candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest };
+  const directory = providerLaneEvidenceDirectory(root, config ?? {}, lane, expected);
+  const correctDigest = sha256Utf8(commandText);
+  const payload = {
+    version: 1,
+    lane,
+    checkId,
+    candidate: { candidateId: expected.candidateId, revision: expected.revision, identityDigest: expected.identityDigest },
+    workspace: {
+      version: 1,
+      candidateId: expected.candidateId,
+      candidateRevision: expected.revision,
+      candidateIdentityDigest: expected.identityDigest,
+      expectedSourceDigest: "b".repeat(64),
+      observedSourceDigest: "b".repeat(64),
+      status: "MATCH",
+    },
+    provider: { name: "preflight-probe", version: "1" },
+    commandDigest: correctDigest,
+    status: "PASS",
+    summary: "preflight L1 command-binding probe",
+    findingCount: 0,
+    findings: [],
+    artifacts: [],
+    rawArtifact: "contract/preflight-probe.raw",
+    rawArtifactDigest: "c".repeat(64),
+    startedAt: "probe-started",
+    finishedAt: "probe-finished",
+    blockers: [],
+    artifact: path.relative(root, path.join(directory, "preflight-command-binding-probe.json")),
+  };
+  const evidence = { ...payload, digest: sha256Canonical(payload) };
+  return { evidence, expected, correctDigest, wrongDigest: sha256Utf8(`${commandText} :: different-action`) };
+}
+
+function blockerMentions(blockers, marker) {
+  return Array.isArray(blockers) && blockers.some((blocker) => typeof blocker === "string" && blocker.includes(marker));
+}
+
+async function invokeLaneVerify(verifyFn, args) {
+  try {
+    const result = await verifyFn(...args);
+    return { result, error: null };
+  } catch (error) {
+    return { result: null, error: String((error && error.message) || error) };
+  }
+}
+
+/**
+ * L1-F behavioral command-binding probe (BEHAVIORAL; the enforcement).
+ * Calls the BUILT verifyProviderLaneEvidenceV1 with a synthetic evidence
+ * document whose commandDigest is known: (a) the matching digest must verify
+ * ok with no COMMAND_MISMATCH blocker; (b) a well-formed different digest
+ * must return ok:false WITH a COMMAND_MISMATCH blocker; (c) undefined and a
+ * malformed digest must each return ok:false WITH a COMMAND_MISMATCH
+ * (fail-closed) blocker. A verifier that ignores its expected-command
+ * parameter returns ok for (b)/(c) and therefore cannot pass: consumption is
+ * proven, not scanned. `verifyFn` is injectable so self-tests prove the
+ * discrimination without a build. A throw is never accepted as a blocker
+ * (the canonical contract returns blockers; see notes).
+ */
+export async function probeLaneCommandBindingBehavioral(verifyFn, helpers, root, config) {
+  const commandText = "preflight-l1 probe executed command --check unit-test";
+  let built;
+  try {
+    built = buildLaneProbeEvidence(helpers, root, config, commandText);
+  } catch (error) {
+    return {
+      mode: "behavioral",
+      passed: false,
+      detail: `probe evidence construction failed: ${String((error && error.message) || error)}`,
+      cases: {},
+    };
+  }
+  const { evidence, expected, correctDigest, wrongDigest } = built;
+  const verifyArity = typeof verifyFn === "function" ? verifyFn.length : null;
+  const caseA = await invokeLaneVerify(verifyFn, [root, config ?? {}, evidence, expected, correctDigest]);
+  const caseB = await invokeLaneVerify(verifyFn, [root, config ?? {}, evidence, expected, wrongDigest]);
+  const caseCUndefined = await invokeLaneVerify(verifyFn, [root, config ?? {}, evidence, expected, undefined]);
+  const caseCMalformed = await invokeLaneVerify(verifyFn, [root, config ?? {}, evidence, expected, "not-a-digest"]);
+  const aPass =
+    caseA.error === null &&
+    Boolean(caseA.result) &&
+    caseA.result.ok === true &&
+    !blockerMentions(caseA.result.blockers, LANE_COMMAND_MISMATCH_MARKER);
+  const bPass =
+    caseB.error === null &&
+    Boolean(caseB.result) &&
+    caseB.result.ok === false &&
+    blockerMentions(caseB.result.blockers, LANE_COMMAND_MISMATCH_MARKER);
+  const cPass =
+    caseCUndefined.error === null &&
+    Boolean(caseCUndefined.result) &&
+    caseCUndefined.result.ok === false &&
+    blockerMentions(caseCUndefined.result.blockers, LANE_COMMAND_MISMATCH_MARKER) &&
+    caseCMalformed.error === null &&
+    Boolean(caseCMalformed.result) &&
+    caseCMalformed.result.ok === false &&
+    blockerMentions(caseCMalformed.result.blockers, LANE_COMMAND_MISMATCH_MARKER);
+  const passed = aPass && bPass && cPass;
+  const summarize = (invocation) =>
+    invocation.error !== null
+      ? { threw: invocation.error }
+      : { ok: invocation.result?.ok ?? null, blockers: invocation.result?.blockers ?? null };
+  return {
+    mode: "behavioral",
+    passed,
+    verifyArity,
+    detail: passed
+      ? "built verifier consumes its expected-command digest: matching digest verifies, differing digest is COMMAND_MISMATCH, undefined/malformed digests fail closed."
+      : `built verifier does not enforce command binding (a:${aPass} b:${bPass} c:${cPass}); a verifier ignoring its expected-command parameter returns ok for the mismatched/missing cases.`,
+    cases: {
+      matchingDigestOk: aPass,
+      differentDigestMismatch: bPass,
+      missingMalformedFailClosed: cPass,
+      caseA: summarize(caseA),
+      caseB: summarize(caseB),
+      caseCUndefined: summarize(caseCUndefined),
+      caseCMalformed: summarize(caseCMalformed),
+    },
+  };
+}
+
+/**
+ * Full L1-F check with behavioral enforcement. `input` is
+ * { laneSource, callSites, behavioral? } where `behavioral` is
+ * { verifyFn, helpers, root, config } and `helpers` provides the built
+ * { sha256Utf8, sha256Canonical, providerLaneEvidenceDirectory }. When
+ * `behavioral` is present the verdict conjoins the consumption probe with the
+ * consumer call-site threading shape (each in-repo call's own parens binding
+ * a command digest value — threading shape, not runtime value correctness).
+ * When absent (dist/ unavailable) the structural fallback runs and the
+ * evidence is explicitly marked mode:"structural-fallback".
+ */
+export async function checkLaneCommandBindingWithBehavioral(input) {
+  const { laneSource, callSites, behavioral } = input ?? {};
+  const sites = callSites ?? [];
+  const sitesMissing = sites
+    .filter((site) => {
+      const fnName = ["verifyProviderLaneEvidenceV1", "requireProviderLaneEvidenceV1", "requireProviderLaneEvidenceForActionV1"].find((name) =>
+        site.snippet.includes(name),
+      );
+      const args = fnName ? extractCallArgs(site.snippet, fnName) : null;
+      if (!args) return true;
+      if (/(command|expectedCommand)\s*:\s*[^\n,}]*command/i.test(args)) return false;
+      if (/expectedCommand\s*:\s*[^\n,}]+/i.test(args) && /command/i.test(args)) return false;
+      if (/\.\s*command\b/.test(args)) return false;
+      if (/\(\s*[^,()]*\bcommand\b[^,()]*\)/.test(args)) return false;
+      return true;
+    })
+    .map((site) => ({ file: site.file, line: site.line }));
+  if (!behavioral || typeof behavioral.verifyFn !== "function") {
+    const structural = checkLaneCommandBinding(laneSource, sites);
+    return mkCheck("L1-F-LANE-COMMAND-BINDING", structural.status === "FAIL", {
+      ...structural.evidence,
+      mode: "structural-fallback",
+      distAvailable: false,
+      note: "dist/ snapshot unavailable: ran the structural fallback (same-expression comparison + in-parens threading). Known false-pass classes apply; see notes.",
+    });
+  }
+  const probe = await probeLaneCommandBindingBehavioral(behavioral.verifyFn, behavioral.helpers, behavioral.root, behavioral.config);
+  const failed = !probe.passed || sitesMissing.length > 0;
+  return mkCheck("L1-F-LANE-COMMAND-BINDING", failed, {
+    mode: "behavioral",
+    distAvailable: true,
+    probe,
+    verifyConsumesCommandDigest: probe.passed,
+    verifyDetail: probe.detail,
+    ref: "src/validation/laneEvidence.ts",
+    consumerCallSitesMissingCommand: sitesMissing,
+    consumerCallSitesChecked: sites.length,
   });
 }
 
@@ -951,8 +1360,23 @@ export function checkAdapterCoverage(catalogSource, registrySource) {
   return mkCheck("L1-G-ADAPTER-COVERAGE", failed, evidence);
 }
 
-/** Run every check against one in-memory fixture bundle (pure). */
-export function evaluateAll(fx) {
+/**
+ * Run every check against one in-memory fixture bundle. Async because L1-F
+ * awaits the behavioral consumption probe when `fx.laneBehavioral` provides
+ * the built (or injected) verifier; every other assertion is synchronous and
+ * pure. `fx` is
+ * { agents, roles, skillSeed, skillRoots, routing, permissionsSource,
+ *   schemas, wireLive, laneSource, callSites, laneBehavioral,
+ *   catalogSource, registrySource, dirExists, fileExists, mcpConfigured }.
+ * `schemas` maps contract name → provider JSON Schema object (dist DATA);
+ * `wireLive` maps wire gate id → boolean (behaviorally probed liveness);
+ * `laneBehavioral` is { verifyFn, helpers, root, config } or undefined
+ * (undefined selects the explicitly-marked structural fallback).
+ */
+export async function evaluateAll(fx) {
+  const laneCheck = fx.laneBehavioral
+    ? await checkLaneCommandBindingWithBehavioral({ laneSource: fx.laneSource, callSites: fx.callSites, behavioral: fx.laneBehavioral })
+    : await checkLaneCommandBindingWithBehavioral({ laneSource: fx.laneSource, callSites: fx.callSites });
   return [
     checkPermissionCeiling(fx.agents, fx.roles),
     checkSkillRoleFit(fx.agents, fx.skillSeed),
@@ -962,8 +1386,8 @@ export function evaluateAll(fx) {
     checkSkillRefsResolve(fx.agents, fx.skillRoots, fx.fileExists),
     checkMcpFailClosed(fx.permissionsSource),
     checkMcpRefsConfigured(fx.agents, fx.mcpConfigured),
-    checkWireParity(fx.contractsSource),
-    checkLaneCommandBinding(fx.laneSource, fx.callSites),
+    checkWireParity(fx.schemas, fx.wireLive),
+    laneCheck,
     checkAdapterCoverage(fx.catalogSource, fx.registrySource),
   ];
 }
@@ -1085,24 +1509,58 @@ export function collectLaneCallSites(root) {
 }
 
 const PREFLIGHT_NOTES = [
-  "Mechanism=DETERMINISTIC for every check: static source/filesystem comparison only; no network, no model calls.",
-  "Script-convention choice: pure-Node .mjs static inspection (scripts/architecture.mjs pattern). The gate reads source-as-text and never imports dist/ (a launcher + release snapshot per scripts/build.mjs, imported by no .mjs gate) nor tsx-loaded TypeScript (would execute provider/runtime code inside a read-only gate). It runs identically before and after build.",
+  "Mechanism=DETERMINISTIC for every check: static source/filesystem comparison plus loaded dist/ DATA (JSON Schema objects, built validator and verifier functions) with bounded crafted-input probes; no network, no model calls, no randomness.",
+  "Dist-as-DATA choice: L1-E loads provider-facing JSON Schemas via outputJsonSchema from the dist/ release snapshot pinned by dist/current relative to the inspected root (auditing another checkout uses that checkout's snapshot); L1-F calls the built verifyProviderLaneEvidenceV1 with crafted digests and asserts on returned blockers. No tsx is required and no provider/runtime workflow executes: outputJsonSchema/validateAgentOutput are pure validators and the lane probe uses a synthetic artifacts:[] document. When dist/ is unavailable, L1-E fails closed with distAvailable:false (no source-text fallback is attempted — text cannot prove parity) and L1-F runs the explicitly-marked structural fallback.",
   "L1-A1 ceiling mapping covers read/write/gitWrite/delegate/shell plus review/validate against maxCapabilities (roles.ts maxCapabilities, compiled via src/participants/skillCompiler.ts:30-32 roleCapabilities). network has no role-ceiling source in roles.ts and is intentionally unchecked (validateExecutionCapabilities in permissions.ts:23-67 likewise gates only a subset).",
   "L1-A2 mirrors src/participants/skillCompiler.ts:77 role rejection; required/forbidden-tool coupling (src/participants/skillCompiler.ts:78-80) is out of scope because preset skills carry no tool declarations.",
-  "L1-A3 covers intentional nonparticipants (Semantic Assessor: a CanonicalAgentRole without a RoleProfileV1 per src/participants/types.ts). It enforces the preset-decidable subset of permissions.ts:55-61 (all of read/write/shell/network/delegate/review/validate/gitWrite explicitly deny; no skills; no MCPs; no args). L1-A1/L1-B skip nonparticipant roles instead of failing them as unknown-profile. Residual: transport/adapter/capability projection (paseo+codex, runtimeConfigInjection/structuredOutput/modelSelection) and nativeAgent are runtime-resolved, not preset-decidable, and are not checked here.",
+  "L1-A3 covers intentional nonparticipants (Semantic Assessor: a CanonicalAgentRole without a RoleProfileV1 per src/participants/types.ts). It enforces the preset-decidable subset of permissions.ts:55-61 (all of read/write/shell/network/delegate/review/validate/gitWrite explicitly deny; no skills; no MCPs; no top-level args; no execution.args; no top-level or execution.nativeAgent). execution.nativeAgent IS statically checkable: a configured string (config.ts:17) compiled into selection.nativeAgent (routing.ts:8), exactly like execution.args merging into selection.args there; the previous gate's `agent.args ?? agent.execution?.args` shape let an empty top-level args mask a nonempty execution.args and is fixed by checking both levels independently. L1-A1/L1-B skip nonparticipant roles instead of failing them as unknown-profile. Residual: runtime.defaultArgs merging (routing.ts:8) is not inspected — the shipped runtimes declare no defaultArgs; transport/adapter/capability projection (paseo+codex, runtimeConfigInjection/structuredOutput/modelSelection) remains runtime-resolved, not preset-decidable, and is not checked here.",
   "L1-B checks profile-subset closure only; it does not require a matching enabled agent per selector.",
   "L1-C2 is exact parity with compiler.ts:54-60 (filesystem SKILL.md under configured roots). Seed-ID validity is L1-A2; the seed-vs-filesystem split itself is the reported drift.",
   "L1-D1 asserts the absence of the fail-open shape; any future allowlist/explicit-deny rewrite passes as long as no `if (!configured[name]) … = true` grant remains.",
   "L1-D2 reads <root>/.harness/project.yaml mcp.servers with a minimal indentation-aware parser (full YAML fidelity is a documented limit; block and inline `{…}` server forms are handled).",
-  "L1-E enumeration follows the live zod markers; implementer/repair-result anyOf guards are already present in JSON and are therefore not listed as gates.",
-  "L1-E is a decidable approximation, not a proof: planner requires workUnits minItems>=1 (0/absent FAILs); explorer requires minItems>=1 on an evidence array or anyOf/oneOf+minItems>=1 over evidence arrays (bare anyOf or minItems:0 FAILs; the full 'any one of seven non-empty' disjunction is approximated, not proven equivalent); spec-ready requires artifacts.required to include proposal+tasks AND proposal/tasks minLength>=1 (required-alone allows empty strings); reviewer requires anyOf/allOf/oneOf/if + FAIL literal + findings minItems>=1 + finalizationSafety (severity-level critical/high coupling is NOT verified: residual); supervisor requires anyOf/allOf/oneOf/if + SAFE + unresolved + missingEvidence + maxItems:0. JSON Schema cannot express the zod conditional implications exactly; this checks structural+cardinality coupling.",
-  "L1-F is parameter-flow, not token proximity: (i) requires a single ===/!== statement binding evidence.commandDigest to the verifier's /command/i parameter (unrelated equalities elsewhere do not satisfy this); verify() currently takes no command parameter, so (i) cannot pass without a signature change. (ii) requires each consumer call's OWN paren-matched argument list to bind a command value (command/expectedCommand key with command value, or *.command reference); a `command:` token outside the call parens does not satisfy this. Residuals: aliasing, re-exports, wrapper indirection, non-sha256 digest names beyond sha256*/digest* substring, and runtime-passed values are not traced.",
+  "L1-E enumeration follows behaviorally-probed zod liveness (WIRE_LIVENESS_PROBES via validateAgentOutput); implementer/repair-result anyOf guards are already present in JSON and are therefore not listed as gates.",
+  "L1-E asserts exact object-graph bindings, never token co-occurrence: planner properties.workUnits type=array AND minItems>=1; explorer either a known evidence array bound to type=array+minItems>=1 at top level or an anyOf/oneOf whose EVERY branch binds >=1 known evidence array path to type=array+minItems>=1 (unrelated disjunctions fail); spec an artifacts node whose required includes proposal+tasks with both typed type:string+minLength>=1 (unconditional, allOf branch, READY-tied anyOf/oneOf branch, or if-READY-then); reviewer top-level properties.verdict type:string AND one anyOf/oneOf branch (or if-FAIL-then) binding verdict to FAIL with findings type:array+minItems>=1 in the SAME branch object; supervisor one anyOf/oneOf/allOf branch (or if-SAFE-then) binding finalizationSafety to SAFE with unresolved and missingEvidence type:array+maxItems===0 in the SAME branch object. A bare `{minItems:1}` without type:array, a `{minLength:1}` without type:string, or a constraint on an unrelated path fails. Residuals (not faked): the reviewer critical/high-severity to not-SAFE implication has no honest object-graph encoding here and is NOT asserted; full conditional-implication semantics (READY/SAFE/FAIL constraining every conforming payload) are approximated by same-branch presence, not proven; unconditional (non-READY-tied) spec shapes and single-field explorer shapes are accepted as fail-closed enforcement though stricter than zod (they may reject payloads zod accepts — a completeness cost, not a soundness hole).",
+  "L1-F command binding is proven behaviorally: the built verifier is called with (a) the matching command digest (must verify ok, no COMMAND_MISMATCH), (b) a well-formed different digest (must return ok:false with a COMMAND_MISMATCH blocker), (c) undefined and malformed digests (each must return ok:false with a COMMAND_MISMATCH fail-closed blocker). A verifier ignoring its expected-command parameter returns ok for (b)/(c) and cannot pass. The probe uses a synthetic candidate-bound document (artifacts:[], directory-correct artifact path); a full persist-to-load filesystem round-trip is a residual. Consumer call-site threading (each in-repo verify/require* call's own parens binding a command digest value) is conjoined statically: it proves threading shape, not runtime value correctness. Structural-fallback residuals (dist-unavailable mode only): single-line compound comparisons mentioning both sides without relating them, aliasing, re-exports, wrapper indirection, and non-sha256 digest spellings are not traced.",
   "L1-G compares catalog values against the union of capabilityAdapter keys and capabilityForAdapter returns; provider-side registries (src/providers/validation/registry.ts) are out of scope.",
   "No backward-compatibility shims: unparsable inputs fail the affected check closed with a parse note instead of being silently accepted.",
 ];
 
+/**
+ * Load the dist/ DATA snapshot for the inspected root. Resolves
+ * <root>/dist/current to a release id and dynamically imports the three
+ * behavior-bearing modules (outputContracts, laneEvidence, digest). Returns
+ * null when dist/ is unavailable or unimportable — callers fail E closed and
+ * run F's structural fallback, both explicitly marked. Never throws.
+ */
+export async function loadDistForRoot(root) {
+  try {
+    const pointerPath = path.join(root, "dist", "current");
+    const releaseId = fs.readFileSync(pointerPath, "utf8").trim();
+    if (!/^[A-Za-z0-9._-]+$/.test(releaseId)) return null;
+    const releaseDir = path.join(root, "dist", "releases", releaseId);
+    const [contracts, lane, digest] = await Promise.all([
+      import(pathToFileURL(path.join(releaseDir, "agents", "outputContracts.js")).href),
+      import(pathToFileURL(path.join(releaseDir, "validation", "laneEvidence.js")).href),
+      import(pathToFileURL(path.join(releaseDir, "core", "digest.js")).href),
+    ]);
+    if (
+      typeof contracts?.outputJsonSchema !== "function" ||
+      typeof contracts?.validateAgentOutput !== "function" ||
+      typeof lane?.verifyProviderLaneEvidenceV1 !== "function" ||
+      typeof lane?.providerLaneEvidenceDirectory !== "function" ||
+      typeof digest?.sha256Utf8 !== "function" ||
+      typeof digest?.sha256Canonical !== "function"
+    ) {
+      return null;
+    }
+    return { releaseId, contracts, lane, digest };
+  } catch {
+    return null;
+  }
+}
+
 /** Load real-tree inputs and evaluate. Throws with a clear message on missing files. */
-export function loadRealTreeInputs(root) {
+export async function loadRealTreeInputs(root) {
   const preset = parseJsonc(readText(root, "presets/agents/default.jsonc"));
   const rolesSource = readText(root, "src/participants/roles.ts");
   const skillsSource = readText(root, "src/participants/skills.ts");
@@ -1128,6 +1586,41 @@ export function loadRealTreeInputs(root) {
       return false;
     }
   };
+  const laneSource = readText(root, "src/validation/laneEvidence.ts");
+  const callSites = collectLaneCallSites(root);
+  const dist = await loadDistForRoot(root);
+  let schemas;
+  let wireLive;
+  let laneBehavioral;
+  let distNote;
+  if (dist) {
+    const names = ["planner", "explorer", "spec-authoring", "reviewer", "supervisor"];
+    schemas = {};
+    for (const name of names) {
+      try {
+        schemas[name] = dist.contracts.outputJsonSchema(name);
+      } catch {
+        schemas[name] = undefined;
+      }
+    }
+    wireLive = probeWireLiveness(dist.contracts.validateAgentOutput);
+    laneBehavioral = {
+      verifyFn: (...args) => dist.lane.verifyProviderLaneEvidenceV1(...args),
+      helpers: {
+        sha256Utf8: dist.digest.sha256Utf8,
+        sha256Canonical: dist.digest.sha256Canonical,
+        providerLaneEvidenceDirectory: (...args) => dist.lane.providerLaneEvidenceDirectory(...args),
+      },
+      root,
+      config: {},
+    };
+    distNote = `dist: release snapshot ${dist.releaseId} loaded for object-graph (L1-E) and behavioral (L1-F) probes.`;
+  } else {
+    schemas = undefined;
+    wireLive = undefined;
+    laneBehavioral = undefined;
+    distNote = "dist: snapshot unavailable — L1-E fails closed with distAvailable:false and L1-F runs the explicitly-marked structural fallback (no source-text parity fallback is attempted).";
+  }
   return {
     fx: {
       agents: preset.agents ?? {},
@@ -1136,9 +1629,11 @@ export function loadRealTreeInputs(root) {
       roles,
       skillSeed: seed,
       permissionsSource: readText(root, "src/agents/permissions.ts"),
-      contractsSource: readText(root, "src/agents/outputContracts.ts"),
-      laneSource: readText(root, "src/validation/laneEvidence.ts"),
-      callSites: collectLaneCallSites(root),
+      schemas,
+      wireLive,
+      laneSource,
+      callSites,
+      laneBehavioral,
       catalogSource: readText(root, "src/validation/capabilityCatalog.ts"),
       registrySource: readText(root, "src/validators/registry.ts"),
       dirExists,
@@ -1146,12 +1641,13 @@ export function loadRealTreeInputs(root) {
       mcpConfigured,
     },
     parseNotes: [...roleNotes, ...seedNotes],
+    distNote,
   };
 }
 
-export function runPreflight(root) {
-  const { fx, parseNotes } = loadRealTreeInputs(root);
-  const checks = evaluateAll(fx);
+export async function runPreflight(root) {
+  const { fx, parseNotes, distNote } = await loadRealTreeInputs(root);
+  const checks = await evaluateAll(fx);
   const failed = checks.filter((c) => c.status !== "PASS").length;
   return {
     version: REPORT_VERSION,
@@ -1160,7 +1656,7 @@ export function runPreflight(root) {
     root: path.resolve(root),
     node: process.version,
     checks,
-    notes: [...PREFLIGHT_NOTES, ...parseNotes.map((note) => `parse: ${note}`)],
+    notes: [...PREFLIGHT_NOTES, distNote, ...parseNotes.map((note) => `parse: ${note}`)],
     summary: { total: checks.length, passed: checks.length - failed, failed },
   };
 }
@@ -1189,7 +1685,7 @@ if (invokedAsScript) {
     const root = path.resolve(positional[0] ?? process.cwd());
     let report;
     try {
-      report = runPreflight(root);
+      report = await runPreflight(root);
     } catch (error) {
       process.stdout.write(
         `${JSON.stringify(

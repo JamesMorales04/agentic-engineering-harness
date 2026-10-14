@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import {
+  EXPLORER_KNOWN_EVIDENCE_ARRAYS,
+  LANE_COMMAND_MISMATCH_MARKER,
   checkAdapterCoverage,
   checkLaneCommandBinding,
+  checkLaneCommandBindingWithBehavioral,
   checkMcpFailClosed,
   checkMcpRefsConfigured,
   checkNonparticipantConstraints,
@@ -17,12 +21,17 @@ import {
   parseRolesProfiles,
   parseSkillSeed,
   parseVerifyCommandParam,
+  probeLaneCommandBindingBehavioral,
+  probeWireLiveness,
 } from "../scripts/preflightL1.mjs";
 
 // Mechanism classification: DETERMINISTIC. Every fixture below is an
 // in-memory literal; assertions compare exact check ids and evidence.
 // No network, no model calls, no filesystem writes (except read-only
-// parser lock-in tests against the checkout's own source).
+// parser lock-in tests against the checkout's own source). Behavioral
+// probe tests inject fake verifier/digest helpers (pure doubles); the
+// real-tree behavioral run is validated manually via
+// `node scripts/preflightL1.mjs`, not asserted here.
 
 function compliantRoles(): Record<string, any> {
   const tool = (required: string[], optional: string[] = []) => ({
@@ -134,18 +143,77 @@ export function buildOpenCodeRuntimeConfig(selection, config) {
 }
 `;
 
-const COMPLIANT_CONTRACTS_SOURCE = `
-import { z } from "zod";
-// PLANNER_EMPTY_RESULT EXPLORER_EMPTY_RESULT SPEC_MANAGER_INCOMPLETE_RESULT
-// REVIEWER_FAIL_WITHOUT_FINDING REVIEWER_UNSAFE_PASS SUPERVISOR_UNSAFE_SAFE
-const jsonSchemas = {
-  planner: { workUnits: { type: "array", minItems: 1 } },
-  explorer: { relevantFiles: { type: "array", minItems: 1 }, findings: { type: "array" }, anyOf: [{ required: ["findings"] }] },
-  "spec-authoring": { artifacts: { type: "object", required: ["specs", "proposal", "tasks"], properties: { proposal: { type: "string", minLength: 1 }, tasks: { type: "string", minLength: 1 } } } },
-  reviewer: { verdict: { enum: ["PASS", "FAIL", "PASS_WITH_WARNINGS"] }, findings: { type: "array", minItems: 1 }, finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] }, anyOf: [{ required: ["findings"] }] },
-  supervisor: { finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] }, unresolved: { type: "array", maxItems: 0 }, missingEvidence: { type: "array", maxItems: 0 }, allOf: [{ required: ["unresolved", "missingEvidence"] }] },
-};
-`;
+// Object-graph fixtures (loaded-schema DATA, never source text). The
+// compliant bundle satisfies every exact path+constraint binding; the
+// violating bundles below each break exactly one binding class the old
+// text-scan heuristics accepted.
+function compliantSchemas(): Record<string, any> {
+  return {
+    planner: {
+      type: "object",
+      properties: { workUnits: { type: "array", minItems: 1, items: { type: "object" } } },
+    },
+    explorer: {
+      type: "object",
+      properties: {
+        summary: { type: "string" },
+        relevantFiles: { type: "array", items: { type: "object" } },
+        findings: { type: "array", items: { type: "object" } },
+        moduleBoundaries: { type: "array", items: { type: "string" } },
+        tests: { type: "array", items: { type: "string" } },
+        dependencies: { type: "array", items: { type: "string" } },
+        risks: { type: "array", items: { type: "string" } },
+        openQuestions: { type: "array", items: { type: "string" } },
+      },
+      anyOf: EXPLORER_KNOWN_EVIDENCE_ARRAYS.map((field) => ({
+        properties: { [field]: { type: "array", minItems: 1 } },
+      })),
+    },
+    "spec-authoring": {
+      type: "object",
+      properties: {
+        status: { enum: ["READY", "BLOCKED"] },
+        artifacts: {
+          type: "object",
+          required: ["specs", "proposal", "tasks"],
+          properties: {
+            proposal: { type: "string", minLength: 1 },
+            tasks: { type: "string", minLength: 1 },
+            specs: { type: "array" },
+          },
+        },
+      },
+    },
+    reviewer: {
+      type: "object",
+      properties: {
+        verdict: { type: "string", enum: ["PASS", "FAIL", "PASS_WITH_WARNINGS"] },
+        findings: { type: "array", items: { type: "object" } },
+        finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] },
+        followUp: { type: "array" },
+      },
+      anyOf: [{ properties: { verdict: { const: "FAIL" }, findings: { type: "array", minItems: 1 } } }],
+    },
+    supervisor: {
+      type: "object",
+      properties: {
+        summary: { type: "string" },
+        unresolved: { type: "array", items: { type: "string" } },
+        missingEvidence: { type: "array", items: { type: "string" } },
+        finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] },
+      },
+      anyOf: [
+        {
+          properties: {
+            finalizationSafety: { const: "SAFE" },
+            unresolved: { type: "array", maxItems: 0 },
+            missingEvidence: { type: "array", maxItems: 0 },
+          },
+        },
+      ],
+    },
+  };
+}
 
 const COMPLIANT_LANE_SOURCE = `
 export async function verifyProviderLaneEvidenceV1(root, config, evidence, expected, expectedCommand) {
@@ -185,6 +253,44 @@ function capabilityAdapter(capability: string): string | undefined {
 }
 `;
 
+// Deterministic test doubles for the behavioral probe (no build needed).
+function sortKeysDeep(value: any): any {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeysDeep(value[key])]));
+  }
+  return value;
+}
+
+const testDigestHelpers = {
+  sha256Utf8: (text: string) => createHash("sha256").update(String(text), "utf8").digest("hex"),
+  sha256Canonical: (value: unknown) =>
+    createHash("sha256").update(JSON.stringify(sortKeysDeep(value)), "utf8").digest("hex"),
+  providerLaneEvidenceDirectory: (root: string, _config: unknown, lane: string, candidate: any) =>
+    path.join(
+      root,
+      ".harness/evidence",
+      String(lane).toLowerCase(),
+      `${candidate.candidateId}-r${candidate.revision}-${String(candidate.identityDigest).slice(0, 12)}`,
+    ),
+};
+
+/** A verifier that CONSUMES its expected-digest parameter (canonical contract). */
+async function consumingVerify(_root: string, _config: unknown, evidence: any, _expected: unknown, expectedDigest: unknown) {
+  if (typeof expectedDigest !== "string" || !/^[a-f0-9]{64}$/.test(expectedDigest)) {
+    return { ok: false, blockers: [`${LANE_COMMAND_MISMATCH_MARKER}: expected executed-command digest is absent or malformed.`] };
+  }
+  if (evidence?.commandDigest !== expectedDigest) {
+    return { ok: false, blockers: [`${LANE_COMMAND_MISMATCH_MARKER}: binds '${evidence?.commandDigest}' but executed '${expectedDigest}'.`] };
+  }
+  return { ok: true, blockers: [], evidence };
+}
+
+/** A verifier that IGNORES its expected-digest parameter (the current product gap). */
+async function ignoringVerify(_root: string, _config: unknown, evidence: any) {
+  return { ok: true, blockers: [], evidence };
+}
+
 function compliantFixture(): any {
   return {
     agents: compliantAgents(),
@@ -193,9 +299,11 @@ function compliantFixture(): any {
     roles: compliantRoles(),
     skillSeed: compliantSeed(),
     permissionsSource: COMPLIANT_PERMISSIONS_SOURCE,
-    contractsSource: COMPLIANT_CONTRACTS_SOURCE,
+    schemas: compliantSchemas(),
+    wireLive: undefined,
     laneSource: COMPLIANT_LANE_SOURCE,
     callSites: COMPLIANT_CALL_SITES,
+    laneBehavioral: { verifyFn: consumingVerify, helpers: testDigestHelpers, root: "/probe-root", config: {} },
     catalogSource: COMPLIANT_CATALOG_SOURCE,
     registrySource: COMPLIANT_REGISTRY_SOURCE,
     dirExists: () => true,
@@ -211,8 +319,8 @@ function checkById(checks: any[], id: string) {
 }
 
 describe("preflight L1 gate", () => {
-  it("PASSES every check on a crafted compliant fixture", () => {
-    const checks = evaluateAll(compliantFixture());
+  it("PASSES every check on a crafted compliant fixture", async () => {
+    const checks = await evaluateAll(compliantFixture());
     expect(checks).toHaveLength(11);
     for (const check of checks) {
       expect(check.status, `${check.id}: ${JSON.stringify(check.evidence)}`).toBe("PASS");
@@ -279,20 +387,51 @@ for (const name of selection.mcps) {
   });
 
   it("(e) FAILS L1-E-WIRE-PARITY listing each missing gate", () => {
-    const bare = `
-const jsonSchemas = {
-  planner: { workUnits: { type: "array", items: {} } },
-  explorer: { relevantFiles: { type: "array" } },
-  "spec-authoring": { artifacts: { type: "object", required: ["specs"] } },
-  reviewer: { verdict: { type: "string" } },
-  supervisor: { finalizationSafety: { type: "string" } },
-};
-// PLANNER_EMPTY_RESULT EXPLORER_EMPTY_RESULT SPEC_MANAGER_INCOMPLETE_RESULT
-// REVIEWER_FAIL_WITHOUT_FINDING REVIEWER_UNSAFE_PASS SUPERVISOR_UNSAFE_SAFE
-`;
-    const check = checkWireParity(bare);
+    const bare = {
+      planner: { type: "object", properties: { workUnits: { type: "array", items: {} } } },
+      explorer: {
+        type: "object",
+        properties: {
+          relevantFiles: { type: "array" },
+          findings: { type: "array" },
+          moduleBoundaries: { type: "array" },
+          tests: { type: "array" },
+          dependencies: { type: "array" },
+          risks: { type: "array" },
+          openQuestions: { type: "array" },
+        },
+      },
+      "spec-authoring": {
+        type: "object",
+        properties: {
+          artifacts: {
+            type: "object",
+            required: ["specs"],
+            properties: { proposal: { type: "string" }, tasks: { type: "string" } },
+          },
+        },
+      },
+      reviewer: {
+        type: "object",
+        properties: {
+          verdict: { enum: ["PASS", "FAIL"] },
+          findings: { type: "array" },
+          finalizationSafety: { enum: ["SAFE"] },
+        },
+      },
+      supervisor: {
+        type: "object",
+        properties: {
+          finalizationSafety: { enum: ["SAFE"] },
+          unresolved: { type: "array" },
+          missingEvidence: { type: "array" },
+        },
+      },
+    };
+    const check = checkWireParity(bare, undefined);
     expect(check.id).toBe("L1-E-WIRE-PARITY");
     expect(check.status).toBe("FAIL");
+    expect(check.evidence.distAvailable).toBe(true);
     expect(check.evidence.missing.sort()).toEqual([
       "explorer-nonvacuous",
       "planner-nonvacuous",
@@ -300,7 +439,7 @@ const jsonSchemas = {
       "spec-ready-artifacts",
       "supervisor-coherence",
     ]);
-    expect(checkWireParity(COMPLIANT_CONTRACTS_SOURCE).status).toBe("PASS");
+    expect(checkWireParity(compliantSchemas(), undefined).status).toBe("PASS");
   });
 
   it("(f) FAILS L1-F-LANE-COMMAND-BINDING without a commandDigest comparison or command threading", () => {
@@ -367,23 +506,49 @@ function capabilityAdapter(capability: string): string | undefined {
     expect(checkPermissionCeiling(fx3.agents, fx3.roles).status).toBe("PASS");
   });
 
-  it("HIGH-2 FAILS L1-E on minItems:0 and bare-anyOf shapes the old token-checks would PASS", () => {
-    const minZero = `
-const jsonSchemas = {
-  planner: { workUnits: { type: "array", minItems: 0 } },
-  explorer: { relevantFiles: { type: "array", minItems: 0 }, anyOf: [{ required: ["findings"] }] },
-  "spec-authoring": { artifacts: { type: "object", required: ["specs", "proposal", "tasks"] }, proposal: { type: "string" }, tasks: { type: "string" } },
-  reviewer: { verdict: { enum: ["PASS", "FAIL"] }, findings: { type: "array" }, finalizationSafety: { enum: ["SAFE"] }, anyOf: [{ required: ["findings"] }] },
-  supervisor: { finalizationSafety: { enum: ["SAFE"] }, unresolved: { type: "array" }, missingEvidence: { type: "array" }, allOf: [{ required: ["unresolved"] }] },
-};
-// PLANNER_EMPTY_RESULT EXPLORER_EMPTY_RESULT SPEC_MANAGER_INCOMPLETE_RESULT
-// REVIEWER_FAIL_WITHOUT_FINDING REVIEWER_UNSAFE_PASS SUPERVISOR_UNSAFE_SAFE
-`;
-    const check = checkWireParity(minZero);
+  it("HIGH-2 FAILS L1-E on zero/absent-cardinality shapes the old token-checks would PASS", () => {
+    const minZero = {
+      planner: { type: "object", properties: { workUnits: { type: "array", minItems: 0, items: {} } } },
+      explorer: {
+        type: "object",
+        properties: { relevantFiles: { type: "array", minItems: 0 } },
+        anyOf: [{ required: ["findings"] }],
+      },
+      "spec-authoring": {
+        type: "object",
+        properties: {
+          artifacts: {
+            type: "object",
+            required: ["specs", "proposal", "tasks"],
+            properties: { proposal: { type: "string" }, tasks: { type: "string" } },
+          },
+        },
+      },
+      reviewer: {
+        type: "object",
+        properties: {
+          verdict: { enum: ["PASS", "FAIL"] },
+          findings: { type: "array" },
+          finalizationSafety: { enum: ["SAFE"] },
+        },
+        anyOf: [{ required: ["findings"] }],
+      },
+      supervisor: {
+        type: "object",
+        properties: {
+          finalizationSafety: { enum: ["SAFE"] },
+          unresolved: { type: "array" },
+          missingEvidence: { type: "array" },
+        },
+        allOf: [{ required: ["unresolved"] }],
+      },
+    };
+    const check = checkWireParity(minZero, undefined);
     expect(check.id).toBe("L1-E-WIRE-PARITY");
     expect(check.status).toBe("FAIL");
-    // Every gate must still be listed missing: 0/absent cardinality, required-without-minLength,
-    // anyOf-without-minItems/FAIL, allOf-without-SAFE/maxItems:0 all FAIL the semantic test.
+    // Every gate must still be listed missing: 0/absent cardinality,
+    // required-without-minLength, anyOf-without-same-branch-binding and
+    // allOf-without-emptiness all FAIL the object-graph test.
     expect(check.evidence.missing.sort()).toEqual([
       "explorer-nonvacuous",
       "planner-nonvacuous",
@@ -391,10 +556,10 @@ const jsonSchemas = {
       "spec-ready-artifacts",
       "supervisor-coherence",
     ]);
-    // Old token shapes: planner minItems present (even 0), explorer anyOf present,
-    // spec required proposal+tasks present, reviewer/supervisor anyOf/allOf present.
-    expect(/workUnits:\s*\{[^}]*minItems/.test(minZero)).toBe(true);
-    expect(/(anyOf|allOf|oneOf|minItems)/.test(minZero)).toBe(true);
+    // Old token shapes are present: planner minItems key exists (even 0),
+    // explorer/reviewer anyOf present, spec required proposal+tasks present.
+    expect("minItems" in (minZero.planner.properties as any).workUnits).toBe(true);
+    expect("anyOf" in minZero.explorer).toBe(true);
   });
 
   it("HIGH-3 FAILS L1-F on unrelated-equality verifiers and snippet-proximity call sites the old check would PASS", () => {
@@ -433,7 +598,7 @@ export async function verifyProviderLaneEvidenceV1(root, config, evidence, expec
     expect(checkLaneCommandBinding(COMPLIANT_LANE_SOURCE, COMPLIANT_CALL_SITES).status).toBe("PASS");
   });
 
-  it("MEDIUM PASSES L1-A3 for the all-deny assessor and skips it in L1-A1/L1-B", () => {
+  it("MEDIUM PASSES L1-A3 for the all-deny assessor and skips it in L1-A1/L1-B", async () => {
     const assessor = {
       role: "Semantic Assessor",
       skills: [],
@@ -456,7 +621,7 @@ export async function verifyProviderLaneEvidenceV1(root, config, evidence, expec
     const nonparticipant = checkNonparticipantConstraints(fx.agents);
     expect(nonparticipant.id).toBe("L1-A3-NONPARTICIPANT");
     expect(nonparticipant.status).toBe("PASS");
-    expect(evaluateAll(fx).find((c) => c.id === "L1-A3-NONPARTICIPANT")?.status).toBe("PASS");
+    expect((await evaluateAll(fx)).find((c) => c.id === "L1-A3-NONPARTICIPANT")?.status).toBe("PASS");
     // Violating assessors fail the dedicated check: opened permission, skill, MCP, args.
     const bad = compliantFixture();
     (bad.agents as any)["semantic-assessor"] = {
@@ -486,5 +651,232 @@ export async function verifyProviderLaneEvidenceV1(root, config, evidence, expec
     const { seed } = parseSkillSeed(fs.readFileSync(path.join(repoRoot, "src/participants/skills.ts"), "utf8"));
     expect(seed["acceptance-traceability"].roles).toEqual(["Spec Manager"]);
     expect(seed["operation-coordination"].roles).toEqual(["Operation Supervisor"]);
+  });
+
+  it("HIGH-E FAILS L1-E when minItems/minLength lack a type (old helpers passed untyped constraints)", () => {
+    // Old fieldHasMinItemsGE1 passed ANY `workUnits:` object with minItems>=1,
+    // even `{ minItems: 1 }` with no type:array. The object graph requires the
+    // exact path to carry the exact typed constraint.
+    const untyped = compliantSchemas();
+    (untyped.planner.properties as any).workUnits = { minItems: 1, items: { type: "object" } };
+    const plannerCheck = checkWireParity(untyped, undefined);
+    expect(plannerCheck.status).toBe("FAIL");
+    expect(plannerCheck.evidence.missing).toEqual(["planner-nonvacuous"]);
+    const untypedSpec = compliantSchemas();
+    (untypedSpec["spec-authoring"].properties as any).artifacts = {
+      type: "object",
+      required: ["specs", "proposal", "tasks"],
+      properties: { proposal: { minLength: 1 }, tasks: { minLength: 1 } },
+    };
+    const specCheck = checkWireParity(untypedSpec, undefined);
+    expect(specCheck.status).toBe("FAIL");
+    expect(specCheck.evidence.missing).toEqual(["spec-ready-artifacts"]);
+  });
+
+  it("HIGH-E FAILS L1-E on unrelated explorer disjunctions (old fallback passed any anyOf+minItems)", () => {
+    // Old explorer fallback passed when the block merely contained anyOf,
+    // minItems>=1 anywhere, and an evidence field name anywhere. An anyOf
+    // over unrelated paths with the cardinality bound elsewhere is a vacuous
+    // escape hatch: payloads take the unrelated branch with all evidence
+    // arrays empty.
+    const unrelated = compliantSchemas();
+    (unrelated.explorer as any).anyOf = [
+      { properties: { summary: { type: "string", minLength: 1 } } },
+      { properties: { notes: { type: "string" } } },
+    ];
+    (unrelated.explorer.properties as any).extra = { type: "array", minItems: 1 };
+    const check = checkWireParity(unrelated, undefined);
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.missing).toEqual(["explorer-nonvacuous"]);
+  });
+
+  it("HIGH-E FAILS L1-E on uncoupled reviewer/supervisor co-occurrence (old tests passed spread tokens)", () => {
+    // Old reviewer/supervisor tests passed when anyOf/allOf/oneOf/if, the
+    // FAIL/SAFE literal, the findings/emptiness constraint and the safety
+    // field merely co-occurred anywhere. The object graph requires the SAME
+    // branch object to bind them.
+    const spread = compliantSchemas();
+    (spread.reviewer as any).anyOf = [
+      { properties: { verdict: { enum: ["FAIL"] } } },
+      { properties: { findings: { type: "array", minItems: 1 } } },
+    ];
+    const reviewerCheck = checkWireParity(spread, undefined);
+    expect(reviewerCheck.status).toBe("FAIL");
+    expect(reviewerCheck.evidence.missing).toContain("reviewer-coherence");
+    const spreadSup = compliantSchemas();
+    (spreadSup.supervisor as any).anyOf = [
+      { properties: { finalizationSafety: { const: "SAFE" }, other: { type: "array", maxItems: 0 } } },
+      { properties: { unresolved: { type: "array" }, missingEvidence: { type: "array" } } },
+    ];
+    const supervisorCheck = checkWireParity(spreadSup, undefined);
+    expect(supervisorCheck.status).toBe("FAIL");
+    expect(supervisorCheck.evidence.missing).toContain("supervisor-coherence");
+  });
+
+  it("HIGH-E reports stale (never failed) gates whose zod validator accepts the violating payload", () => {
+    const alwaysOk = () => ({ ok: true, issues: [] });
+    const live = probeWireLiveness(alwaysOk);
+    expect(Object.values(live).every((value) => value === false)).toBe(true);
+    const bare = {
+      planner: { type: "object", properties: {} },
+      explorer: { type: "object", properties: {} },
+      "spec-authoring": { type: "object", properties: {} },
+      reviewer: { type: "object", properties: {} },
+      supervisor: { type: "object", properties: {} },
+    };
+    const check = checkWireParity(bare, live);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("PASS");
+    expect(check.evidence.missing).toEqual([]);
+    expect(check.evidence.stale.sort()).toEqual([
+      "explorer-nonvacuous",
+      "planner-nonvacuous",
+      "reviewer-coherence",
+      "spec-ready-artifacts",
+      "supervisor-coherence",
+    ]);
+  });
+
+  it("HIGH-E FAILS L1-E closed with distAvailable:false when the schema objects are unavailable", () => {
+    const check = checkWireParity(undefined, undefined);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.distAvailable).toBe(false);
+    expect(check.evidence.missing.sort()).toEqual([
+      "explorer-nonvacuous",
+      "planner-nonvacuous",
+      "reviewer-coherence",
+      "spec-ready-artifacts",
+      "supervisor-coherence",
+    ]);
+  });
+
+  it("HIGH-F behavioral probe PASSES a consuming verifier and FAILS an ignoring one on the same evidence", async () => {
+    const consuming = await probeLaneCommandBindingBehavioral(consumingVerify, testDigestHelpers, "/probe-root", {});
+    expect(consuming.mode).toBe("behavioral");
+    expect(consuming.passed).toBe(true);
+    expect(consuming.cases.matchingDigestOk).toBe(true);
+    expect(consuming.cases.differentDigestMismatch).toBe(true);
+    expect(consuming.cases.missingMalformedFailClosed).toBe(true);
+    const ignoring = await probeLaneCommandBindingBehavioral(ignoringVerify, testDigestHelpers, "/probe-root", {});
+    expect(ignoring.passed).toBe(false);
+    // The ignoring verifier returns ok for the mismatched and missing cases:
+    // consumption is disproven, not merely unscanned.
+    expect(ignoring.cases.matchingDigestOk).toBe(true);
+    expect(ignoring.cases.differentDigestMismatch).toBe(false);
+    expect(ignoring.cases.missingMalformedFailClosed).toBe(false);
+    expect((ignoring.cases.caseB as any).ok).toBe(true);
+  });
+
+  it("HIGH-F rejects good-looking sources behaviorally when the verifier ignores its parameter", async () => {
+    // The compliant-looking source passes the structural fallback, but the
+    // behavioral probe with an ignoring verifier fails: the OLD heuristics
+    // passed this shape while the product gap (no consumption) remained.
+    expect(checkLaneCommandBinding(COMPLIANT_LANE_SOURCE, COMPLIANT_CALL_SITES).status).toBe("PASS");
+    const behavioral = await checkLaneCommandBindingWithBehavioral({
+      laneSource: COMPLIANT_LANE_SOURCE,
+      callSites: COMPLIANT_CALL_SITES,
+      behavioral: { verifyFn: ignoringVerify, helpers: testDigestHelpers, root: "/probe-root", config: {} },
+    });
+    expect(behavioral.id).toBe("L1-F-LANE-COMMAND-BINDING");
+    expect(behavioral.status).toBe("FAIL");
+    expect(behavioral.evidence.mode).toBe("behavioral");
+    expect(behavioral.evidence.probe.passed).toBe(false);
+    // And the consuming verifier passes the same source end to end.
+    const consuming = await checkLaneCommandBindingWithBehavioral({
+      laneSource: COMPLIANT_LANE_SOURCE,
+      callSites: COMPLIANT_CALL_SITES,
+      behavioral: { verifyFn: consumingVerify, helpers: testDigestHelpers, root: "/probe-root", config: {} },
+    });
+    expect(consuming.status).toBe("PASS");
+    expect(consuming.evidence.probe.passed).toBe(true);
+  });
+
+  it("HIGH-F rejects single-line compound comparisons structurally-passing but behaviorally-void", async () => {
+    // `commandDigest` compared against an unrelated digest on the SAME line
+    // as a separate expectedCommand comparison fools the statement splitter
+    // (one ===/!== statement mentions both) without binding them together.
+    const compoundLane = `
+export async function verifyProviderLaneEvidenceV1(root, config, evidence, expected, expectedCommand) {
+  if (evidence.commandDigest !== sha256(seed) && expectedCommand !== "") throw new Error("STALE");
+  return { ok: true };
+}`;
+    const structural = checkLaneCommandBinding(compoundLane, COMPLIANT_CALL_SITES);
+    expect(structural.evidence.verifyComparesCommandDigest).toBe(true);
+    const behavioral = await checkLaneCommandBindingWithBehavioral({
+      laneSource: compoundLane,
+      callSites: COMPLIANT_CALL_SITES,
+      behavioral: { verifyFn: ignoringVerify, helpers: testDigestHelpers, root: "/probe-root", config: {} },
+    });
+    expect(behavioral.status).toBe("FAIL");
+    expect(behavioral.evidence.probe.passed).toBe(false);
+  });
+
+  it("MEDIUM-A3 FAILS on execution.nativeAgent selection (the configured value is statically checkable)", () => {
+    const denyAll = {
+      read: "deny",
+      write: "deny",
+      shell: "deny",
+      network: "deny",
+      delegate: "deny",
+      review: "deny",
+      validate: "deny",
+      gitWrite: "deny",
+    };
+    const withExecNative = {
+      "semantic-assessor": {
+        role: "Semantic Assessor",
+        skills: [],
+        mcps: [],
+        permissions: denyAll,
+        execution: { model: "@structured-assessor", transport: "paseo", nativeAgent: "primary" },
+      },
+    };
+    const execCheck = checkNonparticipantConstraints(withExecNative);
+    expect(execCheck.status).toBe("FAIL");
+    expect(execCheck.evidence.violations.some((v: any) => String(v.reason).includes("execution native agent"))).toBe(true);
+    const withTopNative = {
+      "semantic-assessor": {
+        role: "Semantic Assessor",
+        skills: [],
+        mcps: [],
+        permissions: denyAll,
+        nativeAgent: "primary",
+        execution: { model: "@structured-assessor", transport: "paseo" },
+      },
+    };
+    const topCheck = checkNonparticipantConstraints(withTopNative);
+    expect(topCheck.status).toBe("FAIL");
+    expect(topCheck.evidence.violations.some((v: any) => String(v.reason).includes("top-level native agent"))).toBe(true);
+  });
+
+  it("MEDIUM-A3 FAILS on nonempty execution.args masked by empty top-level args", () => {
+    const denyAll = {
+      read: "deny",
+      write: "deny",
+      shell: "deny",
+      network: "deny",
+      delegate: "deny",
+      review: "deny",
+      validate: "deny",
+      gitWrite: "deny",
+    };
+    const masked = {
+      "semantic-assessor": {
+        role: "Semantic Assessor",
+        skills: [],
+        mcps: [],
+        permissions: denyAll,
+        args: [],
+        execution: { model: "@structured-assessor", transport: "paseo", args: ["--debug"] },
+      },
+    };
+    // The old `agent.args ?? agent.execution?.args` shape resolves to the
+    // empty top-level array and misses the execution args.
+    const oldShape = (masked["semantic-assessor"] as any).args ?? (masked["semantic-assessor"] as any).execution?.args ?? [];
+    expect(oldShape).toEqual([]);
+    const check = checkNonparticipantConstraints(masked);
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.violations.some((v: any) => String(v.reason).includes("execution runtime arguments"))).toBe(true);
   });
 });
