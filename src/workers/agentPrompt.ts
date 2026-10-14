@@ -552,7 +552,10 @@ export async function dispatchMaterializedAgentPrompt(
     phase: effectiveOptions.phase ?? materialized.phase
   });
   const timeout = Math.max(1, Math.ceil(providerTurnDeadlineMs(config, effectiveOptions) / 1000));
-  const schema = effectiveOptions.outputContract ? outputJsonSchema(effectiveOptions.outputContract) : undefined;
+  // Strict-channel sink: Paseo `--output-schema` forwards to OpenAI strict
+  // `response_format` (no root anyOf), so serve the strict-channel
+  // projection. Zod remains authoritative on receipt via repair turns.
+  const schema = effectiveOptions.outputContract ? outputStrictChannelSchema(effectiveOptions.outputContract) : undefined;
   const executionLabels = boundPaseoExecutionLabels(effectiveOptions, selection.role, materialized.structuredResultChannelId);
   const continued = schema
     ? await continueWithDurableResultReconciliation(root, config, materialized, selection, effectivePrompt, timeout, schema, effectiveOptions, executionLabels)
@@ -700,7 +703,10 @@ async function executeViaPaseo(
   });
   attachStructuredResultProvenance(spec.labels, options.structuredResultProvenance, selection.role);
   const startedAt = new Date().toISOString();
-  const schema = options.outputContract ? outputJsonSchema(options.outputContract) : undefined;
+  // Strict-channel sink: Paseo `--output-schema` forwards to OpenAI strict
+  // `response_format` (no root anyOf), so serve the strict-channel
+  // projection. Zod remains authoritative on receipt via repair turns.
+  const schema = options.outputContract ? outputStrictChannelSchema(options.outputContract) : undefined;
   if (options.resumeSessionId) {
     await recordProviderTurnStarted(root, options, "paseo");
     const continued = await continueManagedPaseoAgent(root, options.resumeSessionId, prompt, spec.timeoutSeconds, undefined, schema, spec.labels, spec.permissionScopeRoots);

@@ -264,17 +264,40 @@ describe("wire schema strict-shape (every shipped contract)", () => {
     expect((before.properties as Record<string, Record<string, unknown>>)["verdict"]).not.toEqual({ enum: ["MUTATED"] });
   });
 
-  it("strict-channel sink (Codex --output-schema) serves the projection", () => {
+  it("strict-channel sinks (Codex + Paseo --output-schema) serve the projection", () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const source = fs.readFileSync(path.join(here, "..", "src", "workers", "agentPrompt.ts"), "utf8");
     const execCodex = source.slice(source.indexOf("async function executeCodex"));
     const nextFn = execCodex.indexOf("\nasync function ", 1);
-    const body = nextFn === -1 ? execCodex : execCodex.slice(0, nextFn);
-    expect(body).toContain("outputStrictChannelSchema");
-    expect(body).toContain("--output-schema");
-    expect(body).not.toContain("outputJsonSchema");
-    // Non-strict transports keep the full schema: Paseo paths + provenance digest.
-    const paseoUses = source.match(/outputJsonSchema\(/g) ?? [];
-    expect(paseoUses.length).toBeGreaterThanOrEqual(3);
+    const codexBody = nextFn === -1 ? execCodex : execCodex.slice(0, nextFn);
+    expect(codexBody).toContain("outputStrictChannelSchema");
+    expect(codexBody).toContain("--output-schema");
+    expect(codexBody).not.toContain("outputJsonSchema");
+    // Paseo submission paths are strict channels too: Paseo runtime forwards
+    // via --output-schema to OpenAI response_format json_schema strict:true
+    // (src/paseo/runtimeCore.ts + src/semantic/assessment.ts), so the
+    // materialized dispatch + executeViaPaseo (resume/materialized/fresh-launch)
+    // paths must serve the strict projection (root-anyOf-free).
+    const execPaseo = source.slice(source.indexOf("async function executeViaPaseo"));
+    const paseoEnd = execPaseo.indexOf("\nasync function ", 1);
+    const paseoBody = paseoEnd === -1 ? execPaseo : execPaseo.slice(0, paseoEnd);
+    expect(paseoBody).toContain("outputStrictChannelSchema");
+    expect(paseoBody).not.toMatch(/outputJsonSchema\s*\(/);
+    // Materialized dispatch path (continueWithDurableResultReconciliation call
+    // site) serves the projection as well.
+    expect(source).toMatch(/outputStrictChannelSchema\(effectiveOptions\.outputContract\)/);
+    expect(source).toMatch(/outputStrictChannelSchema\(options\.outputContract\)/);
+    // Projection is root-anyOf-free on every shipped contract.
+    for (const contract of knownOutputContracts()) {
+      const projected = outputStrictChannelSchema(contract) as Record<string, unknown>;
+      expect(projected).toBeDefined();
+      expect(projected).not.toHaveProperty("anyOf");
+    }
+    // Justified full-schema use-sites stay intact: MCP inputSchema reuse +
+    // provenance digest (STRICT_DEVIATION rationale — gates enforced by Zod
+    // on receipt).
+    expect(source).toMatch(/const outputSchema = outputJsonSchema\(options\.outputContract!\)/);
+    const mcpSource = fs.readFileSync(path.join(here, "..", "src", "workers", "resultSinkMcp.ts"), "utf8");
+    expect(mcpSource).toContain("outputJsonSchema(channel.contract)");
   });
 });

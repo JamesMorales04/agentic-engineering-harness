@@ -4,6 +4,7 @@ import {
   findingSchema,
   implementerOutputSchema,
   outputJsonSchema,
+  outputStrictChannelSchema,
   plannerOutputSchema,
   reviewerOutputSchema,
   supervisorOutputSchema,
@@ -485,6 +486,24 @@ describe("P1b nullable round-trip regressions (reviewer exact cases)", () => {
     expect(validateAgentOutput("reviewer", { verdict: "PASS", findings: [zodFinding("medium")], finalizationSafety: "SAFE", followUp: [] }).ok).toBe(true);
     // finding with explicit null exceptionType passes zod too.
     expect(validateAgentOutput("reviewer", { verdict: "FAIL", findings: [{ ...zodFinding(), exceptionType: null }], finalizationSafety: "BLOCKED", followUp: [] }).ok).toBe(true);
+  });
+
+  it("Paseo strict projection is root-anyOf-free yet Zod receipt still rejects gate violations", () => {
+    // R4 (P1): Paseo submission paths reach OpenAI strict:true via
+    // --output-schema, so they submit outputStrictChannelSchema (root anyOf
+    // dropped). The deterministic Zod validator remains authoritative on
+    // receipt via existing repair turns — a gate-violating payload passes the
+    // projection wire but fails Zod.
+    const projected = outputStrictChannelSchema("reviewer") as Record<string, unknown>;
+    expect(projected).toBeDefined();
+    expect(projected).not.toHaveProperty("anyOf");
+    // Gate-violating payload: FAIL with zero findings.
+    const violating = { verdict: "FAIL", findings: [], finalizationSafety: "BLOCKED", confidence: null, followUp: [] };
+    expect(wireValid(projected, violating)).toBe(true);
+    expect(validateAgentOutput("reviewer", { verdict: "FAIL", findings: [], finalizationSafety: "BLOCKED", followUp: [] }).ok).toBe(false);
+    // Full gated schema still rejects the same payload on the wire (MCP +
+    // provenance digest keep the full schema — justified, untouched).
+    expect(wireValid(wireSchema("reviewer"), violating)).toBe(false);
   });
 });
 
