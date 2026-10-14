@@ -188,15 +188,18 @@ export function evaluateOperationWake(
     if (!liveness) return Number.isFinite(progressAt) && nowMs - progressAt >= policy.stallThresholdMs;
     if (liveness.state === "WAITING_TOOL" && liveness.waitingDeadlineAt) return Date.parse(liveness.waitingDeadlineAt) <= nowMs;
     // DETERMINISTIC stall-vs-progress discrimination (per participant):
-    // STALLED = no heartbeat/tool event (lastActivityAt) within the stall
-    // window; PROGRESSING = heartbeat within the window (lease extended, no
-    // wake). Provider silence alone while the progress lease is still valid
-    // is not a stall; an expired lease or an explicit STALL_SUSPECTED state
-    // is. A busy-but-stalled child never suppresses a genuinely stalled
+    // STALLED = no heartbeat/tool event (lastActivityAt, ANY level including
+    // LOW heartbeats) within the stall window; PROGRESSING = heartbeat within
+    // the window (lease extended, no wake). An explicit STALL_SUSPECTED state
+    // always wakes. An expired progress lease alone is NOT a stall while a
+    // heartbeat is still fresh — recency is checked BEFORE lease expiry so
+    // fresh activity (even heartbeat-only) never triggers a wake after lease
+    // expiry. A busy-but-stalled child never suppresses a genuinely stalled
     // sibling because this filter is per participant.
     if (liveness.state === "STALL_SUSPECTED") return true;
-    if (liveness.progressLease && Date.parse(liveness.progressLease.expiresAt) <= nowMs) return true;
-    return classifyParticipantStall({ lastActivityAt: liveness.lastActivityAt, lastMeaningfulProgressAt: liveness.lastMeaningfulProgressAt, startedAt: liveness.startedAt ?? participant.startedAt, registeredAt: participant.registeredAt, waitingDeadlineAt: liveness.waitingDeadlineAt, state: liveness.state }, nowMs, policy.stallThresholdMs) === "STALLED";
+    const stalledByRecency = classifyParticipantStall({ lastActivityAt: liveness.lastActivityAt, lastMeaningfulProgressAt: liveness.lastMeaningfulProgressAt, startedAt: liveness.startedAt ?? participant.startedAt, registeredAt: participant.registeredAt, waitingDeadlineAt: liveness.waitingDeadlineAt, state: liveness.state }, nowMs, policy.stallThresholdMs) === "STALLED";
+    if (liveness.progressLease && Date.parse(liveness.progressLease.expiresAt) <= nowMs) return stalledByRecency;
+    return stalledByRecency;
   });
   // Per-participant accounting: the operation-level fallback only fires when
   // NO participant shows a recent heartbeat; one PROGRESSING child suppresses
