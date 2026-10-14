@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runExecutable } from "../src/utils/process.js";
+import { sha256Utf8 } from "../src/core/digest.js";
 import { computeWorktreeDigest } from "../src/core/git.js";
 import { assertCandidateRevisionV1, createCandidateRevisionV1, type CandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { runExternalToolValidator } from "../src/validators/external.js";
@@ -151,7 +152,11 @@ async function main(): Promise<void> {
       record.verificationBlockers = [`PROVIDER_LANE_EVIDENCE_REQUIRED: required ${run.lane} evidence '${run.checkId}' is absent after the full campaign.`];
       continue;
     }
-    const verification = await verifyProviderLaneEvidenceV1(root, config, evidence, candidate);
+    // Command binding (FAM-EVID): verify the evidence against the digest of the
+    // exact rendered command this campaign executed for the lane, not just
+    // candidate/workspace integrity. record.command is the rendered string
+    // passed to runExternalToolValidator above, which persists its digest.
+    const verification = await verifyProviderLaneEvidenceV1(root, config, evidence, candidate, sha256Utf8(record.command));
     record.verified = verification.ok;
     record.verificationBlockers = verification.blockers;
     record.evidence = {

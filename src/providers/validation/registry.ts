@@ -133,7 +133,7 @@ async function finalizeLaneCheck(context: ValidationProviderContext, lane: Provi
       finishedAt,
       blockers: input.blockers
     });
-    return { ...check, details: { ...check.details, lane, laneEvidence: { artifact: evidence.artifact, digest: evidence.digest, candidate: evidence.candidate } } };
+    return { ...check, details: { ...check.details, lane, command: input.command, laneEvidence: { artifact: evidence.artifact, digest: evidence.digest, candidate: evidence.candidate } } };
   } catch (error) {
     return {
       id: check.id,
@@ -174,4 +174,34 @@ export function providerSpecFor(config: HarnessProjectConfig, capability: Valida
 
 export function capabilityRequirements(contract: TaskContract): ValidationCapability[] {
   const declared = [...(contract.verification?.capabilities ?? []), ...(contract.requirements ?? []).flatMap((item) => item.capabilities ?? [])]; return [...new Set(declared)];
+}
+
+/**
+ * Declared-capability vocabulary with a deterministic adapter behind it
+ * (Mechanism=DETERMINISTIC). `architecture` and `policy` have no normative
+ * provider command (OPA absent) and are intentionally unmapped in
+ * validators/registry `capabilityAdapter`; `command` maps to the `command`
+ * adapter. Anything outside this set cannot resolve to an approved
+ * validator/provider and is rejected at authoring time; the runtime
+ * UNSUPPORTED_VALIDATION_CAPABILITY gate remains as defense in depth.
+ */
+export const RESOLVABLE_DECLARED_CAPABILITIES = [
+  "unit-test",
+  "integration-test",
+  "bdd",
+  "contract-test",
+  "browser-test",
+  "visual-test",
+  "static-security",
+  "dependency-security",
+  "command"
+] as const;
+
+export function assertResolvableDeclaredCapabilities(contract: TaskContract): void {
+  const declared = capabilityRequirements(contract);
+  const allowed = new Set<string>(RESOLVABLE_DECLARED_CAPABILITIES);
+  const unresolvable = declared.filter((capability) => !allowed.has(capability));
+  if (unresolvable.length) {
+    throw new Error(`UNSUPPORTED_DECLARED_CAPABILITY: declared ${unresolvable.length === 1 ? "capability" : "capabilities"} ${unresolvable.map((capability) => `'${capability}'`).join(", ")} ${unresolvable.length === 1 ? "has" : "have"} no approved validator or provider adapter (no normative command exists for 'architecture'/'policy'; OPA absent). Allowed declared capabilities: ${RESOLVABLE_DECLARED_CAPABILITIES.map((capability) => `'${capability}'`).join(", ")}.`);
+  }
 }

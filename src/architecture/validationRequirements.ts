@@ -6,6 +6,7 @@ import type { HarnessProjectConfig, TaskContract, ValidationCapability, Validato
 import type { ProjectStackProfileV1 } from "../participants/stack.js";
 import type { ToolAvailabilityV1 } from "../participants/toolRegistry.js";
 import { isValidationCapability, validationCapabilityValues } from "../validation/capabilityCatalog.js";
+import { assertResolvableDeclaredCapabilities } from "../providers/validation/registry.js";
 
 export const validationRequirementKindValues = validationCapabilityValues;
 
@@ -265,6 +266,16 @@ const adapterKinds: Readonly<Record<string, ValidationRequirementKindV1>> = {
  */
 export async function resolveValidationRequirements(input: ValidationResolverOptionsV1): Promise<ValidationResolutionV1> {
   const requirements = input.requirements.map((requirement) => validationRequirementSchema.parse(requirement));
+  // Authoring-time declared-capability vocabulary gate (Mechanism=DETERMINISTIC):
+  // `architecture`/`policy` (and any other adapter-less name) cannot resolve to
+  // an approved validator/provider, so a contract declaring them fails closed
+  // here with the allowed vocabulary instead of surfacing late as an
+  // unsatisfiable runtime UNSUPPORTED_VALIDATION_CAPABILITY. Kinds
+  // (`requirement.kind`, e.g. kind:architecture→check:architecture) are a
+  // separate input and are untouched by this gate.
+  if (input.contract) {
+    assertResolvableDeclaredCapabilities(input.contract);
+  }
   const allowed = new Set(input.allowedKinds ?? validationRequirementKindValues);
   const scripts = await projectScripts(input.root);
   const commands = [...(input.config?.validation?.commands ?? []), ...(input.contract?.verification?.commands ?? [])];
