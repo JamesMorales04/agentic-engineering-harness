@@ -441,6 +441,32 @@ export function resolveAttemptChainSupersedeV1(input: {
     if (typeof receipt.sessionId === "string" && known.has(receipt.sessionId)) owners.add(receipt.sessionId);
     for (const owner of owners) link(parent, owner);
   }
+  // Fail closed on cyclic retry lineage: a revisited node on the current descent path means
+  // the durable lineage is contradictory, so no identity in or reachable through a cyclic
+  // graph is ever superseded. The visited-set in the BFS below only prevents looping; this
+  // explicit path-based cycle check rejects the graph itself.
+  {
+    const GRAY = 1;
+    const BLACK = 2;
+    const color = new Map<string, number>([[input.participantId, GRAY]]);
+    const stack: Array<{ node: string; children: string[] }> = [
+      { node: input.participantId, children: [...(children.get(input.participantId) ?? [])].sort() },
+    ];
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1]!;
+      const next = top.children.shift();
+      if (next === undefined) {
+        color.set(top.node, BLACK);
+        stack.pop();
+        continue;
+      }
+      if (color.get(next) === GRAY) return undefined;
+      if (!color.has(next)) {
+        color.set(next, GRAY);
+        stack.push({ node: next, children: [...(children.get(next) ?? [])].sort() });
+      }
+    }
+  }
   // Deterministic breadth-first walk over strict descendants (nearest retry first;
   // lexicographic id order breaks same-depth ties). The visited set keeps cyclic
   // lineage from looping instead of granting completion.

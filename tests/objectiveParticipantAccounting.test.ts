@@ -3,7 +3,7 @@ import { evaluateObjectiveCompletionV1, type ObjectiveCompletionIdentityV1 } fro
 import { objectiveParticipantAccountingV1 } from "../src/core/run.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import type { OperationParticipantRecord, OperationRecordV2 } from "../src/operations/state.js";
-import { createCandidateAssemblyReceiptV1, createCandidateRevisionV1, evaluateTerminalGate, resolveCandidateLineageReceiptV1, type CandidateAssemblyReceiptV1, type CandidateRevisionV1, type ParticipantReceiptV1 } from "../src/operations/v2Contracts.js";
+import { createCandidateAssemblyReceiptV1, createCandidateRevisionV1, evaluateTerminalGate, resolveAttemptChainSupersedeV1, resolveCandidateLineageReceiptV1, type CandidateAssemblyReceiptV1, type CandidateRevisionV1, type ParticipantReceiptV1 } from "../src/operations/v2Contracts.js";
 
 const digest = (value: unknown) => sha256Canonical(value);
 
@@ -378,5 +378,28 @@ describe("AEH-V2-0133 attempt-chain accounting", () => {
     const accounting = objectiveParticipantAccountingV1(operationRecord, current);
     expect(accounting.find((item) => item.id === attempt1)).toEqual({ id: attempt1, required: true, status: "FAILED" });
     expect(resolveCandidateLineageReceiptV1({ receipt: { ...receipt(attempt2, "session-retry", stale, "SUCCEEDED") } as ParticipantReceiptV1, current, assemblies: [] })).toBeUndefined();
+  });
+
+  it("(e) a cyclic retry graph grants no supersession even with a completed descendant receipt", () => {
+    const current = candidate();
+    const attemptC = "participant:cccccccccccccccc";
+    const participants = {
+      [attempt1]: { id: attempt1, role: "Repairer", logicalAgent: "repairer", status: "FAILED", parentAgentId: attempt2, registeredAt: "2026-01-01T00:00:00.000Z" },
+      [attempt2]: { id: attempt2, role: "Repairer", logicalAgent: "repairer", status: "FAILED", parentAgentId: attempt1, registeredAt: "2026-01-01T00:00:01.000Z" },
+      [attemptC]: { id: attemptC, role: "Repairer", logicalAgent: "repairer", status: "COMPLETED", parentAgentId: attempt1, registeredAt: "2026-01-01T00:00:02.000Z" }
+    };
+    const receipts = { "receipt:c": retryReceipt(attemptC, "session-c", current, attempt1) };
+    // The exact reviewer case: a→b→a cycle plus receipt a→c COMPLETED. The visited set alone
+    // would still reach c and grant supersession; the cycle check must reject fail-closed.
+    expect(resolveAttemptChainSupersedeV1({
+      participantId: attempt1,
+      participants: participants as never,
+      receipts: Object.values(receipts) as never,
+      current,
+      assemblies: []
+    })).toBeUndefined();
+    const accounting = objectiveParticipantAccountingV1(operation(current, participants as never, receipts as never), current);
+    expect(accounting.find((item) => item.id === attempt1)).toEqual({ id: attempt1, required: true, status: "FAILED" });
+    expect(accounting.find((item) => item.id === attemptC)).toEqual({ id: attemptC, required: true, status: "COMPLETED" });
   });
 });

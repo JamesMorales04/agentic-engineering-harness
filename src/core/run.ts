@@ -997,7 +997,16 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
         prompt: repairPrompt,
         prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
-        execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+        execute: (isolatedRoot, participantId, prompt) => {
+            // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity
+            // records the prior failed identity as its retry parent, so the deterministic
+            // attempt-chain resolver has a durable edge. Read live: `worker` is the latest
+            // failed session at each retry site. A missing identity omits the edge and fails
+            // closed downstream (the failed attempt keeps blocking).
+            const retryParentId = typeof worker.id === "string" && worker.id.length > 0 ? worker.id
+              : typeof worker.participantId === "string" && worker.participantId.length > 0 ? worker.participantId : undefined;
+            return executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true, ...(retryParentId ? { parentAgentId: retryParentId } : {}) });
+          },
         semanticAssessment: impactAssessmentRuntime,
         onScopeEscape,
         escapeCorrectionRemainingBudget: repairCorrectionRemaining
@@ -1079,7 +1088,16 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           scopeAmendment: amendment,
           prompt: repairPrompt,
           prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
-          execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+          execute: (isolatedRoot, participantId, prompt) => {
+            // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity
+            // records the prior failed identity as its retry parent, so the deterministic
+            // attempt-chain resolver has a durable edge. Read live: `worker` is the latest
+            // failed session at each retry site. A missing identity omits the edge and fails
+            // closed downstream (the failed attempt keeps blocking).
+            const retryParentId = typeof worker.id === "string" && worker.id.length > 0 ? worker.id
+              : typeof worker.participantId === "string" && worker.participantId.length > 0 ? worker.participantId : undefined;
+            return executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true, ...(retryParentId ? { parentAgentId: retryParentId } : {}) });
+          },
           semanticAssessment: impactAssessmentRuntime,
           onScopeEscape,
           escapeCorrectionRemainingBudget: maxRepairs - (attempts + escapeCorrectionsUsed)
@@ -1147,7 +1165,16 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             scopeAmendment: secondAmendment,
             prompt: repairPrompt,
             prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
-            execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true }),
+            execute: (isolatedRoot, participantId, prompt) => {
+            // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity
+            // records the prior failed identity as its retry parent, so the deterministic
+            // attempt-chain resolver has a durable edge. Read live: `worker` is the latest
+            // failed session at each retry site. A missing identity omits the edge and fails
+            // closed downstream (the failed attempt keeps blocking).
+            const retryParentId = typeof worker.id === "string" && worker.id.length > 0 ? worker.id
+              : typeof worker.participantId === "string" && worker.participantId.length > 0 ? worker.participantId : undefined;
+            return executeAgentPrompt(isolatedRoot, effectiveConfig, effectiveContract, repairerSelection, prompt, { outputContract: repairerSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true, ...(retryParentId ? { parentAgentId: retryParentId } : {}) });
+          },
             semanticAssessment: impactAssessmentRuntime,
             onScopeEscape,
             escapeCorrectionRemainingBudget: maxRepairs - (attempts + escapeCorrectionsUsed)

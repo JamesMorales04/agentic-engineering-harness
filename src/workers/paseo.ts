@@ -68,12 +68,18 @@ export class PaseoWorkerExecutor implements WorkerExecutor {
     if (!selection) throw new Error("Paseo repair requires a resolved agent selection.");
     const authority = await prepareExecutionAuthority(root, selection, { participantId: session.participantId, phase: "repair", required: true });
     if (!authority) throw new Error("V2_AUTHORITY_REQUIRED: Paseo repair authority could not be prepared.");
+    // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity records
+    // the prior failed identity as its retry parent, so the deterministic attempt-chain resolver
+    // has a durable edge. A missing prior identity omits the edge and fails closed downstream.
+    const retryParentId = typeof session.id === "string" && session.id.length > 0 ? session.id
+      : typeof session.participantId === "string" && session.participantId.length > 0 ? session.participantId : undefined;
     return executeAgentPrompt(root, config, contract, selection, `${buildWorkerPrompt(contract, selection)}\n\n${buildRepairPrompt(packet)}`, {
       outputContract: selection.outputContract,
       phase: "repair",
       participantId: authority.participantId,
       capabilityAuthority: authority,
-      requireExecutionAuthority: true
+      requireExecutionAuthority: true,
+      ...(retryParentId ? { parentAgentId: retryParentId } : {})
     });
   }
 }
