@@ -4,7 +4,7 @@ import type { AgentExecutionSelection, RecoveryMap, ResolvedRoute } from "../age
 import { auditAgentTopology } from "../agents/audit.js";
 import { loadResolvedAgentTopology } from "../agents/config.js";
 import { classifyFailureDecision, classifyFailureWithSemanticAssessment, formatRecoveryAction, resolveRecoveryStep } from "../agents/recovery.js";
-import { executionSelectionForAgent, selectExecutionForTask, selectAgentNames, selectionWithModelOverride, selectModelFallbackExecutionV1 } from "../agents/routing.js";
+import { executionSelectionForAgent, selectExecutionForTask, selectAgentNames, selectionWithModelOverride, selectModelFallbackExecutionV1, requiredReviewSpecializationsForRoute } from "../agents/routing.js";
 import { validateExecutionCapabilities } from "../agents/permissions.js";
 import { runReviewLifecycle } from "../agents/reviewLifecycle.js";
 import type { SeverityCounts } from "../agents/qualityConvergence.js";
@@ -881,6 +881,12 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     return mergeChecks(candidate, [evidenceValidationCheck(evidenceGraph, effectiveConfig)]);
   };
   const recompileAssuranceForReport = async (impact: CandidateImpactV1 | undefined, candidateReport: ValidationReport): Promise<CandidateAssuranceEvaluationV1> => {
+    // DETERMINISTIC: thread the frozen route's required review specialization
+    // (route review selectors → assurance input). Minimal plumbing: the route is
+    // frozen in the execution boundary; run.ts:1998 builds reviewerSelections
+    // from routed + all enabled Reviewers, and run.ts:1495 carries each
+    // selection's specializations into reviewerCandidates above.
+    const requiredReviewSpecializations = requiredReviewSpecializationsForRoute(route);
     const result = await recompileCandidateAssurance({
       root: workspaceRoot,
       stateRoot: controlRoot,
@@ -893,7 +899,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       reviewerSelections: executionBoundary.reviewerSelections ?? {},
       implementationSelection: selection,
       baseValidationRequirements: waveResult?.plan?.validationRequirements ?? [],
-      projectStack
+      projectStack,
+      requiredReviewSpecializations
     });
     candidateImpact = impact;
     assurancePolicySource = result.policySource ?? assurancePolicySource;
@@ -1440,6 +1447,7 @@ async function recompileCandidateAssurance(input: {
   implementationSelection?: AgentExecutionSelection;
   baseValidationRequirements: readonly import("../architecture/validationRequirements.js").ValidationRequirementV1[];
   projectStack?: ProjectStackProfileV1;
+  requiredReviewSpecializations?: readonly string[];
 }): Promise<{ evaluation: CandidateAssuranceEvaluationV1; policySource?: ResolvedOperationPolicyV2 }> {
   const failed = (message: string, details?: Record<string, unknown>): CandidateAssuranceEvaluationV1 => ({
     validationChecks: [],
@@ -1496,8 +1504,17 @@ async function recompileCandidateAssurance(input: {
         identity: selection.logicalAgent,
         role: selection.role,
         provider: selection.modelProvider || selection.paseoProvider || selection.runtimeName,
-        readOnly: selection.role === "Reviewer" && selection.permissions.write === "deny"
+        readOnly: selection.role === "Reviewer" && selection.permissions.write === "deny",
+        // DETERMINISTIC provenance: carry the frozen selection's specializations
+        // so the assurance path enforces the route-required specialization
+        // instead of silently assigning an ordinary reviewer.
+        specializations: [...(selection.specializations ?? [])]
       })),
+      // DETERMINISTIC: route review selectors → assurance input (threaded by the
+      // caller from the frozen execution boundary route; minimal, no routing
+      // redesign). When the route requires a specialization, the assurance
+      // compilation enforces it fail-closed and records it on the assignment.
+      requiredReviewSpecializations: input.requiredReviewSpecializations ?? [],
       baseValidationRequirements: baseRequirements,
       validationResolution,
       acceptanceAssertions: (input.contract.requirements ?? []).map((requirement) => ({

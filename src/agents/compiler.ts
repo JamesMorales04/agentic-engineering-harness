@@ -6,6 +6,7 @@ import type { ResolvedAgentTopology } from "./types.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { defaultRoleProfiles } from "../participants/roles.js";
 import { isCanonicalSeedSkill, presetSkillCeilingIssue } from "../participants/skills.js";
+import { matchesValues } from "./routing.js";
 
 export interface TopologyCheckResult { ok: boolean; issues: string[]; output?: string; }
 
@@ -86,6 +87,19 @@ async function validateReferences(root: string, topology: ResolvedAgentTopology)
     for (const selector of [rule.select, ...(rule.review ?? [])].filter((value): value is NonNullable<typeof rule.select> => Boolean(value))) {
       if (!Object.values(topology.agents).some((agent) => agent.role === selector.role && !agent.disabled)) issues.push(`Routing rule ${rule.id} selects unavailable role ${selector.role}`);
       assertSpecializationsClosed("Routing rule", rule.id, selector.role, selector.specializations);
+      // DETERMINISTIC fail-closed: a selector WITH specializations must match >=1
+      // ENABLED agent with role AND specializations (same minimatch semantics as
+      // selectAgentNames). Role-only selectors keep current behavior. A high-risk
+      // rule demanding `high-assurance` with no enabled holder fails here naming
+      // the rule, role, and missing specialization — never silently downgrading to
+      // an ordinary reviewer downstream.
+      const requiredSpecializations = selector.specializations ?? [];
+      if (requiredSpecializations.length) {
+        const specializationAvailable = Object.values(topology.agents).some(
+          (agent) => !agent.disabled && agent.role === selector.role && matchesValues(agent.specializations ?? [], requiredSpecializations)
+        );
+        if (!specializationAvailable) issues.push(`Routing rule ${rule.id} selects unavailable specialization ${requiredSpecializations.join(",")} for role ${selector.role} (no enabled agent matches role and specializations)`);
+      }
     }
   }
   return [...new Set(issues)];

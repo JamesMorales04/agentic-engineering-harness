@@ -243,4 +243,69 @@ describe("candidate impact assurance recompilation", () => {
     expect(first.digest).toBe(second.digest);
     expect(setup).toEqual(before);
   });
+
+  it("fails closed naming the missing specialization when the route requires high-assurance but no holder exists (never an ordinary reviewer)", () => {
+    // DETERMINISTIC regression (a): high-assurance agent disabled/absent.
+    const setup = input({
+      reviewers: [
+        { identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["cross-cutting"] }
+      ]
+    });
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/MISSING_REQUIRED_REVIEW_SPECIALIZATION/);
+    expect(result.blockers.join(" ")).toMatch(/high-assurance/);
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("assigns the high-assurance agent end-to-end with recorded specialization when enabled", () => {
+    // DETERMINISTIC regression (b): assert identity AND specialization on the
+    // assignment, not just the routed name.
+    const setup = input({
+      reviewers: [
+        { identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["cross-cutting"] },
+        { identity: "high-assurance-reviewer", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["high-assurance"] }
+      ]
+    });
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance"] });
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments).toEqual([
+      expect.objectContaining({ reviewerIdentity: "high-assurance-reviewer", satisfiedSpecializations: ["high-assurance"] })
+    ]);
+    expect(result.reviewAssignments.every((assignment) => assignment.reviewerIdentity !== "reviewer")).toBe(true);
+  });
+
+  it("leaves the ordinary cross-cutting route unaffected", () => {
+    // DETERMINISTIC regression (c).
+    const setup = input({
+      reviewers: [
+        { identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["cross-cutting"] },
+        { identity: "high-assurance-reviewer", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["high-assurance"] }
+      ]
+    });
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["cross-cutting"] });
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments).toEqual([
+      expect.objectContaining({ reviewerIdentity: "reviewer", satisfiedSpecializations: ["cross-cutting"] })
+    ]);
+  });
+
+  it("treats unattested specializations as unsatisfying a required specialization (no wildcard)", () => {
+    const setup = input({
+      reviewers: [{ identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true }]
+    });
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/high-assurance/);
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("keeps role-only routes on current behavior (any read-only Reviewer)", () => {
+    const setup = input({
+      reviewers: [{ identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true }]
+    });
+    const result = compileCandidateAssuranceV1(setup);
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments.length).toBeGreaterThan(0);
+  });
 });

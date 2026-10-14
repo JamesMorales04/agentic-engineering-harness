@@ -191,6 +191,59 @@ describe("topology reference validation (seed registry + closed specializations)
     expect(known.ok).toBe(true);
   });
 
+  it("rejects a routing specialization with no enabled holder fail-closed (high-assurance)", async () => {
+    // DETERMINISTIC regression (a): a routing rule demanding `high-assurance`
+    // must fail closed naming the rule + missing specialization when no ENABLED
+    // agent holds it — never silently downgrading to an ordinary reviewer.
+    const missing = await validateInRoot(minimalSource(
+      { reviewer: agentFor("Reviewer", [], ["cross-cutting"]) },
+      { routing: [{ id: "high-risk-review", when: { intent: "implement", risk: "high" }, review: [{ role: "Reviewer", specializations: ["high-assurance"] }] }] }
+    ));
+    expect(missing.ok).toBe(false);
+    expect(missing.issues.join("; ")).toMatch(/high-risk-review/);
+    expect(missing.issues.join("; ")).toMatch(/high-assurance/);
+    // A disabled holder does not satisfy the selector either.
+    const disabled = await validateInRoot(minimalSource(
+      {
+        reviewer: agentFor("Reviewer", [], ["cross-cutting"]),
+        "high-assurance-reviewer": { ...agentFor("Reviewer", [], ["high-assurance"]), disabled: true }
+      },
+      { routing: [{ id: "high-risk-review", when: { intent: "implement", risk: "high" }, review: [{ role: "Reviewer", specializations: ["high-assurance"] }] }] }
+    ));
+    expect(disabled.ok).toBe(false);
+    expect(disabled.issues.join("; ")).toMatch(/high-assurance/);
+    // An enabled holder satisfies the selector.
+    const enabled = await validateInRoot(minimalSource(
+      {
+        reviewer: agentFor("Reviewer", [], ["cross-cutting"]),
+        "high-assurance-reviewer": agentFor("Reviewer", [], ["high-assurance"])
+      },
+      { routing: [{ id: "high-risk-review", when: { intent: "implement", risk: "high" }, review: [{ role: "Reviewer", specializations: ["high-assurance"] }] }] }
+    ));
+    expect(enabled.issues).toEqual([]);
+    expect(enabled.ok).toBe(true);
+    // Role-only selectors keep current behavior (role presence only).
+    const roleOnly = await validateInRoot(minimalSource(
+      { reviewer: agentFor("Reviewer", [], ["cross-cutting"]) },
+      { routing: [{ id: "r", when: { intent: "implement" }, review: [{ role: "Reviewer" }] }] }
+    ));
+    expect(roleOnly.ok).toBe(true);
+  });
+
+  it("derives the route-required review specialization for the assurance path", async () => {
+    const { requiredReviewSpecializationsForRoute } = await import("../src/agents/routing.js");
+    // High-risk default composition (high-assurance + cross-cutting): the
+    // specific specialization dominates the generic fallback.
+    expect(requiredReviewSpecializationsForRoute({
+      review: [{ role: "Reviewer", specializations: ["high-assurance"] }, { role: "Reviewer", specializations: ["cross-cutting"] }]
+    } as never)).toEqual(["high-assurance"]);
+    // Ordinary cross-cutting route stays cross-cutting.
+    expect(requiredReviewSpecializationsForRoute({ review: [{ role: "Reviewer", specializations: ["cross-cutting"] }] } as never)).toEqual(["cross-cutting"]);
+    // Role-only selectors require nothing (current behavior).
+    expect(requiredReviewSpecializationsForRoute({ review: [{ role: "Reviewer" }] } as never)).toEqual([]);
+    expect(requiredReviewSpecializationsForRoute({ review: [] } as never)).toEqual([]);
+  });
+
   it("compiles the shipped default preset clean under the strict validation", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-compiler-default-"));
     try {

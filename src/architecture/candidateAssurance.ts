@@ -1,3 +1,4 @@
+import { minimatch } from "minimatch";
 import { sha256Canonical } from "../core/digest.js";
 import type { CandidateImpactV1 } from "../candidates/assembler.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
@@ -35,6 +36,13 @@ export interface CandidateAssuranceReviewerCandidateV1 {
   role: string;
   provider: string;
   readOnly: boolean;
+  /**
+   * DETERMINISTIC provenance: the configured agent specializations carried from
+   * the frozen reviewer selection (run.ts). Absent means no specialization is
+   * attested — such a candidate can never satisfy a route-required specialization
+   * (fail closed, never treated as a wildcard).
+   */
+  specializations?: string[];
 }
 
 export interface CandidateAssurancePolicyV1 {
@@ -61,6 +69,14 @@ export interface CandidateAssuranceInputV1 {
   implementationIdentity: string;
   risk: CandidateAssuranceRiskV1;
   reviewerCandidates: CandidateAssuranceReviewerCandidateV1[];
+  /**
+   * DETERMINISTIC route-required review specializations threaded from the frozen
+   * route review selectors (run.ts via routing.requiredReviewSpecializationsForRoute).
+   * When non-empty, every assigned reviewer must satisfy the requirement and the
+   * satisfied specialization is recorded on the assignment. Empty keeps current
+   * behavior (any read-only Reviewer). Model reasoning never sets this.
+   */
+  requiredReviewSpecializations?: readonly string[];
   baseValidationRequirements: ValidationRequirementV1[];
   validationResolution: ValidationResolutionV1;
   acceptanceAssertions: CandidateAssuranceBaseAssertionV1[];
@@ -73,6 +89,12 @@ export interface CandidateAssuranceReviewAssignmentV1 {
   candidate: CandidateIdentityBindingV1;
   impactDigest: string;
   policyDigest: string;
+  /**
+   * DETERMINISTIC provenance: the subset of requiredReviewSpecializations this
+   * reviewer satisfies (empty when no specialization was required). The review
+   * turn verifies the frozen selection actually holds these (fail closed).
+   */
+  satisfiedSpecializations?: string[];
 }
 
 export interface CandidateAssuranceEvidenceStrengthV1 {
@@ -279,6 +301,21 @@ function verifiedImpactDigest(impact: BoundCandidateImpactV1): string {
 interface EligibleReviewerV1 {
   identity: string;
   provider: string;
+  specializations: string[];
+}
+
+/**
+ * DETERMINISTIC specialization matcher — same ANY-minimatch semantics as the
+ * canonical routing selector matcher (routing.matchesValues). An empty request
+ * matches anything; otherwise at least one requested pattern must match at
+ * least one available value. Absent/empty available never satisfies a
+ * non-empty request (fail closed, never a wildcard).
+ */
+function specializationSatisfies(available: readonly string[] | undefined, requested: readonly string[]): boolean {
+  if (!requested.length) return true;
+  const have = available ?? [];
+  if (!have.length) return false;
+  return requested.some((pattern) => have.some((value) => pattern === "*" || value === "*" || minimatch(value, pattern) || minimatch(pattern, value)));
 }
 
 function eligibleReviewers(input: CandidateAssuranceInputV1, providerDiversity: boolean): EligibleReviewerV1[] {
@@ -292,8 +329,9 @@ function eligibleReviewers(input: CandidateAssuranceInputV1, providerDiversity: 
     if (!identity || identity === implementer) continue;
     const provider = typeof candidate.provider === "string" ? candidate.provider.trim() : "";
     if (providerDiversity && !provider) continue;
+    const specializations = Array.isArray(candidate.specializations) ? candidate.specializations.filter((spec): spec is string => typeof spec === "string" && Boolean(spec.trim())).map((spec) => spec.trim()) : [];
     const existing = byIdentity.get(identity);
-    if (!existing || provider < existing.provider) byIdentity.set(identity, { identity, provider });
+    if (!existing || provider < existing.provider) byIdentity.set(identity, { identity, provider, specializations: [...new Set(specializations)].sort() });
   }
   return [...byIdentity.values()].sort((left, right) => left.identity < right.identity ? -1 : left.identity > right.identity ? 1 : left.provider < right.provider ? -1 : left.provider > right.provider ? 1 : 0);
 }
@@ -377,7 +415,26 @@ export function compileCandidateAssuranceV1(input: CandidateAssuranceInputV1): C
 
   const independentReviewRequired = policy.independentReviewRequired || input.impact.requiresIndependentReview;
   const minimumIndependentReviewers = Math.max(policy.minimumIndependentReviewers, independentReviewRequired ? 1 : 0, dimensions.length > 0 ? 1 : 0);
-  const selection = selectReviewers(eligibleReviewers(input, policy.providerDiversity), minimumIndependentReviewers, policy.providerDiversity);
+  // DETERMINISTIC route-required specialization enforcement (fail closed, never
+  // silent-fallback to an ordinary reviewer). When the frozen route requires a
+  // specialization (e.g. high-assurance), every base-eligible candidate is
+  // checked: each required specialization must have >=1 holder, otherwise the
+  // compilation is BLOCKED naming the missing specialization with NO reviewer
+  // assigned. When all required are present, only holders are selectable and
+  // each assignment records the satisfied specialization for the review turn.
+  const requiredReviewSpecializations = [...new Set(input.requiredReviewSpecializations ?? [])].sort();
+  const baseEligible = eligibleReviewers(input, policy.providerDiversity);
+  let eligibleForSelection = baseEligible;
+  if (requiredReviewSpecializations.length) {
+    const missing = requiredReviewSpecializations.filter((spec) => !baseEligible.some((reviewer) => specializationSatisfies(reviewer.specializations, [spec])));
+    if (missing.length) {
+      for (const spec of missing) blockers.push(`MISSING_REQUIRED_REVIEW_SPECIALIZATION: no enabled Reviewer with specialization '${spec}' is available for the route-required review (required: ${requiredReviewSpecializations.join(",")}; ${baseEligible.length} eligible candidate(s)).`);
+      eligibleForSelection = [];
+    } else {
+      eligibleForSelection = baseEligible.filter((reviewer) => specializationSatisfies(reviewer.specializations, requiredReviewSpecializations));
+    }
+  }
+  const selection = selectReviewers(eligibleForSelection, minimumIndependentReviewers, policy.providerDiversity);
   blockers.push(...selection.blockers);
 
   const minimumAssurance = maxAssurance(policy.minimumAssurance, policy.evidenceStrength, ...dimensions.map((dimension) => reviewDimensionRule(dimension).floor));
@@ -390,7 +447,8 @@ export function compileCandidateAssuranceV1(input: CandidateAssuranceInputV1): C
     dimensions: [...dimensions],
     candidate: binding,
     impactDigest,
-    policyDigest: policy.digest
+    policyDigest: policy.digest,
+    satisfiedSpecializations: requiredReviewSpecializations.filter((spec) => specializationSatisfies(reviewer.specializations, [spec]))
   }));
 
   const dimensionByRequirementId = new Map(generatedRequirements.map((requirement, index) => [requirement.id, dimensions[index]!] as const));

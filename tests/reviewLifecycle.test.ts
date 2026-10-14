@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateFinalQualityGate } from "../src/agents/qualityConvergence.js";
-import { assertReviewerSelectionAuthority, remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1 } from "../src/agents/reviewLifecycle.js";
+import { assertReviewerSelectionAuthority, assertReviewerSpecializationAuthority, remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1 } from "../src/agents/reviewLifecycle.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import { operationFailureDetail, validationFailureDetail } from "../src/core/run.js";
 import type { NormalizedFinding } from "../src/agents/outputContracts.js";
@@ -109,5 +109,40 @@ describe("reviewer selection authority (reviewer shell=allow regression)", () =>
     };
     expect(parsed.agents["harness-reviewer"]?.role).toBe("Reviewer");
     expect(parsed.agents["harness-reviewer"]?.permissions?.shell).toBe("deny");
+  });
+});
+
+describe("reviewer specialization authority (high-assurance bypass regression)", () => {
+  // DETERMINISTIC: the assurance path must never silently substitute an
+  // ordinary reviewer when the route requires `high-assurance`.
+  function selection(specializations: string[] | undefined, logicalAgent = "high-assurance-reviewer"): AgentExecutionSelection {
+    return {
+      logicalAgent,
+      role: "Reviewer",
+      specializations,
+      permissions: { read: "allow", write: "deny", shell: "deny", network: "deny" },
+    } as AgentExecutionSelection;
+  }
+  it("admits a reviewer holding the required specialization", () => {
+    expect(() => assertReviewerSpecializationAuthority(selection(["high-assurance"]), ["high-assurance"], "high-assurance-reviewer")).not.toThrow();
+  });
+  it("rejects an ordinary reviewer for a high-assurance requirement (no silent substitution)", () => {
+    expect(() => assertReviewerSpecializationAuthority(selection(["cross-cutting"], "reviewer"), ["high-assurance"], "reviewer")).toThrow(
+      /REVIEW_SPECIALIZATION_REQUIRED/,
+    );
+    expect(() => assertReviewerSpecializationAuthority(selection(["cross-cutting"], "reviewer"), ["high-assurance"], "reviewer")).toThrow(
+      /high-assurance/,
+    );
+  });
+  it("rejects unattested specializations (absent is not a wildcard)", () => {
+    expect(() => assertReviewerSpecializationAuthority(selection(undefined, "reviewer"), ["high-assurance"], "reviewer")).toThrow(
+      /REVIEW_SPECIALIZATION_REQUIRED/,
+    );
+    expect(() => assertReviewerSpecializationAuthority(selection([], "reviewer"), ["high-assurance"], "reviewer")).toThrow(
+      /REVIEW_SPECIALIZATION_REQUIRED/,
+    );
+  });
+  it("is a no-op when no specialization is required (role-only routes unaffected)", () => {
+    expect(() => assertReviewerSpecializationAuthority(selection(undefined, "reviewer"), [], "reviewer")).not.toThrow();
   });
 });
