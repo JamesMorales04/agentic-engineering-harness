@@ -365,7 +365,7 @@ async function writeProjectInputs(root: string, contract: TaskContract, includeR
       implementer: { role: "Implementer", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "allow", shell: "allow", delegate: "deny" } },
       planner: { role: "Planner", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "deny", shell: "deny", delegate: "deny" }, outputContract: "planner" },
       reviewer: { role: "Reviewer", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "deny", shell: "deny", review: "allow" } },
-      "operation-supervisor": { role: "Operation Supervisor", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "deny", shell: "allow", delegate: "allow" } },
+      "operation-supervisor": { role: "Operation Supervisor", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "deny", shell: "deny", delegate: "allow" } },
       ...(includeRepairer ? { repairer: { role: "Repairer", execution: { model: "@test", transport: "direct" }, permissions: { read: "allow", write: "allow", shell: "allow", delegate: "deny" }, outputContract: "implementer" } } : {})
     },
     routing: [{ id: "default", when: { intent: "implement" }, select: { role: "Implementer" }, review: [{ role: "Reviewer" }] }]

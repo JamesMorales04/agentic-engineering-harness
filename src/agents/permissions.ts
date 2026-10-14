@@ -52,6 +52,31 @@ export function validateExecutionCapabilities(
       `${selection.role} ${selection.logicalAgent} explicitly allows writes; read-only roles should use write=deny unless intentionally mutating.`
     );
   }
+  /**
+   * Deterministic supervisor assignment authority (mirrors the Reviewer gate
+   * in reviewLifecycle.ts assertReviewerSelectionAuthority). The Operation
+   * Supervisor is supervision-only by canonical role definition
+   * (canExecute:false, command-execute forbidden, no execute capability); a
+   * selection carrying source-write OR shell authority contradicts the
+   * Supervisor ceiling and dies at execution-authority preparation — fail
+   * fast here with the assignment reason instead.
+   */
+  if (
+    selection.role === "Operation Supervisor" &&
+    selection.permissions.write === "allow"
+  ) {
+    issues.push(
+      `${selection.role} ${selection.logicalAgent} explicitly allows writes; supervision-only roles should use write=deny unless intentionally mutating.`
+    );
+  }
+  if (
+    selection.role === "Operation Supervisor" &&
+    selection.permissions.shell === "allow"
+  ) {
+    issues.push(
+      `${selection.role} ${selection.logicalAgent} explicitly allows shell; shell authority exceeds the supervision-only ceiling (canExecute:false, command-execute forbidden).`
+    );
+  }
   if (selection.role === "Semantic Assessor") {
     const denied = ["read", "write", "shell", "network", "delegate", "review", "validate", "gitWrite"] as const;
     const opened = denied.filter((key) => selection.permissions[key] !== "deny");
@@ -122,7 +147,11 @@ export function buildOpenCodeRuntimeConfig(
     if (selected) mcp[name] = name === "serena" ? toManagedSerenaMcp(server, selection, launchRoot, serenaOwnerId) : toOpenCodeMcp(server);
   }
   for (const name of selection.mcps) {
-    if (!configured[name]) tools[`${name}_*`] = true;
+    if (!configured[name]) {
+      throw new Error(
+        `MCP_SERVER_UNCONFIGURED: selection '${selection.logicalAgent}' references MCP server '${name}' absent from project mcp.servers; unknown MCP selection is denied fail-closed.`
+      );
+    }
   }
   const capabilities = resolvedContextCapabilities ?? (config ? staticContextCapabilities(config, selection) : undefined);
   if (capabilities?.mcpServers.serena && !mcp.serena) {

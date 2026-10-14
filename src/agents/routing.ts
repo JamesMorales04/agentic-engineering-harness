@@ -86,4 +86,26 @@ export function selectAgentName(topology: ResolvedAgentTopology, selector: Agent
 export function selectAgentNames(topology: ResolvedAgentTopology, selector: AgentSelector, limit = Number.MAX_SAFE_INTEGER): string[] { return Object.values(topology.agents).filter((agent) => !agent.disabled && agent.role === selector.role && matchesValues(agent.domains ?? [], selector.domains ?? []) && matchesValues(agent.specializations ?? [], selector.specializations ?? [])).sort((a, b) => domainScore(b.domains ?? [], selector.domains ?? []) - domainScore(a.domains ?? [], selector.domains ?? []) || a.name.localeCompare(b.name)).slice(0, limit).map((agent) => agent.name); }
 function domainScore(agentDomains: string[], desired: string[]): number { if (!desired.length) return agentDomains.includes("*") ? 1 : 0; return desired.reduce((score, domain) => score + (agentDomains.some((pattern) => pattern === "*" || minimatch(domain, pattern) || minimatch(pattern, domain)) ? 1 : 0), 0); }
 function matchesRule(rule: RoutingRule, context: AgentRouteContext): boolean { const condition = rule.when; if (condition.intent) { const intents = Array.isArray(condition.intent) ? condition.intent : [condition.intent]; if (!intents.includes(context.intent)) return false; } if (condition.risk) { const risks = Array.isArray(condition.risk) ? condition.risk : [condition.risk]; if (!context.risk || !risks.includes(context.risk)) return false; } if (condition.domains?.length) { const domains = context.domains ?? []; if (!condition.domains.some((pattern) => domains.some((domain) => minimatch(domain, pattern) || minimatch(pattern, domain)))) return false; } if (condition.files?.length) { const files = context.files ?? []; if (!condition.files.some((pattern) => files.some((file) => minimatch(file, pattern, { dot: true })))) return false; } return true; }
-function matchesValues(available: string[], requested: string[]): boolean { if (!requested.length) return true; return requested.some((pattern) => available.some((value) => pattern === "*" || value === "*" || minimatch(value, pattern) || minimatch(pattern, value))); }
+/**
+ * DETERMINISTIC specialization/domain matcher shared with topology validation.
+ * An empty request matches anything; otherwise at least one requested pattern must
+ * minimatch at least one available value (exact "*" wildcards on either side).
+ */
+export function matchesValues(available: string[], requested: string[]): boolean { if (!requested.length) return true; return requested.some((pattern) => available.some((value) => pattern === "*" || value === "*" || minimatch(value, pattern) || minimatch(pattern, value))); }
+
+/**
+ * DETERMINISTIC route-required review specializations for the assurance path.
+ * Returns the distinct union of specializations across route.review selectors,
+ * with generic `cross-cutting` dominated by any specific specialization (e.g.
+ * `high-assurance`): when a route requires a specific specialization, the generic
+ * fallback must neither admit an ordinary reviewer as a substitute nor force an
+ * impossible holder of both. Role-only routes (no specializations) return [] and
+ * keep current behavior. Model reasoning never computes this.
+ */
+export function requiredReviewSpecializationsForRoute(route: Pick<ResolvedRoute, "review"> | undefined): string[] {
+  if (!route?.review?.length) return [];
+  const union = [...new Set(route.review.flatMap((selector) => selector.specializations ?? []))].sort();
+  if (!union.length) return [];
+  const specifics = union.filter((spec) => spec !== "cross-cutting");
+  return specifics.length ? specifics : union;
+}

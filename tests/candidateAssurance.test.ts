@@ -243,4 +243,244 @@ describe("candidate impact assurance recompilation", () => {
     expect(first.digest).toBe(second.digest);
     expect(setup).toEqual(before);
   });
+
+  it("fails closed naming the missing specialization when the route requires high-assurance but no holder exists (never an ordinary reviewer)", () => {
+    // DETERMINISTIC regression (a): high-assurance agent disabled/absent.
+    const setup = input({
+      reviewers: [
+        { identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["cross-cutting"] }
+      ]
+    });
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/MISSING_REQUIRED_REVIEW_SPECIALIZATION/);
+    expect(result.blockers.join(" ")).toMatch(/high-assurance/);
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("assigns the high-assurance agent end-to-end with recorded specialization when enabled", () => {
+    // DETERMINISTIC regression (b): assert identity AND specialization on the
+    // assignment, not just the routed name.
+    const setup = input({
+      reviewers: [
+        { identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["cross-cutting"] },
+        { identity: "high-assurance-reviewer", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["high-assurance"] }
+      ]
+    });
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance"] });
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments).toEqual([
+      expect.objectContaining({ reviewerIdentity: "high-assurance-reviewer", satisfiedSpecializations: ["high-assurance"] })
+    ]);
+    expect(result.reviewAssignments.every((assignment) => assignment.reviewerIdentity !== "reviewer")).toBe(true);
+  });
+
+  it("leaves the ordinary cross-cutting route unaffected", () => {
+    // DETERMINISTIC regression (c).
+    const setup = input({
+      reviewers: [
+        { identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["cross-cutting"] },
+        { identity: "high-assurance-reviewer", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["high-assurance"] }
+      ]
+    });
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["cross-cutting"] });
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments).toEqual([
+      expect.objectContaining({ reviewerIdentity: "reviewer", satisfiedSpecializations: ["cross-cutting"] })
+    ]);
+  });
+
+  it("treats unattested specializations as unsatisfying a required specialization (no wildcard)", () => {
+    const setup = input({
+      reviewers: [{ identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true }]
+    });
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/high-assurance/);
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("keeps role-only routes on current behavior (any read-only Reviewer)", () => {
+    const setup = input({
+      reviewers: [{ identity: "reviewer", role: "Reviewer", provider: "provider-a", readOnly: true }]
+    });
+    const result = compileCandidateAssuranceV1(setup);
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments.length).toBeGreaterThan(0);
+  });
+
+  it("collectively covers multi-specialization routes: one holder each assigns BOTH reviewers (never under-covered READY)", () => {
+    // DETERMINISTIC collective-coverage regression (a): required
+    // [high-assurance, typescript-node] with one reviewer holding each must
+    // assign TWO reviewers covering both (minimum=1 is a lower bound, not a
+    // target). Oracle-bound evidence (assignments) reflects both identities.
+    const setup = input({
+      reviewers: [
+        { identity: "high-assurance-reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance"] },
+        { identity: "typescript-reviewer", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments.length).toBe(2);
+    expect(result.reviewAssignments.map((assignment) => assignment.reviewerIdentity).sort()).toEqual(
+      ["high-assurance-reviewer", "typescript-reviewer"]
+    );
+    const union = [...new Set(result.reviewAssignments.flatMap((assignment) => assignment.satisfiedSpecializations ?? []))].sort();
+    expect(union).toEqual(["high-assurance", "typescript-node"]);
+    // Oracle-bound evidence reflects both: each assignment binds the exact
+    // candidate, impact, policy, and impact dimensions the AcceptanceOracle resolves.
+    for (const assignment of result.reviewAssignments) {
+      expect(assignment.candidate).toEqual({ candidateId: "candidate:OP-S4:r2", revision: 2, identityDigest: expect.any(String) });
+      expect(assignment.impactDigest).toBe(result.impactDigest);
+      expect(assignment.policyDigest).toBe(digest("frozen-policy"));
+      expect(assignment.dimensions).toEqual(["authentication/authorization", "behavior.correctness"]);
+    }
+    expect(result.reviewAssignments.find((assignment) => assignment.reviewerIdentity === "high-assurance-reviewer")?.satisfiedSpecializations).toEqual(["high-assurance"]);
+    expect(result.reviewAssignments.find((assignment) => assignment.reviewerIdentity === "typescript-reviewer")?.satisfiedSpecializations).toEqual(["typescript-node"]);
+  });
+
+  it("blocks multi-specialization routes naming the uncovered spec when the pool cannot collectively cover (never under-covered READY)", () => {
+    // DETERMINISTIC collective-coverage regression (b): same requirement with
+    // only a high-assurance holder available is BLOCKED naming typescript-node.
+    const setup = input({
+      reviewers: [
+        { identity: "high-assurance-reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/MISSING_REQUIRED_REVIEW_SPECIALIZATION/);
+    expect(result.blockers.join(" ")).toMatch(/typescript-node/);
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("assigns a single reviewer covering all required specs without forcing a second (minimum is a lower bound)", () => {
+    // A single reviewer holding both required specs satisfies collective
+    // coverage with one assignment (no spurious second reviewer).
+    const setup = input({
+      reviewers: [
+        { identity: "generalist-reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance", "typescript-node"] },
+        { identity: "typescript-reviewer", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("READY");
+    const union = [...new Set(result.reviewAssignments.flatMap((assignment) => assignment.satisfiedSpecializations ?? []))].sort();
+    expect(union).toEqual(["high-assurance", "typescript-node"]);
+    expect(result.reviewAssignments.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("exact cover with provider diversity skips the greedy trap: a-high-a blocks but b-high-b + c-ts-a covers (Luna counterexample)", () => {
+    // DETERMINISTIC exact-cover regression (Luna REJECT): required
+    // [high-assurance, typescript-node], minimum 1, diversity ENABLED,
+    // candidates in identity order a-high-a (A, high), b-high-b (B, high),
+    // c-ts-a (A, ts). Greedy takes a-high-a then BLOCKS on c-ts-a (provider A
+    // used), yet b-high-b + c-ts-a covers both with distinct providers. The
+    // exact search must assign {b-high-b, c-ts-a} with full union.
+    const setup = input({
+      providerDiversity: true,
+      reviewers: [
+        { identity: "a-high-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance"] },
+        { identity: "b-high-b", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["high-assurance"] },
+        { identity: "c-ts-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments.map((assignment) => assignment.reviewerIdentity).sort()).toEqual(["b-high-b", "c-ts-a"]);
+    const union = [...new Set(result.reviewAssignments.flatMap((assignment) => assignment.satisfiedSpecializations ?? []))].sort();
+    expect(union).toEqual(["high-assurance", "typescript-node"]);
+    expect(result.reviewAssignments.find((assignment) => assignment.reviewerIdentity === "b-high-b")?.satisfiedSpecializations).toEqual(["high-assurance"]);
+    expect(result.reviewAssignments.find((assignment) => assignment.reviewerIdentity === "c-ts-a")?.satisfiedSpecializations).toEqual(["typescript-node"]);
+    const providers = result.reviewAssignments.map((assignment) => assignment.provider).sort();
+    expect(new Set(providers).size).toBe(result.reviewAssignments.length);
+  });
+
+  it("blocks with diversity enabled naming typescript-node when no holder exists (genuinely uncoverable)", () => {
+    const setup = input({
+      providerDiversity: true,
+      reviewers: [
+        { identity: "a-high-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance"] },
+        { identity: "b-high-b", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["high-assurance"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/MISSING_REQUIRED_REVIEW_SPECIALIZATION/);
+    expect(result.blockers.join(" ")).toMatch(/typescript-node/);
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("blocks naming the uncovered spec when holders share one provider under diversity (no diverse cover exists)", () => {
+    // Both specs have holders but every covering set reuses provider-a, so no
+    // diverse covering set exists. Fail closed naming the uncovered spec.
+    const setup = input({
+      providerDiversity: true,
+      reviewers: [
+        { identity: "a-high-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance"] },
+        { identity: "c-ts-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/MISSING_REQUIRED_REVIEW_SPECIALIZATION/);
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("blocks with an explicit too-large-pool blocker when the holder pool exceeds the deterministic cap (never silent greedy)", () => {
+    const poolCap = 16;
+    const reviewers = Array.from({ length: poolCap + 1 }, (_, index) => ({
+      identity: `r-${String(index).padStart(2, "0")}`,
+      role: "Reviewer",
+      provider: `provider-${String(index).padStart(2, "0")}`,
+      readOnly: true,
+      specializations: ["high-assurance"]
+    }));
+    const setup = input({ reviewers } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/REVIEWER_COVER_SEARCH_POOL_TOO_LARGE/);
+    expect(result.blockers.join(" ")).toContain(String(poolCap));
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("grows a size-1 covering set to the minimum-2 floor when a diverse covering superset exists", () => {
+    // Minimum-vs-coverage rule: minimum is the COUNT floor. A generalist alone
+    // covers both specs but minimum 2 requires growth; the exact search starts
+    // at max(minimum,1) and assigns the smallest covering set at >= minimum.
+    const setup = input({
+      minimumIndependentReviewers: 2,
+      reviewers: [
+        { identity: "generalist-reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance", "typescript-node"] },
+        { identity: "typescript-reviewer", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments.length).toBe(2);
+    const union = [...new Set(result.reviewAssignments.flatMap((assignment) => assignment.satisfiedSpecializations ?? []))].sort();
+    expect(union).toEqual(["high-assurance", "typescript-node"]);
+  });
+
+  it("keeps the covering set with an explicit under-minimum note when growth would break coverage (oracle judges count)", () => {
+    // Minimum-vs-coverage rule (documented in candidateAssurance.ts): when only
+    // a size-1 covering set exists but minimum is 2, coverage is NEVER dropped
+    // to satisfy count. The covering set is kept and an explicit
+    // INDEPENDENT_REVIEW_UNDER_MINIMUM blocker is recorded; the
+    // AcceptanceOracle count check judges the under-minimum as defense-in-depth.
+    const setup = input({
+      minimumIndependentReviewers: 2,
+      reviewers: [
+        { identity: "generalist-reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance", "typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/INDEPENDENT_REVIEW_UNDER_MINIMUM/);
+    expect(result.reviewAssignments.length).toBe(1);
+    expect(result.reviewAssignments[0]?.reviewerIdentity).toBe("generalist-reviewer");
+    const union = [...new Set(result.reviewAssignments.flatMap((assignment) => assignment.satisfiedSpecializations ?? []))].sort();
+    expect(union).toEqual(["high-assurance", "typescript-node"]);
+  });
 });

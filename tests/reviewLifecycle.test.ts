@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateFinalQualityGate } from "../src/agents/qualityConvergence.js";
-import { assertReviewerSelectionAuthority, remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1 } from "../src/agents/reviewLifecycle.js";
+import { assertReviewerSelectionAuthority, assertReviewerSetSpecializationCoverage, assertReviewerSpecializationAuthority, remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1, runReviewLifecycle } from "../src/agents/reviewLifecycle.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import { operationFailureDetail, validationFailureDetail } from "../src/core/run.js";
 import type { NormalizedFinding } from "../src/agents/outputContracts.js";
@@ -109,5 +109,123 @@ describe("reviewer selection authority (reviewer shell=allow regression)", () =>
     };
     expect(parsed.agents["harness-reviewer"]?.role).toBe("Reviewer");
     expect(parsed.agents["harness-reviewer"]?.permissions?.shell).toBe("deny");
+  });
+});
+
+describe("reviewer specialization authority (high-assurance bypass regression)", () => {
+  // DETERMINISTIC: the assurance path must never silently substitute an
+  // ordinary reviewer when the route requires `high-assurance`.
+  function selection(specializations: string[] | undefined, logicalAgent = "high-assurance-reviewer"): AgentExecutionSelection {
+    return {
+      logicalAgent,
+      role: "Reviewer",
+      specializations,
+      permissions: { read: "allow", write: "deny", shell: "deny", network: "deny" },
+    } as AgentExecutionSelection;
+  }
+  it("admits a reviewer holding the required specialization", () => {
+    expect(() => assertReviewerSpecializationAuthority(selection(["high-assurance"]), ["high-assurance"], "high-assurance-reviewer")).not.toThrow();
+  });
+  it("rejects an ordinary reviewer for a high-assurance requirement (no silent substitution)", () => {
+    expect(() => assertReviewerSpecializationAuthority(selection(["cross-cutting"], "reviewer"), ["high-assurance"], "reviewer")).toThrow(
+      /REVIEW_SPECIALIZATION_REQUIRED/,
+    );
+    expect(() => assertReviewerSpecializationAuthority(selection(["cross-cutting"], "reviewer"), ["high-assurance"], "reviewer")).toThrow(
+      /high-assurance/,
+    );
+  });
+  it("rejects unattested specializations (absent is not a wildcard)", () => {
+    expect(() => assertReviewerSpecializationAuthority(selection(undefined, "reviewer"), ["high-assurance"], "reviewer")).toThrow(
+      /REVIEW_SPECIALIZATION_REQUIRED/,
+    );
+    expect(() => assertReviewerSpecializationAuthority(selection([], "reviewer"), ["high-assurance"], "reviewer")).toThrow(
+      /REVIEW_SPECIALIZATION_REQUIRED/,
+    );
+  });
+  it("is a no-op when no specialization is required (role-only routes unaffected)", () => {
+    expect(() => assertReviewerSpecializationAuthority(selection(undefined, "reviewer"), [], "reviewer")).not.toThrow();
+  });
+});
+
+describe("reviewer round collective specialization coverage (multi-specialization routes)", () => {
+  // DETERMINISTIC: the ROUND's reviewer set (union of satisfiedSpecializations)
+  // must cover every required specialization, in addition to per-reviewer checks.
+  const assignment = (reviewerIdentity: string, satisfiedSpecializations: string[]) => ({
+    reviewerIdentity,
+    provider: `provider-${reviewerIdentity}`,
+    dimensions: ["authentication/authorization"],
+    candidate: { candidateId: "candidate:OP:r1", revision: 1, identityDigest: "digest" },
+    impactDigest: "impact",
+    policyDigest: "policy",
+    satisfiedSpecializations,
+  });
+  it("passes when two reviewers each covering one required spec form a covered union", () => {
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("high-assurance-reviewer", ["high-assurance"]), assignment("typescript-reviewer", ["typescript-node"])],
+      ["high-assurance", "typescript-node"],
+    )).not.toThrow();
+  });
+  it("fails closed naming the uncovered spec when one reviewer covers only half the requirement (no silent under-review)", () => {
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("high-assurance-reviewer", ["high-assurance"])],
+      ["high-assurance", "typescript-node"],
+    )).toThrow(/REVIEW_SPECIALIZATION_REQUIRED/);
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("high-assurance-reviewer", ["high-assurance"])],
+      ["high-assurance", "typescript-node"],
+    )).toThrow(/typescript-node/);
+  });
+  it("keeps single-specialization behavior identical (holder passes, empty keeps current behavior)", () => {
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("high-assurance-reviewer", ["high-assurance"])],
+      ["high-assurance"],
+    )).not.toThrow();
+    expect(() => assertReviewerSetSpecializationCoverage([], ["high-assurance"])).not.toThrow();
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("reviewer", ["cross-cutting"])],
+      [],
+    )).not.toThrow();
+  });
+});
+
+describe("review lifecycle refuses BLOCKED assurance at entry (defense in depth)", () => {
+  // DETERMINISTIC: even a direct call with a passing report and non-empty
+  // assignments must not produce review turns from a BLOCKED compilation.
+  it("throws REVIEW_ASSURANCE_BLOCKED before any review turn", async () => {
+    const blockedCompilation = {
+      version: 1,
+      candidate: { candidateId: "candidate:OP:r1", revision: 1, identityDigest: "digest" },
+      impactDigest: "impact",
+      policyDigest: "policy",
+      minimumAssurance: "STANDARD",
+      reviewAssignments: [{
+        reviewerIdentity: "high-assurance-reviewer",
+        provider: "provider-high-assurance-reviewer",
+        dimensions: ["authentication/authorization"],
+        candidate: { candidateId: "candidate:OP:r1", revision: 1, identityDigest: "digest" },
+        impactDigest: "impact",
+        policyDigest: "policy",
+        satisfiedSpecializations: ["high-assurance"],
+      }],
+      validationRequirements: [],
+      acceptanceAssertions: [],
+      evidenceStrength: { level: "STANDARD" },
+      blockers: ["MISSING_REQUIRED_REVIEW_SPECIALIZATION: typescript-node"],
+      status: "BLOCKED",
+      digest: "digest",
+    } as never;
+    const input = {
+      root: "/work/tree",
+      config,
+      contract: { version: 1, task: { id: "T", title: "t" }, routing: { route: "DELEGATED" } },
+      route: { ruleIds: [], review: [], reviewers: [], reasons: [] },
+      reviewerSelections: {},
+      implementationSelection: {},
+      report: { version: 1, taskId: "T", status: "PASS", checks: [], candidate: { candidateId: "candidate:OP:r1", revision: 1, identityDigest: "digest", sourceDigest: "source" } },
+      candidateAssurance: blockedCompilation,
+      revalidate: async () => { throw new Error("must not revalidate"); },
+    } as never;
+    await expect(runReviewLifecycle(input)).rejects.toThrow(/REVIEW_ASSURANCE_BLOCKED/);
+    await expect(runReviewLifecycle(input)).rejects.toThrow(/typescript-node/);
   });
 });

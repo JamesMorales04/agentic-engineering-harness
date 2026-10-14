@@ -222,3 +222,93 @@ describe("OpenCode permission projection", () => {
     expect(first).not.toBe(second);
   });
 });
+
+describe("supervisor shell-vs-ceiling gate (L1-A1)", () => {
+  function supervisorSelection(overrides: Partial<AgentExecutionSelection> = {}): AgentExecutionSelection {
+    return {
+      logicalAgent: "operation-supervisor",
+      role: "Operation Supervisor",
+      domains: [],
+      runtimeName: "codex",
+      runtimeAdapter: "codex",
+      paseoProvider: "codex",
+      modelAlias: "brain",
+      modelId: "openai/gpt-6-luna",
+      modelName: "gpt-6-luna",
+      transport: "paseo",
+      skills: [],
+      mcps: [],
+      permissions: {
+        read: "allow",
+        write: "deny",
+        shell: "deny",
+        network: "deny",
+        delegate: "allow",
+        gitWrite: "deny"
+      },
+      args: [],
+      runtimeCapabilities: {},
+      ...overrides
+    };
+  }
+
+  it("fails a supervisor selection that allows shell authority", () => {
+    const invalid = supervisorSelection({ permissions: { read: "allow", write: "deny", shell: "allow", network: "deny", delegate: "allow", gitWrite: "deny" } });
+    expect(validateExecutionCapabilities(invalid, "paseo").join(" ")).toContain("explicitly allows shell");
+  });
+
+  it("fails a supervisor selection that allows source writes", () => {
+    const invalid = supervisorSelection({ permissions: { read: "allow", write: "allow", shell: "deny", network: "deny", delegate: "allow", gitWrite: "deny" } });
+    expect(validateExecutionCapabilities(invalid, "paseo").join(" ")).toContain("explicitly allows writes");
+  });
+
+  it("passes the least-privilege supervisor selection (shell deny, write deny)", () => {
+    expect(validateExecutionCapabilities(supervisorSelection(), "paseo")).toEqual([]);
+  });
+});
+
+describe("MCP selection fail-closed (L1-D1/D2)", () => {
+  const projectWithContext7: HarnessProjectConfig = {
+    version: 1,
+    project: { name: "mcp-fail-closed" },
+    mcp: {
+      servers: {
+        context7: { type: "remote", url: "https://mcp.context7.com/mcp", enabled: true }
+      }
+    }
+  };
+
+  function mcpSelection(mcps: string[]): AgentExecutionSelection {
+    return {
+      logicalAgent: "librarian",
+      role: "Librarian",
+      domains: [],
+      runtimeName: "opencode",
+      runtimeAdapter: "opencode",
+      paseoProvider: "opencode",
+      modelAlias: "workhorse",
+      modelId: "x/fast",
+      modelName: "fast",
+      transport: "direct",
+      skills: [],
+      mcps,
+      permissions: { read: "allow", write: "deny", shell: "deny", network: "deny", delegate: "deny", gitWrite: "deny" },
+      args: [],
+      runtimeCapabilities: {}
+    };
+  }
+
+  it("fails closed with an explicit error for MCP servers absent from project config", () => {
+    expect(() => buildOpenCodeRuntimeConfig(mcpSelection(["phantom-mcp"]), projectWithContext7)).toThrow("MCP_SERVER_UNCONFIGURED");
+    expect(() => buildOpenCodeRuntimeConfig(mcpSelection(["phantom-mcp"]))).toThrow("MCP_SERVER_UNCONFIGURED");
+  });
+
+  it("still resolves the configured Librarian context7 server (L1-D2 stays PASS)", () => {
+    const config = buildOpenCodeRuntimeConfig(mcpSelection(["context7"]), projectWithContext7) as {
+      mcp: Record<string, unknown>;
+      tools: Record<string, boolean>;
+    };
+    expect(Object.keys(config.mcp)).toEqual(["context7"]);
+    expect(config.tools["context7_*"]).toBe(true);
+  });
+});

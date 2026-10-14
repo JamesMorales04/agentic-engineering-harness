@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentExecutionSelection, ResolvedRoute } from "./types.js";
+import { matchesValues, requiredReviewSpecializationsForRoute } from "./routing.js";
 import { validateExecutionCapabilities } from "./permissions.js";
 import { dedupeFindings, type DedupedFindings } from "./findings.js";
 import { orchestratorOutputSchema, plannerOutputSchema, reviewerOutputSchema, type NormalizedFinding, type PlannerOutput } from "./outputContracts.js";
@@ -72,6 +73,15 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
   let candidateImpact = input.candidateImpact;
   let candidateAssurance = input.candidateAssurance;
   let assuranceGateCheck = input.assuranceGateCheck;
+  // Defense in depth (independent-review boundary caveat): a BLOCKED
+  // compilation must never produce review turns, even if this lifecycle is
+  // invoked directly with a passing report and non-empty assignments. The
+  // sole production caller guards on a PASS report, but the lifecycle itself
+  // refuses blocked assurance first, before any candidate check or session.
+  // MECHANISM: DETERMINISTIC.
+  if (candidateAssurance?.status === "BLOCKED") {
+    throw new Error(`REVIEW_ASSURANCE_BLOCKED: candidate assurance is BLOCKED (${candidateAssurance.blockers.join("; ") || "no blockers recorded"}); review turns require a READY compilation with satisfied specialization coverage.`);
+  }
   const requiredAssignments = candidateAssurance?.reviewAssignments ?? [];
   if (policy?.enabled === false && requiredAssignments.length === 0) return emptyResult(report, checks, sessions);
 
@@ -81,6 +91,11 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
 
   const isDirect = contract.routing?.route === "DIRECT";
   const runReviewers = requiredAssignments.length > 0 || !isDirect || policy?.directReview === true;
+  // DETERMINISTIC: route review selectors → review turn (thread the requirement,
+  // minimal — no routing redesign). The frozen route's required specialization
+  // (e.g. high-assurance) is verified against every assurance-assigned reviewer
+  // inside runReviewRound (fail closed, no silent substitution).
+  const requiredReviewSpecializations = requiredReviewSpecializationsForRoute(route);
   let reviewerAssignments = requiredAssignments;
   let reviewerNames = requiredAssignments.length
     ? requiredAssignments.map((assignment) => assignment.reviewerIdentity)
@@ -107,7 +122,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
   let replanContext: PlannerOutput | undefined;
   let deduped = emptyFindings();
   if (reviewerNames.length) {
-    const initialRound = await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, report, sessions, 0, checks, prepareRepairWorkspace, reviewerAssignments);
+    const initialRound = await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, report, sessions, 0, checks, prepareRepairWorkspace, reviewerAssignments, requiredReviewSpecializations);
     if (initialRound.failures.length) return await reviewerProviderFailureResult(stateRoot, config, contract, initialRound.failures, remediationRounds, report, initialRound.findings, checks, sessions, qualityHistory);
     deduped = initialRound.findings;
   }
@@ -356,7 +371,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
     }
 
     const candidateRound = reviewerNames.length
-      ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, candidateReport, sessions, qualityHistory.length, checks, prepareRepairWorkspace, reviewerAssignments)
+      ? await runReviewRound(root, stateRoot, config, contract, reviewerSelections, implementationSelection, supervisorSelection, reviewerNames, candidateReport, sessions, qualityHistory.length, checks, prepareRepairWorkspace, reviewerAssignments, requiredReviewSpecializations)
       : { findings: emptyFindings(), failures: [] };
     if (candidateRound.failures.length) return await reviewerProviderFailureResult(stateRoot, config, contract, candidateRound.failures, remediationRounds, candidateReport, candidateRound.findings, checks, sessions, qualityHistory);
     const candidateFindings = candidateRound.findings;
@@ -406,12 +421,76 @@ export function assertReviewerSelectionAuthority(
   if (selection.permissions.shell === "allow") throw new Error(`REVIEW_AUTHORITY_REQUIRED: Reviewer '${name}' must have denied shell authority (execute exceeds the read-only Reviewer capability ceiling).`);
 }
 
-async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>, implementationSelection: AgentExecutionSelection, supervisorSelection: AgentExecutionSelection | undefined, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number, checks: ValidationCheck[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>, assuranceAssignments: readonly CandidateAssuranceReviewAssignmentV1[] = []): Promise<ReviewRoundResult> {
+/**
+ * DETERMINISTIC route-required specialization authority for the assurance path.
+ * When the frozen route requires a reviewer specialization (e.g. high-assurance),
+ * the assigned reviewer must hold it — verified against the frozen selection's
+ * attested specializations with the shared routing matcher. Fail closed with no
+ * silent substitution and no fallback to an ordinary reviewer. An empty
+ * requirement keeps current behavior. Model reasoning never calls this.
+ */
+export function assertReviewerSpecializationAuthority(
+  selection: AgentExecutionSelection,
+  requiredSpecializations: readonly string[],
+  name: string,
+): void {
+  const required = [...new Set(requiredSpecializations ?? [])].sort();
+  if (!required.length) return;
+  if (!selection) throw new Error(`REVIEW_SPECIALIZATION_REQUIRED: no frozen selection exists for reviewer '${name}' (required specialization(s): ${required.join(",")}).`);
+  const have = [...(selection.specializations ?? [])];
+  if (!matchesValues(have, [...required])) {
+    throw new Error(`REVIEW_SPECIALIZATION_REQUIRED: Assigned Reviewer '${name}' does not satisfy required specialization(s) ${required.join(",")} (has: ${have.join(",") || "<none>"}). No silent substitution to an ordinary reviewer is allowed.`);
+  }
+}
+
+/**
+ * DETERMINISTIC collective specialization coverage for the assurance path.
+ * When the frozen route requires reviewer specialization(s), the ROUND's
+ * reviewer set must collectively cover EVERY required specialization (union of
+ * satisfiedSpecializations across the round's reviewers). Per-reviewer
+ * ANY-match checks alone admit a one-reviewer partial assignment for a
+ * multi-specialization route (e.g. [high-assurance, typescript-node]) with the
+ * other spec silently uncovered. Fail closed naming the uncovered specs with
+ * no silent under-review. Empty requirement or empty assignment set keeps
+ * current behavior (the assurance BLOCKED gate owns the empty case).
+ * Model reasoning never calls this. Mechanism: DETERMINISTIC.
+ */
+export function assertReviewerSetSpecializationCoverage(
+  assignments: readonly CandidateAssuranceReviewAssignmentV1[],
+  requiredSpecializations: readonly string[],
+): void {
+  const required = [...new Set(requiredSpecializations ?? [])].sort();
+  if (!required.length) return;
+  if (!assignments.length) return;
+  const uncovered = required.filter((spec) => !assignments.some((assignment) => matchesValues([...(assignment.satisfiedSpecializations ?? [])], [spec])));
+  if (uncovered.length) {
+    const covered = required.filter((spec) => !uncovered.includes(spec));
+    throw new Error(`REVIEW_SPECIALIZATION_REQUIRED: Reviewer round does not collectively cover required specialization(s) ${required.join(",")} (uncovered: ${uncovered.join(",")}; covered: ${covered.join(",") || "<none>"}; ${assignments.length} assigned reviewer(s)). No silent under-review is allowed.`);
+  }
+}
+
+async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>, implementationSelection: AgentExecutionSelection, supervisorSelection: AgentExecutionSelection | undefined, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number, checks: ValidationCheck[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>, assuranceAssignments: readonly CandidateAssuranceReviewAssignmentV1[] = [], requiredReviewSpecializations: readonly string[] = []): Promise<ReviewRoundResult> {
   if (!report.candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
   const assuranceByIdentity = new Map(assuranceAssignments.map((assignment) => [assignment.reviewerIdentity, assignment]));
+  // DETERMINISTIC collective coverage gate: the round's assigned reviewer SET
+  // must cover every required specialization (union of satisfiedSpecializations).
+  // Runs before any reviewer invocation so an under-covered round fails closed
+  // without consuming provider turns. Per-reviewer checks below are retained.
+  assertReviewerSetSpecializationCoverage(
+    reviewerNames.map((name) => assuranceByIdentity.get(name)).filter((assignment): assignment is CandidateAssuranceReviewAssignmentV1 => Boolean(assignment)),
+    requiredReviewSpecializations,
+  );
   const outputs = await Promise.all(reviewerNames.map(async (name) => {
     const selection = reviewerSelections[name];
     assertReviewerSelectionAuthority(selection, name, implementationSelection.logicalAgent);
+    // DETERMINISTIC assurance-path specialization gate: an assigned reviewer
+    // must satisfy both the assignment-recorded satisfied specialization and
+    // the frozen route requirement (fail closed, never substitute ordinary).
+    const assignment = assuranceByIdentity.get(name);
+    if (assignment) {
+      assertReviewerSpecializationAuthority(selection, assignment.satisfiedSpecializations ?? [], name);
+      assertReviewerSpecializationAuthority(selection, requiredReviewSpecializations, name);
+    }
     const transport = selection.transport === "inherit" ? (config.orchestration?.provider ?? "none") : selection.transport;
     const capabilityIssues = validateExecutionCapabilities(selection, transport);
     if (capabilityIssues.length) throw new Error(`REVIEW_EXECUTION_INVALID: Reviewer '${name}' is not executable: ${capabilityIssues.join("; ")}`);

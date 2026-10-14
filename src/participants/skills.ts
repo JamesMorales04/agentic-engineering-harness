@@ -62,7 +62,22 @@ const ROLE_SKILLS_V1: readonly SkillDefinitionV1[] = [
   roleSkill("resource-conflict-analysis", "Resource conflict analysis", "Planner", ["identify shared-file and runtime conflicts", "bound concurrency", "prefer compatible assignment bundles"]),
   roleSkill("requirement-authoring", "Requirement authoring", "Spec Manager", ["write observable requirements", "preserve user intent", "avoid implementation authority"]),
   roleSkill("semantic-consistency", "Semantic consistency", "Spec Manager", ["check proposal/spec/design/task agreement", "reject contradictory requirements", "freeze only validated artifacts"]),
-  roleSkill("acceptance-traceability", "Acceptance traceability", "Spec Manager", ["map each requirement to acceptance and validators", "reject uncovered behavior", "preserve machine-readable traceability"]),
+  // Acceptance traceability is authored by the Spec Manager but independently
+  // verified by Reviewers: the audit prompt policy (promptPolicy.ts) projects
+  // it onto audit reviewers carrying the grant, and the control-plane
+  // harness-reviewer relies on it. Verification is validation work, inside
+  // the Reviewer ceiling (review/validate). Planner and supervisor-event
+  // selections have no proven compileSkillSet consumer and stay excluded.
+  {
+    version: 1,
+    id: "acceptance-traceability",
+    name: "Acceptance traceability",
+    description: "Acceptance traceability procedure for the Spec Manager and Reviewer roles.",
+    kind: "role",
+    roles: ["Spec Manager", "Reviewer"] as const,
+    proceduralSteps: ["map each requirement to acceptance and validators", "reject uncovered behavior", "preserve machine-readable traceability"],
+    competencies: []
+  },
   roleSkill("openspec-authoring", "OpenSpec authoring", "Spec Manager", ["author the OpenSpec source", "validate before compilation", "leave implementation to the controller"]),
   roleSkill("implementation-discipline", "Implementation discipline", "Implementer", ["change only assigned scope", "preserve frozen artifacts", "return reproducible evidence"]),
   roleSkill("scope-discipline", "Scope discipline", "Implementer", ["check every changed path", "reject unauthorized expansion", "keep candidate identity current"]),
@@ -238,4 +253,26 @@ export function skillDefinition(id: string): SkillDefinitionV1 {
   const skill = DEFAULT_SKILL_SEED_V1.skills.find((candidate) => candidate.id === id);
   if (!skill) throw new Error(`No default skill exists with id: ${id}`);
   return skill;
+}
+
+/**
+ * DETERMINISTIC shared preset-skill ceiling primitive: a preset skill grant
+ * fits a role iff the skill exists in the canonical seed and, when the seed
+ * restricts it to roles, the agent's role is included. Cross-cutting and
+ * technology skills carry no roles field and fit every role. Returns the
+ * violation reason, or undefined when the grant fits. Unknown ids fail
+ * closed (never silently accepted).
+ */
+export function presetSkillCeilingIssue(skillId: string, role: CanonicalRole): string | undefined {
+  const skill = DEFAULT_SKILL_SEED_V1.skills.find((candidate) => candidate.id === skillId);
+  if (!skill) return `unknown skill id '${skillId}': absent from the canonical skill seed.`;
+  if (skill.roles && !skill.roles.includes(role)) {
+    return `skill '${skillId}' is restricted to roles [${skill.roles.join(", ")}] and exceeds the '${role}' ceiling.`;
+  }
+  return undefined;
+}
+
+/** True iff the id is a canonical seed skill (registry membership only, no role check). */
+export function isCanonicalSeedSkill(skillId: string): boolean {
+  return DEFAULT_SKILL_SEED_V1.skills.some((candidate) => candidate.id === skillId);
 }
