@@ -845,7 +845,7 @@ export function buildPlannerPrompt(operationId: string, contract: TaskContract, 
   const explorerContext = explorerEvidence
     ? [`Explorer durable result artifact: ${explorerEvidence.artifact}`, `Explorer evidence projection:\n${compactJson(explorerEvidence.payload, 12_000)}`].join("\n")
     : "Explorer is disabled/unavailable by topology; no explorer result was expected.";
-  return buildCanonicalPlannerPromptV1({ operationId, contract, request: payload.request, explorerContext, inputsPrompt: changeInputsPrompt(inputs), readRoots });
+  return buildCanonicalPlannerPromptV1({ operationId, operationKind: "CHANGE", contract, request: payload.request, explorerContext, inputsPrompt: changeInputsPrompt(inputs), readRoots });
 }
 
 export async function runPlanning(

@@ -221,6 +221,7 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     }
     const prompt = buildCanonicalPlannerPromptV1({
       operationId: input.plannerPromptContext?.operationId ?? currentOperationContext().id ?? input.contract.task.id,
+      operationKind: (currentOperationContext().kind ?? "change").toUpperCase(),
       contract: input.contract,
       request: input.plannerPromptContext?.request ?? input.contract.request ?? input.contract.task.title,
       explorerContext: input.plannerPromptContext?.explorerContext ?? "Explorer is disabled/unavailable by topology; no explorer result was expected.",
@@ -1218,11 +1219,19 @@ export interface CanonicalPlannerPromptInputV1 {
   explorerContext: string;
   inputsPrompt: string;
   readRoots: readonly string[];
+  /**
+   * Display word for the owning operation kind (e.g. "CHANGE", "RUN").
+   * The canonical builder serves CHANGE `runPlanning` and cross-kind wave
+   * fallbacks; the kind word keeps the prompt truthful per entry path.
+   * MECHANISM: DETERMINISTIC (caller-supplied frozen context, never model).
+   */
+  operationKind: string;
 }
 
 /**
  * Canonical deterministic Planner prompt (single source for the CHANGE
- * `runPlanning` path and the `executePlannerWaves` fallback path). Carries the
+ * `runPlanning` path and the `executePlannerWaves` fallback path, which may
+ * serve RUN operations — the `operationKind` word keeps the entry truthful). Carries the
  * normative planning contract: operation id, frozen readable roots (exact
  * projection), explorer evidence, sealed requirement ids, the controlled
  * competency allowlist, the hard-protected declaration rule, and the exact
@@ -1234,7 +1243,7 @@ export function buildCanonicalPlannerPromptV1(input: CanonicalPlannerPromptInput
     || "- none: the sealed TaskContract declares no requirement ids, so leave requirementRefs and acceptanceRefs empty.";
   const knownCompetencyIds = [...new Set(defaultSkillSeed().skills.flatMap((skill) => skill.competencies.map((competency) => competency.id)))].sort();
   return [
-    "Produce planning/triage evidence only for this CHANGE operation. Do not implement or author the specification.",
+    `Produce planning/triage evidence only for this ${input.operationKind} operation. Do not implement or author the specification.`,
     `Operation: ${input.operationId}`,
     `Request: ${input.request}`,
     `Frozen readable roots (exact projection):\n${input.readRoots.length ? input.readRoots.map((root) => `- ${root}`).join("\n") : "- unavailable; do not search outside the current repository root"}`,

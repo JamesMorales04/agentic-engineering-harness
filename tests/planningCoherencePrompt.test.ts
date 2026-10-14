@@ -45,6 +45,7 @@ describe("planner prompt parity (FAM-PROMPT)", () => {
     const canonical = buildPlannerPrompt("CHANGE-TEST-1", contract, payload, explorerEvidence, [], readRoots);
     const shared = buildCanonicalPlannerPromptV1({
       operationId: "CHANGE-TEST-1",
+      operationKind: "CHANGE",
       contract,
       request: payload.request,
       explorerContext: [
@@ -82,6 +83,35 @@ describe("planner prompt parity (FAM-PROMPT)", () => {
     expect(prompt).toContain("AEH_RESULT_JSON=");
   });
 
+  it("labels the operation kind truthfully per entry path (CHANGE vs RUN)", () => {
+    // Luna LOW: the shared fallback serves RUN operations too; a hardcoded
+    // "CHANGE operation" would mislabel them. The kind word is frozen caller
+    // context, never model output.
+    const changePrompt = buildCanonicalPlannerPromptV1({
+      operationId: "RUN-TEST-1",
+      operationKind: "CHANGE",
+      contract,
+      request: payload.request,
+      explorerContext: "Explorer is disabled/unavailable by topology; no explorer result was expected.",
+      inputsPrompt: "Controller-resolved durable inputs: none.",
+      readRoots
+    });
+    expect(changePrompt).toContain("for this CHANGE operation");
+    expect(changePrompt).not.toContain("for this RUN operation");
+    const runPrompt = buildCanonicalPlannerPromptV1({
+      operationId: "RUN-TEST-1",
+      operationKind: "RUN",
+      contract,
+      request: payload.request,
+      explorerContext: "Explorer is disabled/unavailable by topology; no explorer result was expected.",
+      inputsPrompt: "Controller-resolved durable inputs: none.",
+      readRoots
+    });
+    expect(runPrompt).toContain("for this RUN operation");
+    expect(runPrompt).not.toContain("for this CHANGE operation");
+    expect(runPrompt).toContain("AEH_RESULT_JSON=");
+  });
+
   it("keeps the empty-roots fallback text in both builders (runPlanning lease semantics unchanged)", () => {
     // The shared builder still renders the canonical unavailable-roots lease
     // text; the fail-closed frozen-roots gate lives in the waveExecutor
@@ -89,6 +119,7 @@ describe("planner prompt parity (FAM-PROMPT)", () => {
     for (const prompt of [
       buildCanonicalPlannerPromptV1({
         operationId: "CHANGE-TEST-1",
+        operationKind: "CHANGE",
         contract,
         request: payload.request,
         explorerContext: "Explorer is disabled/unavailable by topology; no explorer result was expected.",
