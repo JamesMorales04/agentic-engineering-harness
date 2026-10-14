@@ -108,7 +108,17 @@ function wireValid(schema: unknown, value: unknown): boolean {
   // list includes "null"; absent keys still fail `required` above the wire.
   const rawType = node["type"] as string | string[] | undefined;
   const types = Array.isArray(rawType) ? rawType : rawType === undefined ? [] : [rawType];
-  if (value === null) return types.includes("null");
+  // Strict-legal nullable enums MUST list null in `enum` (type includes "null"
+  // alone is insufficient: a real validator checks enum membership for null).
+  // The previous form returned on null before the enum check, vacuously
+  // passing wire enums that exclude null.
+  if (value === null) {
+    if (!types.includes("null")) return false;
+    if (Array.isArray(node["enum"])) {
+      return (node["enum"] as unknown[]).some((entry) => entry === null);
+    }
+    return true;
+  }
   const isType = (t: string) => types.includes(t);
   if (isType("object") && (typeof value !== "object" || value === null || Array.isArray(value))) return false;
   if (isType("array") && !Array.isArray(value)) return false;
@@ -399,5 +409,80 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
       expect(text).not.toContain("\"contains\"");
       expect(text).not.toContain("propertyNames");
     }
+  });
+});
+
+describe("P1b nullable round-trip regressions (reviewer exact cases)", () => {
+  it("helper genuinely validates null against enum (non-vacuous)", () => {
+    // Pre-repair helper returned true for ANY null with type including
+    // "null", ignoring enum. A strict-legal nullable enum must include null.
+    expect(wireValid({ type: ["string", "null"], enum: ["NONE", "RECOMMENDED", "REQUIRED"] }, null)).toBe(false);
+    expect(wireValid({ type: ["string", "null"], enum: ["NONE", "RECOMMENDED", "REQUIRED", null] }, null)).toBe(true);
+    expect(wireValid({ type: ["string", "null"], enum: ["NONE", "RECOMMENDED", "REQUIRED", null] }, "BOGUS")).toBe(false);
+    expect(wireValid({ type: ["string", "null"], enum: ["NONE", "RECOMMENDED", "REQUIRED", null] }, "NONE")).toBe(true);
+    expect(wireValid({ type: ["string", "null"] }, null)).toBe(true);
+    expect(wireValid({ type: "string" }, null)).toBe(false);
+  });
+
+  it("planner wire nullable enums include null (formalizationNeed/Reason)", () => {
+    const schema = wireSchema("planner");
+    const props = schema["properties"] as Record<string, Record<string, unknown>>;
+    expect(props["formalizationNeed"]!["enum"]).toContain(null);
+    expect(props["formalizationReason"]!["enum"]).toContain(null);
+  });
+
+  it("planner null round-trips both directions (wire <-> zod)", () => {
+    const schema = wireSchema("planner");
+    const strictNulls = {
+      workUnits: [workUnit()],
+      affectedAreas: [],
+      reviewDimensions: [],
+      validationRequirements: [],
+      outOfScopeImprovements: [],
+      filesNeededOutsideScope: [],
+      formalizationNeed: null,
+      formalizationReason: null,
+      formalizationEvidenceRefs: [],
+    };
+    // wire -> zod: strict wire payload with explicit nulls passes zod.
+    expect(wireValid(schema, strictNulls)).toBe(true);
+    expect(validateAgentOutput("planner", strictNulls).ok).toBe(true);
+    // zod -> wire: legacy omitted-keys payload passes zod (wire needs nulls).
+    expect(validateAgentOutput("planner", { workUnits: [workUnit()] }).ok).toBe(true);
+    // enum values still enforced on both layers.
+    const bad = { ...strictNulls, formalizationNeed: "BOGUS" };
+    expect(wireValid(schema, bad)).toBe(false);
+    expect(validateAgentOutput("planner", bad).ok).toBe(false);
+  });
+
+  it("spec BLOCKED bare null-artifacts round-trips both directions", () => {
+    const schema = wireSchema("spec-authoring");
+    const base = {
+      change: "change-test-1",
+      requirements: [],
+      unresolvedDecisions: [],
+      decisionRequests: [],
+      validationReady: false,
+    };
+    const blockedBare = { ...base, status: "BLOCKED", artifacts: { proposal: null, design: null, tasks: null, specs: [] } };
+    // wire passes AND zod passes (previously wire-pass/zod-fail).
+    expect(wireValid(schema, blockedBare)).toBe(true);
+    expect(validateAgentOutput("spec-authoring", blockedBare).ok).toBe(true);
+    // omitted-keys legacy shape still passes zod (no narrowing).
+    const blockedOmitted = { ...base, status: "BLOCKED", artifacts: { specs: [] }, validationReady: false };
+    expect(validateAgentOutput("spec-authoring", blockedOmitted).ok).toBe(true);
+    // READY with nulls still rejected on both layers.
+    const readyNull = { ...base, status: "READY", artifacts: { proposal: null, design: null, tasks: null, specs: [] }, validationReady: true };
+    expect(wireValid(schema, readyNull)).toBe(false);
+    expect(validateAgentOutput("spec-authoring", readyNull).ok).toBe(false);
+  });
+
+  it("finding exceptionType null round-trips both directions", () => {
+    const schema = wireSchema("reviewer");
+    const withNull = { verdict: "PASS", findings: [wireFinding("medium")], finalizationSafety: "SAFE", confidence: null, followUp: [] };
+    expect(wireValid(schema, withNull)).toBe(true);
+    expect(validateAgentOutput("reviewer", { verdict: "PASS", findings: [zodFinding("medium")], finalizationSafety: "SAFE", followUp: [] }).ok).toBe(true);
+    // finding with explicit null exceptionType passes zod too.
+    expect(validateAgentOutput("reviewer", { verdict: "FAIL", findings: [{ ...zodFinding(), exceptionType: null }], finalizationSafety: "BLOCKED", followUp: [] }).ok).toBe(true);
   });
 });
