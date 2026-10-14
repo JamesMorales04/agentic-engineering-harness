@@ -167,19 +167,29 @@ describe("canonical managed child env scrub (C6)", () => {
     await fs.writeFile(path.join(stubDir, "aeh-stub-tool"), "#!/bin/sh\necho stub\n");
     await fs.chmod(path.join(stubDir, "aeh-stub-tool"), 0o755);
     const savedPath = process.env.PATH;
+    const savedExtra = process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV];
+    // Neutralize an ambient controller marking for this test only: the frozen
+    // startup snapshot (module-load) is overridden below via explicit
+    // `toolchainExtraBinPaths: []`, and the live var is deleted so per-turn
+    // env cannot reintroduce it. Restored in `finally`.
+    delete process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV];
     process.env.PATH = `${ambientDir}${path.delimiter}${stubDir}${path.delimiter}${savedPath ?? ""}`;
     const { clearToolchainEnvCache } = await import("../src/utils/process.js");
     try {
       clearToolchainEnvCache();
+      // Explicit empty marking overrides the frozen startup snapshot, so this
+      // no-prefix probe stays minimal-only even when the controller started
+      // with AEH_TOOLCHAIN_EXTRA_BIN_PATHS exported.
+      const noMarking = { toolchainExtraBinPaths: [] as const };
       // No toolchain.state.json under tmp: ambient-only tools do NOT resolve
       // (no silent ambient fallback, not even filtered).
-      expect(await resolveExecutable("aeh-ambient-tool", tmp), "ambient-only tool must not resolve without pinned state").toBeUndefined();
-      expect(await resolveExecutable("aeh-stub-tool", tmp), "ambient stub must not resolve without pinned state").toBeUndefined();
+      expect(await resolveExecutable("aeh-ambient-tool", tmp, noMarking), "ambient-only tool must not resolve without pinned state").toBeUndefined();
+      expect(await resolveExecutable("aeh-stub-tool", tmp, noMarking), "ambient stub must not resolve without pinned state").toBeUndefined();
       // Managed child PATH is hermetic minimal only: no ambient dirs at all.
       const probe = await runExecutable(
         process.execPath,
         ["-e", `process.stdout.write(process.env.PATH ?? "")`],
-        { cwd: tmp, timeoutMs: 2_000 }
+        { cwd: tmp, timeoutMs: 2_000, toolchainExtraBinPaths: [] }
       );
       expect(probe.exitCode).toBe(0);
       expect(probe.stdout).toBe(buildHermeticChildPath(undefined));
@@ -188,7 +198,7 @@ describe("canonical managed child env scrub (C6)", () => {
       expect(dirs).not.toContain(stubDir);
       // Direct spawn of an ambient-only tool fails VISIBLY with the setup
       // direction instead of silently succeeding via ambient.
-      await expect(runExecutable("aeh-stub-tool", [], { cwd: tmp, timeoutMs: 2_000 }), "missing pinned state must fail visibly").rejects.toThrow(/AEH_TOOLCHAIN_NOT_CONFIGURED.*aeh setup/);
+      await expect(runExecutable("aeh-stub-tool", [], { cwd: tmp, timeoutMs: 2_000, toolchainExtraBinPaths: [] }), "missing pinned state must fail visibly").rejects.toThrow(/AEH_TOOLCHAIN_NOT_CONFIGURED.*aeh setup/);
       // Migration: pin the stub dir via `aeh setup` state, then retry (GREEN).
       // Stale state migrates the same way: re-run setup, then retry.
       await fs.mkdir(path.join(tmp, ".harness"), { recursive: true });
@@ -202,6 +212,8 @@ describe("canonical managed child env scrub (C6)", () => {
     } finally {
       if (savedPath === undefined) delete process.env.PATH;
       else process.env.PATH = savedPath;
+      if (savedExtra === undefined) delete process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV];
+      else process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV] = savedExtra;
       clearToolchainEnvCache();
       await fs.rm(tmp, { recursive: true, force: true });
     }
@@ -311,6 +323,43 @@ describe("canonical managed child env scrub (C6)", () => {
       else process.env.PATH = savedPath;
       if (savedExtra === undefined) delete process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV];
       else process.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV] = savedExtra;
+      clearToolchainEnvCache();
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("re-emits explicit controller extra bins for nested controllers while per-turn env decoys stay scrubbed", async () => {
+    // Trust-preserving propagation: explicit options.toolchainExtraBinPaths is
+    // re-emitted as AEH_TOOLCHAIN_EXTRA_BIN_PATHS so a nested `aeh`
+    // controller freezes a correct startup snapshot; options.env marking stays
+    // scrubbed/ignored. MECHANISM: DETERMINISTIC (scrub + explicit re-emit).
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-nested-marking-"));
+    const bins = path.join(tmp, "bins");
+    const decoy = path.join(tmp, "decoy");
+    await fs.mkdir(bins, { recursive: true });
+    await fs.mkdir(decoy, { recursive: true });
+    const { clearToolchainEnvCache } = await import("../src/utils/process.js");
+    try {
+      clearToolchainEnvCache();
+      const nested = await runExecutable(
+        process.execPath,
+        ["-e", `process.stdout.write(JSON.stringify({marking: process.env[${JSON.stringify(AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV)}], path: process.env.PATH}))`],
+        { cwd: tmp, timeoutMs: 2_000, toolchainExtraBinPaths: [bins], env: { [AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]: decoy } },
+      );
+      expect(nested.exitCode).toBe(0);
+      const seen = JSON.parse(nested.stdout) as { marking?: string; path?: string };
+      expect(seen.marking).toBe(bins);
+      expect((seen.path ?? "").split(path.delimiter)).toContain(bins);
+      expect((seen.path ?? "").split(path.delimiter)).not.toContain(decoy);
+      // No explicit option: per-turn env decoy stays scrubbed (no re-emit).
+      const unmarked = await runExecutable(
+        process.execPath,
+        ["-e", `process.stdout.write(process.env[${JSON.stringify(AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV)}] ?? "<scrubbed>")`],
+        { cwd: tmp, timeoutMs: 2_000, env: { [AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV]: decoy } },
+      );
+      expect(unmarked.exitCode).toBe(0);
+      expect(unmarked.stdout).not.toContain(decoy);
+    } finally {
       clearToolchainEnvCache();
       await fs.rm(tmp, { recursive: true, force: true });
     }

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { z } from "zod";
 import type { HarnessProjectConfig } from "../core/types.js";
-import { runExecutable, runShell } from "../utils/process.js";
+import { controllerStartupExtraBinPaths, runExecutable, runShell } from "../utils/process.js";
 import { getBuildIdentity } from "../build/identity.js";
 import { rankEvalResults, scoreEvalResult } from "./scoring.js";
 import type { EvalBuildIdentityV1, EvalCase, EvalCorpusIdentityV1, EvalCorpusManifestV1, EvalResult, EvalVariant } from "./types.js";
@@ -51,12 +51,12 @@ export async function runEvalCase(root: string, config: HarnessProjectConfig, ca
       await fs.cp(fixture, workspace, { recursive: true, force: true });
     }
     for (const setup of evalCase.setupCommands ?? []) {
-      const result = await runShell(template(setup, evalCase, workspace), { cwd: workspace, timeoutMs: 600_000, env: variant.env });
+      const result = await runShell(template(setup, evalCase, workspace), { cwd: workspace, timeoutMs: 600_000, env: variant.env, toolchainExtraBinPaths: controllerStartupExtraBinPaths() });
       if (result.exitCode !== 0) throw new Error(`Eval setup failed: ${result.stderr || result.stdout}`);
     }
 
     const command = template(variant.command ?? evalCase.runCommand ?? `aeh run ${quote(evalCase.taskId)}`, evalCase, workspace);
-    const execution = await runShell(command, { cwd: workspace, timeoutMs: 3_600_000, env: variant.env });
+    const execution = await runShell(command, { cwd: workspace, timeoutMs: 3_600_000, env: variant.env, toolchainExtraBinPaths: controllerStartupExtraBinPaths() });
     const run = await readJson(path.join(workspace, ".harness", "runs", `${evalCase.taskId}.json`));
     const report = await readJson(path.join(workspace, ".harness", "reports", `${evalCase.taskId}.json`));
     const status = (run?.status ?? report?.status ?? (execution.exitCode === 0 ? "PASS" : "FAIL")) as "PASS" | "FAIL";
