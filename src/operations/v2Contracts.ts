@@ -420,7 +420,10 @@ export function resolveAttemptChainSupersedeV1(input: {
   const known = new Set(Object.keys(input.participants));
   const children = new Map<string, Set<string>>();
   const link = (parent: string, child: string): void => {
-    if (parent === child || !known.has(parent) || !known.has(child)) return;
+    if (!known.has(parent) || !known.has(child)) return;
+    // Fail closed on self-loops: record the self-edge so the path-based DFS
+    // cycle check below observes parent === child as a GRAY revisit and
+    // rejects the graph (returns undefined) instead of silently dropping it.
     let set = children.get(parent);
     if (!set) {
       set = new Set();

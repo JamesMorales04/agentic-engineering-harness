@@ -402,4 +402,26 @@ describe("AEH-V2-0133 attempt-chain accounting", () => {
     expect(accounting.find((item) => item.id === attempt1)).toEqual({ id: attempt1, required: true, status: "FAILED" });
     expect(accounting.find((item) => item.id === attemptC)).toEqual({ id: attemptC, required: true, status: "COMPLETED" });
   });
+
+  it("(e-self-loop) a self-loop edge plus a valid retry receipt fails closed with no supersession", () => {
+    const current = candidate();
+    const attemptC = "participant:cccccccccccccccc";
+    const participants = {
+      [attempt1]: { id: attempt1, role: "Repairer", logicalAgent: "repairer", status: "FAILED", parentAgentId: attempt1, registeredAt: "2026-01-01T00:00:00.000Z" },
+      [attemptC]: { id: attemptC, role: "Repairer", logicalAgent: "repairer", status: "COMPLETED", parentAgentId: attempt1, registeredAt: "2026-01-01T00:00:01.000Z" }
+    };
+    const receipts = { "receipt:c": retryReceipt(attemptC, "session-c", current, attempt1) };
+    // Reviewer R2/P2 exact case: a→a self-loop plus a→c with a valid receipt must
+    // return undefined (fail closed), not SUPERSEDED_BY_RETRY(c).
+    expect(resolveAttemptChainSupersedeV1({
+      participantId: attempt1,
+      participants: participants as never,
+      receipts: Object.values(receipts) as never,
+      current,
+      assemblies: []
+    })).toBeUndefined();
+    const accounting = objectiveParticipantAccountingV1(operation(current, participants as never, receipts as never), current);
+    expect(accounting.find((item) => item.id === attempt1)).toEqual({ id: attempt1, required: true, status: "FAILED" });
+    expect(accounting.find((item) => item.id === attemptC)).toEqual({ id: attemptC, required: true, status: "COMPLETED" });
+  });
 });
