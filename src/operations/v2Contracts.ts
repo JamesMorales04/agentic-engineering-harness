@@ -393,3 +393,75 @@ export function resolveCandidateLineageReceiptV1(input: {
  * binding (AEH-V2-0124). Every other or absent role is treated as a producer and stays strict.
  */
 const nonProducingCandidateRoles = new Set(["Explorer", "Planner", "Reviewer", "Librarian", "Spec Manager"]);
+
+export type AttemptChainSupersedeResolutionV1 = {
+  kind: "SUPERSEDED_BY_RETRY";
+  /** The in-chain retry identity whose lineage-proven COMPLETED receipt supersedes the target. */
+  supersededBy: string;
+};
+
+/**
+ * DETERMINISTIC attempt-chain resolution (AEH-V2-0133). A participant identity with no
+ * lineage-proven receipt of its own is superseded when a descendant identity in the same
+ * retry chain carries a settled receipt that `resolveCandidateLineageReceiptV1` proves
+ * against the current candidate. Chain edges come only from durable controller-written
+ * lineage: the participant record `parentAgentId` and settled-receipt `parentParticipantId`
+ * provenance. An identity outside every chain, a chain with no lineage-proven COMPLETED
+ * descendant, and any cycle all resolve to `undefined` (fail closed).
+ */
+export function resolveAttemptChainSupersedeV1(input: {
+  participantId: string;
+  participants: Readonly<Record<string, { id: string; parentAgentId?: string }>>;
+  receipts: readonly ParticipantReceiptV1[];
+  current: CandidateRevisionV1;
+  assemblies: readonly CandidateAssemblyReceiptV1[];
+}): AttemptChainSupersedeResolutionV1 | undefined {
+  if (typeof input.participantId !== "string" || !input.participants[input.participantId]) return undefined;
+  const known = new Set(Object.keys(input.participants));
+  const children = new Map<string, Set<string>>();
+  const link = (parent: string, child: string): void => {
+    if (parent === child || !known.has(parent) || !known.has(child)) return;
+    let set = children.get(parent);
+    if (!set) {
+      set = new Set();
+      children.set(parent, set);
+    }
+    set.add(child);
+  };
+  for (const participant of Object.values(input.participants)) {
+    if (typeof participant.parentAgentId === "string" && participant.parentAgentId.length > 0) {
+      link(participant.parentAgentId, participant.id);
+    }
+  }
+  for (const receipt of input.receipts) {
+    const parent = receipt.parentParticipantId;
+    if (typeof parent !== "string" || parent.length === 0) continue;
+    const owners = new Set<string>();
+    if (typeof receipt.participantId === "string" && known.has(receipt.participantId)) owners.add(receipt.participantId);
+    if (typeof receipt.sessionId === "string" && known.has(receipt.sessionId)) owners.add(receipt.sessionId);
+    for (const owner of owners) link(parent, owner);
+  }
+  // Deterministic breadth-first walk over strict descendants (nearest retry first;
+  // lexicographic id order breaks same-depth ties). The visited set keeps cyclic
+  // lineage from looping instead of granting completion.
+  const visited = new Set<string>([input.participantId]);
+  let frontier = [...(children.get(input.participantId) ?? [])].sort();
+  while (frontier.length > 0) {
+    for (const descendant of frontier) {
+      if (visited.has(descendant)) continue;
+      visited.add(descendant);
+      const completed = input.receipts.some((entry) => (entry.participantId === descendant || entry.sessionId === descendant)
+        && entry.settled === true && entry.outcome === "SUCCEEDED" && entry.candidate !== undefined
+        && resolveCandidateLineageReceiptV1({ receipt: entry, current: input.current, assemblies: input.assemblies }) !== undefined);
+      if (completed) return { kind: "SUPERSEDED_BY_RETRY", supersededBy: descendant };
+    }
+    const next: string[] = [];
+    for (const descendant of frontier) {
+      for (const child of children.get(descendant) ?? []) {
+        if (!visited.has(child)) next.push(child);
+      }
+    }
+    frontier = [...new Set(next)].sort();
+  }
+  return undefined;
+}
