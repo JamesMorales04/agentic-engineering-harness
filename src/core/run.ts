@@ -70,7 +70,9 @@ import { recordPaseoTrace } from "../paseo/trace.js";
 import { discoverProjectStackProfile, type ProjectStackProfileV1 } from "../participants/stack.js";
 import { compileCandidateAssuranceV1, candidateImpactValidationRequirementsV1, candidateAssuranceProviderAdapterV1, type CandidateAssuranceCompilationV1, type CandidateAssurancePolicyV1 } from "../architecture/candidateAssurance.js";
 import { requireSastEvidenceV1 } from "../security/sastEvidence.js";
-import { contractValidationRequirementsV1, mergeContractValidationRequirementsV1, resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
+import { resolveValidationRequirements, validationRequirementKindValues, type ResolvedValidationActionV1, type ValidationRequirementKindV1, type ValidationResolutionV1 } from "../architecture/validationRequirements.js";
+import { mergedPlanContractValidationRequirementsV1 } from "./contract.js";
+import { directRouteMultiUnitBlockedV1 } from "../agents/routingV2.js";
 import { PROVIDER_LANE_EVIDENCE_COMMAND_MISMATCH, PROVIDER_LANE_EVIDENCE_STATUS, requireProviderLaneEvidenceForActionV1, type ProviderEvidenceLaneV1 } from "../validation/laneEvidence.js";
 import {
   attributedReporterFailuresV1,
@@ -334,6 +336,14 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
   const implementationRoute = effectiveContract.routing?.route ?? "DIRECT";
   const assurance = effectiveContract.routing?.assurance ?? "STANDARD";
   if (implementationRoute === "NO_AGENT") throw new Error(`NO_AGENT_ROUTE: task ${effectiveContract.task.id} is explicitly non-mutating and cannot enter implementation execution.`);
+  // AEH-V2-0128 residual (single source `directRouteMultiUnitBlockedV1`): a
+  // DIRECT/NO_AGENT-sealed contract handed a multi-unit precomputed plan must
+  // never silently execute as DIRECT (the planning branch below is skipped for
+  // these routes, which would drop the decomposition on the floor). Refuse
+  // fail-closed: escalate/re-seal to DELEGATED first.
+  if (directRouteMultiUnitBlockedV1(implementationRoute, options?.planning?.workUnits.length ?? 0)) {
+    throw new Error(`DIRECT_MULTI_UNIT_ESCALATION_REQUIRED: task ${effectiveContract.task.id} seals route '${implementationRoute}' but its precomputed plan decomposes into ${options?.planning?.workUnits.length} work units; escalate/re-seal to DELEGATED before execution.`);
+  }
   const startedMs = Date.now();
   const startedAt = new Date(startedMs).toISOString();
   let preparedDependencyManifestDigest: string | undefined;
@@ -1465,18 +1475,13 @@ async function recompileCandidateAssurance(input: {
     // an explicit candidate-bound ValidationRequirement, so the AcceptanceOracle resolves the exact
     // evidence path instead of an empty DIRECT base set. No passing check satisfies an assertion it
     // was not declared for; unknown check ids are never fabricated.
-    const contractValidationRequirements = contractValidationRequirementsV1({
-      requirements: input.contract.requirements ?? [],
-      scope: input.contract.scope?.allowed ?? ["**"],
-      commands: [...(input.config.validation?.commands ?? []), ...(input.contract.verification?.commands ?? [])],
-      validators: [...(input.config.validation?.validators ?? []), ...(input.contract.verification?.validators ?? [])],
-      providers: input.config.validation?.providers ?? []
-    });
     // A plan-declared validation requirement may name the same deterministic check id as a frozen
     // contract requirement (the plan observes the configured validator ids). The merged set keeps
     // one requirement per check id, with the contract-derived requirement normative; an
-    // incompatible same-id kind fails closed (AEH-V2-0118).
-    const baseRequirements = mergeContractValidationRequirementsV1(input.baseValidationRequirements, contractValidationRequirements);
+    // incompatible same-id kind fails closed (AEH-V2-0118). Single shared
+    // semantic with the wave-execution blueprint path
+    // (`mergedPlanContractValidationRequirementsV1`).
+    const baseRequirements = mergedPlanContractValidationRequirementsV1(input.baseValidationRequirements, input.contract, input.config);
     const requirements = [...baseRequirements, ...impactRequirements];
     const validationResolution = await resolveValidationRequirements({
       root: input.root,

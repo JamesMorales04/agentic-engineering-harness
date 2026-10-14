@@ -29,7 +29,7 @@ import { compileResolvedOperationPolicy } from "../src/architecture/executionIde
 import { sha256Canonical } from "../src/core/digest.js";
 import { createIntentDecision } from "../src/audit/intentDecision.js";
 import { bindBootstrapOperationPolicy, startDetachedOperation } from "../src/operations/controller.js";
-import { prepareChangeOperation } from "../src/operations/change.js";
+import { prepareChangeOperation, buildChangeIntentDigestV1 } from "../src/operations/change.js";
 import { claimControllerEpoch, loadOperation, operationFile, patchOperation, saveOperation, transitionOperationToTerminal } from "../src/operations/state.js";
 import { bindResolvedOperationPolicy } from "../src/operations/state.js";
 import { compileOperationOriginV1 } from "../src/operations/operationProvenance.js";
@@ -71,7 +71,7 @@ async function fixture() {
   const payload = { request: "Adjust a button label", files: ["src/Button.tsx"], domains: ["frontend"], risk: "low" as const };
   const normalized = normalizeTriageEvidence(payload);
   const binding = await createSemanticRepositoryBindingV1(root, config);
-  const intentDigest = sha256Canonical({ request: payload.request, files: normalized.files, domains: normalized.domains, risk: normalized.risk, flags: normalized.flags });
+  const intentDigest = buildChangeIntentDigestV1({ request: payload.request, files: normalized.files, domains: normalized.domains, risk: normalized.risk, flags: normalized.flags, policyRevision: "recovery-floor-test" });
   const semanticBinding = { ...binding, intentDigest };
   const triage = await triageChangeWithSemanticAssessment(config, payload, { service: routeService as never, binding: semanticBinding, policyRevision: "recovery-floor-test" });
   const child = await startDetachedOperation(root, "change", { ...payload, intentDecision: createIntentDecision("change", "Retry the failed work safely.", "lead-semantic", { userTurnId: "owner-turn-recovery", continuation: { operationId: claimed.id } }) }, {

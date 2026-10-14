@@ -66,6 +66,17 @@ export function requiresDelegatedPlanningV1(input: {
     || input.coordinationNeed === true;
 }
 
+/**
+ * AEH-V2-0128 residual (single source with `requiresDelegatedPlanningV1`): a
+ * DIRECT/NO_AGENT-sealed change decomposed into more than one work unit must
+ * never silently execute as DIRECT. Callers escalate/re-seal to DELEGATED or
+ * refuse fail-closed with `DIRECT_MULTI_UNIT_ESCALATION_REQUIRED`.
+ * MECHANISM: DETERMINISTIC (sealed route + planner work-unit count).
+ */
+export function directRouteMultiUnitBlockedV1(route: ImplementationRoute | undefined, workUnitCount: number): boolean {
+  return (route === "DIRECT" || route === "NO_AGENT") && Number.isSafeInteger(workUnitCount) && workUnitCount > 1;
+}
+
 export function resolveImplementationRoute(input: ImplementationRoutingEvidence): ImplementationRoutingDecision {
   const files = [...new Set(input.files ?? [])];
   const confidence = input.scopeConfidence ?? "medium";
