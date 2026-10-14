@@ -31,6 +31,7 @@ const workUnit = () => ({
   riskTags: [],
   changeKinds: ["source"] as const[],
   risk: "low" as const,
+  resourceClaims: [] as unknown[],
 });
 
 describe("H-NEW-2 cross-field gates (RED first)", () => {
@@ -101,13 +102,20 @@ describe("H-NEW-2 cross-field gates (RED first)", () => {
 function wireValid(schema: unknown, value: unknown): boolean {
   const node = schema as Record<string, unknown> | undefined;
   if (!node || typeof node !== "object") return true;
-  const type = node["type"] as string | undefined;
-  if (type === "object" && (typeof value !== "object" || value === null || Array.isArray(value))) return false;
-  if (type === "array" && !Array.isArray(value)) return false;
-  if (type === "string" && typeof value !== "string") return false;
-  if (type === "boolean" && typeof value !== "boolean") return false;
-  if (type === "integer" && !(typeof value === "number" && Number.isInteger(value))) return false;
-  if (type === "number" && typeof value !== "number") return false;
+  // Strict-subset nullable form: Zod-optional scalars travel as
+  // `type: [<base>, "null"]` inside required (OpenAI strict subset: required
+  // must cover every property key). A null value is valid only where the type
+  // list includes "null"; absent keys still fail `required` above the wire.
+  const rawType = node["type"] as string | string[] | undefined;
+  const types = Array.isArray(rawType) ? rawType : rawType === undefined ? [] : [rawType];
+  if (value === null) return types.includes("null");
+  const isType = (t: string) => types.includes(t);
+  if (isType("object") && (typeof value !== "object" || value === null || Array.isArray(value))) return false;
+  if (isType("array") && !Array.isArray(value)) return false;
+  if (isType("string") && typeof value !== "string") return false;
+  if (isType("boolean") && typeof value !== "boolean") return false;
+  if (isType("integer") && !(typeof value === "number" && Number.isInteger(value))) return false;
+  if (isType("number") && typeof value !== "number") return false;
   if ("const" in node && JSON.stringify(value) !== JSON.stringify(node["const"])) return false;
   if (Array.isArray(node["enum"])) {
     const allowed = node["enum"] as unknown[];
@@ -156,20 +164,40 @@ function wireSchema(contract: string): Record<string, unknown> {
   return schema as Record<string, unknown>;
 }
 
-const wireFinding = (severity: "critical" | "high" | "medium" | "low" = "critical") => ({
+const zodFinding = (severity: "critical" | "high" | "medium" | "low" = "critical") => ({
   ...finding(severity),
   reviewDimensions: [] as string[],
+});
+
+// Wire strict form: every finding key required-present; the Zod-optional
+// exceptionType travels explicit null (zod stays authoritative for the legacy
+// shape that omits the key — see the no-narrowing test below).
+const wireFinding = (severity: "critical" | "high" | "medium" | "low" = "critical") => ({
+  ...zodFinding(severity),
+  exceptionType: null as null,
 });
 
 describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => {
   it("planner wire rejects empty workUnits (minItems:1)", () => {
     const schema = wireSchema("planner");
     expect((schema["properties"] as Record<string, unknown>)["workUnits"]).toMatchObject({ minItems: 1 });
+    // Strict form: required covers all 9 root keys; Zod-optional scalars travel
+    // nullable (formalizationNeed/Reason null), arrays required-present.
+    const strictBase = {
+      affectedAreas: [],
+      reviewDimensions: [],
+      validationRequirements: [],
+      outOfScopeImprovements: [],
+      filesNeededOutsideScope: [],
+      formalizationNeed: null,
+      formalizationReason: null,
+      formalizationEvidenceRefs: [],
+    };
     expect(
-      wireValid(schema, { workUnits: [], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [] }),
+      wireValid(schema, { ...strictBase, workUnits: [] }),
     ).toBe(false);
     expect(
-      wireValid(schema, { workUnits: [workUnit()], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [] }),
+      wireValid(schema, { ...strictBase, workUnits: [workUnit()] }),
     ).toBe(true);
   });
 
@@ -209,7 +237,7 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
     };
     // Each evidence array alone must satisfy its own full-shape branch.
     expect(wireValid(schema, { ...empty, relevantFiles: [{ path: "src/a.ts", symbols: [], reason: "r" }] })).toBe(true);
-    expect(wireValid(schema, { ...empty, findings: [{ id: "F1", status: "CONFIRMED", evidence: [] }] })).toBe(true);
+    expect(wireValid(schema, { ...empty, findings: [{ id: "F1", status: "CONFIRMED", evidence: [], notes: null }] })).toBe(true);
     expect(wireValid(schema, { ...empty, moduleBoundaries: ["src/**"] })).toBe(true);
     expect(wireValid(schema, { ...empty, tests: ["tests/a.test.ts"] })).toBe(true);
     expect(wireValid(schema, { ...empty, dependencies: ["dep"] })).toBe(true);
@@ -222,7 +250,7 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
       wireValid(schema, {
         summary: "done",
         relevantFiles: [{ path: "src/a.ts", symbols: [], reason: "r" }],
-        findings: [{ id: "F1", status: "CONFIRMED", evidence: ["e"] }],
+        findings: [{ id: "F1", status: "CONFIRMED", evidence: ["e"], notes: null }],
         moduleBoundaries: ["m"],
         tests: [],
         dependencies: ["d"],
@@ -247,12 +275,12 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
       decisionRequests: [],
       validationReady: true,
     };
-    const readyMissing = { ...base, status: "READY", artifacts: { specs: [] } };
-    const readyMissingProposal = { ...base, status: "READY", artifacts: { tasks: "- [ ] work", specs: [] } };
-    const readyMissingTasks = { ...base, status: "READY", artifacts: { proposal: "# Proposal", specs: [] } };
-    const readyEmpty = { ...base, status: "READY", artifacts: { proposal: "", tasks: "", specs: [] } };
-    const readyFull = { ...base, status: "READY", artifacts: { proposal: "# Proposal", tasks: "- [ ] work", specs: [] } };
-    const blockedBare = { ...base, status: "BLOCKED", artifacts: { specs: [] }, validationReady: false };
+    const readyMissing = { ...base, status: "READY", artifacts: { proposal: null, design: null, tasks: null, specs: [] } };
+    const readyMissingProposal = { ...base, status: "READY", artifacts: { proposal: null, design: null, tasks: "- [ ] work", specs: [] } };
+    const readyMissingTasks = { ...base, status: "READY", artifacts: { proposal: "# Proposal", design: null, tasks: null, specs: [] } };
+    const readyEmpty = { ...base, status: "READY", artifacts: { proposal: "", design: null, tasks: "", specs: [] } };
+    const readyFull = { ...base, status: "READY", artifacts: { proposal: "# Proposal", design: null, tasks: "- [ ] work", specs: [] } };
+    const blockedBare = { ...base, status: "BLOCKED", artifacts: { proposal: null, design: null, tasks: null, specs: [] }, validationReady: false };
     expect(wireValid(schema, readyMissing)).toBe(false);
     expect(wireValid(schema, readyMissingProposal)).toBe(false);
     expect(wireValid(schema, readyMissingTasks)).toBe(false);
@@ -264,15 +292,15 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
   it("reviewer wire rejects FAIL without findings (unsafe-PASS stays zod-only)", () => {
     const schema = wireSchema("reviewer");
     expect(schema).toHaveProperty("anyOf");
-    expect(wireValid(schema, { verdict: "FAIL", findings: [], finalizationSafety: "BLOCKED", followUp: [] })).toBe(false);
-    expect(wireValid(schema, { verdict: "FAIL", findings: [wireFinding()], finalizationSafety: "BLOCKED", followUp: [] })).toBe(true);
-    expect(wireValid(schema, { verdict: "PASS", findings: [], finalizationSafety: "SAFE", followUp: [] })).toBe(true);
+    expect(wireValid(schema, { verdict: "FAIL", findings: [], finalizationSafety: "BLOCKED", confidence: null, followUp: [] })).toBe(false);
+    expect(wireValid(schema, { verdict: "FAIL", findings: [wireFinding()], finalizationSafety: "BLOCKED", confidence: null, followUp: [] })).toBe(true);
+    expect(wireValid(schema, { verdict: "PASS", findings: [], finalizationSafety: "SAFE", confidence: null, followUp: [] })).toBe(true);
     // Residual: unsafe PASS (critical/high + SAFE) has no strict-legal wire
     // encoding (`contains`/`not` over nested severity); zod stays authoritative.
     // Wire intentionally still passes it — must NOT narrow to findings-empty.
-    expect(wireValid(schema, { verdict: "PASS", findings: [wireFinding()], finalizationSafety: "SAFE", followUp: [] })).toBe(true);
+    expect(wireValid(schema, { verdict: "PASS", findings: [wireFinding()], finalizationSafety: "SAFE", confidence: null, followUp: [] })).toBe(true);
     expect(
-      validateAgentOutput("reviewer", { verdict: "PASS", findings: [wireFinding()], finalizationSafety: "SAFE", followUp: [] }).ok,
+      validateAgentOutput("reviewer", { verdict: "PASS", findings: [zodFinding()], finalizationSafety: "SAFE", followUp: [] }).ok,
     ).toBe(false);
   });
 
@@ -280,13 +308,16 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
     // The wire gate narrows only FAIL-empty; PASS with medium/low + SAFE must
     // stay valid in BOTH layers (the unsafe-PASS residual is critical/high only).
     for (const severity of ["medium", "low"] as const) {
-      const payload = { verdict: "PASS" as const, findings: [wireFinding(severity)], finalizationSafety: "SAFE" as const, followUp: [] as string[] };
-      expect(wireValid(wireSchema("reviewer"), payload)).toBe(true);
+      const payload = { verdict: "PASS" as const, findings: [zodFinding(severity)], finalizationSafety: "SAFE" as const, followUp: [] as string[] };
+      // Wire strict form carries confidence explicitly null and per-finding
+      // exceptionType null; zod stays authoritative for the legacy shape
+      // without those keys (no narrowing).
+      expect(wireValid(wireSchema("reviewer"), { ...payload, confidence: null, findings: [wireFinding(severity)] })).toBe(true);
       expect(validateAgentOutput("reviewer", payload).ok).toBe(true);
     }
     // PASS_WITH_WARNINGS with medium/low + SAFE is likewise valid.
-    const warnPayload = { verdict: "PASS_WITH_WARNINGS" as const, findings: [wireFinding("medium")], finalizationSafety: "SAFE" as const, followUp: [] as string[] };
-    expect(wireValid(wireSchema("reviewer"), warnPayload)).toBe(true);
+    const warnPayload = { verdict: "PASS_WITH_WARNINGS" as const, findings: [zodFinding("medium")], finalizationSafety: "SAFE" as const, followUp: [] as string[] };
+    expect(wireValid(wireSchema("reviewer"), { ...warnPayload, confidence: null, findings: [wireFinding("medium")] })).toBe(true);
     expect(validateAgentOutput("reviewer", warnPayload).ok).toBe(true);
   });
 
@@ -312,11 +343,11 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
       decisionRequests: [],
       validationReady: true,
     };
-    const whitespaceReady = { ...base, status: "READY", artifacts: { proposal: "   ", tasks: "  \n ", specs: [] } };
+    const whitespaceReady = { ...base, status: "READY", artifacts: { proposal: "   ", design: "# Design", tasks: "  \n ", specs: [] } };
     expect(wireValid(schema, whitespaceReady)).toBe(true);
     expect(validateAgentOutput("spec-authoring", whitespaceReady).ok).toBe(false);
     // Genuine content still passes both layers.
-    const genuine = { ...base, status: "READY", artifacts: { proposal: "# Proposal", tasks: "- [ ] work", specs: [] } };
+    const genuine = { ...base, status: "READY", artifacts: { proposal: "# Proposal", design: "# Design", tasks: "- [ ] work", specs: [] } };
     expect(wireValid(schema, genuine)).toBe(true);
     expect(validateAgentOutput("spec-authoring", genuine).ok).toBe(true);
   });
@@ -325,13 +356,28 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
     // Planner travels strict:true (executeAgentPrompt outputContract "planner"
     // via Paseo --output-schema / Codex --output-schema / MCP inputSchema:
     // src/agents/waveExecutor.ts:201,242, src/operations/change.ts:879,
-    // src/agents/reviewLifecycle.ts:574). Optionals must not narrow.
+    // src/agents/reviewLifecycle.ts:574). Wire strict form requires every key
+    // present (Zod-optional scalars nullable, arrays required-present); the
+    // deterministic zod gate stays authoritative for legacy payloads that omit
+    // optional keys (no payload-narrowing regression).
     const schema = wireSchema("planner");
-    const minimal = { workUnits: [workUnit()], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [] };
-    expect(wireValid(schema, minimal)).toBe(true);
-    expect(validateAgentOutput("planner", minimal).ok).toBe(true);
+    const strictMinimal = {
+      workUnits: [workUnit()],
+      affectedAreas: [],
+      reviewDimensions: [],
+      validationRequirements: [],
+      outOfScopeImprovements: [],
+      filesNeededOutsideScope: [],
+      formalizationNeed: null,
+      formalizationReason: null,
+      formalizationEvidenceRefs: [],
+    };
+    expect(wireValid(schema, strictMinimal)).toBe(true);
+    // Legacy shape without optional keys still passes zod (authoritative).
+    const legacyMinimal = { workUnits: [workUnit()], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [] };
+    expect(validateAgentOutput("planner", legacyMinimal).ok).toBe(true);
     const full = {
-      ...minimal,
+      ...strictMinimal,
       filesNeededOutsideScope: [{ path: "src/a.ts", reason: "needs protected file" }],
       formalizationNeed: "RECOMMENDED" as const,
       formalizationReason: "OTHER" as const,

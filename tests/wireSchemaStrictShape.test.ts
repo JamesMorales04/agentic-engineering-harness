@@ -12,7 +12,7 @@ import { knownOutputContracts, outputJsonSchema } from "../src/agents/outputCont
  * (all objects additionalProperties:false, all properties required, anyOf
  * branches full-shape) to EVERY shipped output contract.
  *
- * SCOPE (prevents recurrence without narrowing):
+ * SCOPE (strict subset, no narrowing at the zod layer):
  * - (A) every `type: object` node (including nested + anyOf branches) carries
  *   `additionalProperties: false`;
  * - (B) every `anyOf` branch is FULL-SHAPE (strict-legal): `type: object`,
@@ -29,20 +29,14 @@ import { knownOutputContracts, outputJsonSchema } from "../src/agents/outputCont
  *   every key in properties`, codex-requalification-2026-10-04.json F4).
  * - (C) no rejected composition keywords ($schema/oneOf/not/if/contains/
  *   propertyNames/$ref/$defs/discriminator).
- *
- * PRE-EXISTING BASE OPTIONALS (reported separately, NOT silently fixed to avoid
- * narrowing): several base schemas list optional properties without requiring
- * them (planner filesNeededOutsideScope/formalization*, explorer notes,
- * reviewer confidence/exceptionType/location lines, supervisor roadmap/,
- * implementer filesNeededOutsideScope/contractSync, knowledge-pack
- * skillCandidate/sources.version, orchestrator validationStatus/
- * finalizationSafe, validator checks.evidence, spec artifacts proposal/design/
- * tasks, repair-result required:[]). Those mirror the zod `.optional()`/
- * `.default()` shapes and are accepted by the Paseo non-Codex providers in
- * production today; forcing them required would narrow (reject currently-valid
- * payloads). Branch check (B) therefore mirrors the BASE required list rather
- * than demanding every listed property be required. See repair report for the
- * full pre-existing inventory with evidence.
+ * - (D) STRICT REQUIRED COVERAGE (OpenAI strict subset): every `type: object`
+ *   node — root, nested, array items, and every anyOf branch — lists every one
+ *   of its `properties` keys in `required`. Zod-optional scalars travel as
+ *   nullable-typed entries (`type: [<base>, "null"]`) inside required;
+ *   arrays/objects with Zod defaults travel required-present (empty = absent).
+ *   The deterministic Zod validation stays authoritative for legacy payloads
+ *   that omit optional keys (no payload-narrowing regression: legacy-acceptance
+ *   and PASS+SAFE positive tests stay green at the Zod layer).
  */
 function walk(node: unknown, visit: (node: Record<string, unknown>, path: string) => void, path = "root"): void {
   if (!node || typeof node !== "object") return;
@@ -105,20 +99,47 @@ describe("wire schema strict-shape (every shipped contract)", () => {
         if (b.additionalProperties !== false) violations.push(`${label}: additionalProperties !== false`);
         const req = (b.required ?? []) as string[];
         const props = b.properties && typeof b.properties === "object" ? Object.keys(b.properties as Record<string, unknown>) : [];
-        // Required must mirror the base required list (superset safety: optional
-        // keys stay optional-present, never forced required to avoid narrowing).
+        // Required must mirror the base required list (both now cover every
+        // property key per the strict subset; see the required-coverage test).
         if (JSON.stringify([...req].sort()) !== JSON.stringify([...parentRequired].sort())) {
           violations.push(`${label}: required ${JSON.stringify(req)} !== base ${JSON.stringify(parentRequired)}`);
         }
         if (JSON.stringify([...props].sort()) !== JSON.stringify([...parentProps].sort())) {
           violations.push(`${label}: properties ${JSON.stringify(props)} !== base ${JSON.stringify(parentProps)}`);
         }
-        // Every listed branch property must be in required unless it is optional
-        // in the base (i.e. present in base properties but absent from base
-        // required). A branch must never drop a base-required key from required.
+        // A branch must never drop a base-required key from required.
         for (const key of props) {
           if (parentRequired.includes(key) && !req.includes(key)) {
             violations.push(`${label}: base-required '${key}' missing from branch required`);
+          }
+        }
+      });
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("requires every property key in required on EVERY object node (strict subset)", () => {
+    // OpenAI strict subset: `required ... including every key in properties`
+    // (codex-requalification-2026-10-04.json F4). The previous mirror-base
+    // assertion alone was insufficient: a base with optional keys outside
+    // required (repair-result 0/5, implementer 7/9, reviewer 4/5, supervisor
+    // 7/8, spec artifacts proposal/design/tasks) passed the mirror check while
+    // remaining non-strict. This walks root + nested + array-items + every
+    // anyOf branch and demands required ⊇ properties keys everywhere.
+    const violations: string[] = [];
+    for (const contract of knownOutputContracts()) {
+      const schema = schemaFor(contract);
+      walk(schema, (node, path) => {
+        if (node.type !== "object" || !node.properties || typeof node.properties !== "object") return;
+        const props = Object.keys(node.properties as Record<string, unknown>);
+        const required = node.required;
+        if (!Array.isArray(required)) {
+          violations.push(`${contract} ${path}: missing required (properties: ${props.join(",")})`);
+          return;
+        }
+        for (const key of props) {
+          if (!(required as unknown[]).includes(key)) {
+            violations.push(`${contract} ${path}: property '${key}' not in required`);
           }
         }
       });
