@@ -10,7 +10,8 @@ Record location: branch `campaign/2026-10-deep-audit` (tracked + pushed; see dur
 
 - At campaign start: local HEAD = `origin/main` = `99141e4` = tag `v0.25.5`.
 - `git ls-remote origin HEAD` matched. Last known reference (v0.25.5 thru PR #168) CONFIRMED current.
-- Since: PR #169 (FAM-HERMETIC) MERGED → `origin/main` = `2e95baf` (2026-10-14).
+- Since: PR #169 (FAM-HERMETIC) MERGED → `origin/main` = `2e95baf`, then release automation cut
+  v0.25.6 (`591f79c` chore(release), release-only). Current `origin/main` = `591f79c`.
 - Working tree during campaign: clean except mise env noise (`.config/mise/mise.lock` regenerated
   post-reinstall; NOT part of any repair — excluded from commits).
 - Durable history recovered: `docs/ENGINEERING_LEDGER.md` AEH-V2-0001…AEH-V2-0135 (+S10/CI sections),
@@ -89,8 +90,9 @@ AEH-V2-0116 approval-prompt stops (SLICE_BLOCKED_DRIVER).
 | Family | Invariant | Files | Tests | Reviewer | PR | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | FAM-HERMETIC (F-A/F-B/F-C) | controller bins reach nested controllers; per-turn env never injects | src/utils/process.ts, src/evals/runner.ts, tests/managedChildEnvScrub.test.ts, tests/security/sastEvidence.test.ts | typecheck clean; full unit 356f/2483t green (marked) | Luna xhigh via Paseo — ACCEPT | #169 MERGED (13/13 CI, 2e95baf) | DONE |
-| L1 static gate (Wave 2) | deterministic preflight detects config/contract drift | scripts/preflightL1.mjs, tests/preflightL1.test.ts, package.json preflight:l1 (branch fix/l1-preflight-gate @75eeae8) | self-tests 10/10; 0.17s; real tree 9 RED (intentional) | Luna xhigh via Paseo — REJECT (3H: A1 misses review/validate ceilings; E token-matching; F equality unproven. 1M: assessor needs dedicated nonparticipant check. 1L: path typo) | none | IN REPAIR (round dispatched 2026-10-14) |
-| Wave-3A preset/ceiling coherence (branch fix/preset-ceiling-coherence, uncommitted) | ceilings authoritative; least privilege | presets/agents/default.jsonc, src/participants/{roles,skills,index}.ts, src/agents/{compiler,permissions}.ts (+2 fixture migrations) | typecheck clean; 14 new tests; 0 regressions (rebase+reverify pending) | Luna PENDING | none | DIRECTOR-VERIFIED (see §9) |
+| L1 static gate (Wave 2) | deterministic preflight detects config/contract drift | scripts/preflightL1.mjs, tests/preflightL1.test.ts (branch fix/l1-preflight-gate: 5584f5f + repair f3b2cd2) | self-tests 14/14; 11 checks; real tree: A3/D2 PASS, rest RED (legit) | Luna xhigh via Paseo — REJECT then REPAIR (3H+1M+1L addressed); RE-REVIEW dispatched 2026-10-14 | none | AWAITING VERDICT |
+| Wave-3A preset/ceiling coherence (branch fix/preset-ceiling-coherence @60a8551, rebased onto 591f79c) | ceilings authoritative; least privilege | presets/agents/default.jsonc, src/participants/{roles,skills,index}.ts, src/agents/{compiler,permissions}.ts (+2 fixture migrations + Director-added review:deny flips for supervisor/planner + ceiling test) | typecheck clean; full unit 2498 passed/0 failed (marked); repaired-L1 delta: A1/A2/A3/B/D1/D2 PASS, C1/C2/E/F/G RED (out of scope) | Luna review DISPATCHED 2026-10-14 (Paseo) | none | AWAITING VERDICT |
+| Wave-3B wire parity (branch fix/wire-schema-parity @b6d0f53, on 591f79c) | wire schema carries deterministic gates | src/agents/outputContracts.ts (+197/-5), tests/contractCrossfieldGates.test.ts (+6 schema-level tests) | 16/16 targeted; typecheck clean (full-unit re-verify pending at PR time) | Luna review DISPATCHED 2026-10-14 (Paseo) | none | AWAITING VERDICT |
 
 ## 9. Director verification notes (Wave-3A A1 safety proof)
 
