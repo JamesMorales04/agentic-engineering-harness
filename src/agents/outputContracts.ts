@@ -344,10 +344,15 @@ function stripRejectedJsonSchemaDialect(schema: Record<string, unknown>): Record
  * shapes unchanged (same properties/required; only the root composition
  * keyword dropped). The deterministic Zod validator (with matching
  * superRefine gates) remains authoritative on receipt via existing repair
- * turns, so no gate is lost. Used ONLY at strict-channel submission sinks:
- * Codex `--output-schema` (src/workers/agentPrompt.ts executeCodex).
- * Non-strict transports (Paseo launch/continue paths, MCP inputSchema reuse,
- * provenance digests) keep serving the full `outputJsonSchema` with gates.
+  * turns, so no gate is lost. Used at ALL strict-channel submission sinks:
+  * Codex `--output-schema` (src/workers/agentPrompt.ts executeCodex, :902)
+  * and the Paseo submission paths (materialized dispatch :558,
+  * executeViaPaseo :709 covering resume, materialized continuation and
+  * fresh-launch outputSchema; Paseo forwards via `--output-schema` to
+  * OpenAI-strict `response_format`). Excluded (reviewer-confirmed
+  * justified): MCP `inputSchema` reuse (standard tool-input contract with
+  * Zod-validated receipt) and provenance digests (:1684, bound to the
+  * canonical full contract, not the transport schema).
  */
 
 const jsonSchemas: Record<string, Record<string, unknown>> = {  explorer: { type: "object", additionalProperties: false, required: ["summary", "relevantFiles", "findings", "moduleBoundaries", "tests", "dependencies", "risks", "openQuestions"], properties: { summary: { type: "string" }, relevantFiles: { type: "array", items: explorerFileJson }, findings: { type: "array", items: explorerFindingJson }, moduleBoundaries: stringArray, tests: stringArray, dependencies: stringArray, risks: stringArray, openQuestions: stringArray },
