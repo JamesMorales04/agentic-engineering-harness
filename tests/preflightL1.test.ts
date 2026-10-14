@@ -6,6 +6,7 @@ import {
   checkLaneCommandBinding,
   checkMcpFailClosed,
   checkMcpRefsConfigured,
+  checkNonparticipantConstraints,
   checkPermissionCeiling,
   checkSkillRefsResolve,
   checkSkillRoleFit,
@@ -15,6 +16,7 @@ import {
   evaluateAll,
   parseRolesProfiles,
   parseSkillSeed,
+  parseVerifyCommandParam,
 } from "../scripts/preflightL1.mjs";
 
 // Mechanism classification: DETERMINISTIC. Every fixture below is an
@@ -138,10 +140,10 @@ import { z } from "zod";
 // REVIEWER_FAIL_WITHOUT_FINDING REVIEWER_UNSAFE_PASS SUPERVISOR_UNSAFE_SAFE
 const jsonSchemas = {
   planner: { workUnits: { type: "array", minItems: 1 } },
-  explorer: { relevantFiles: { type: "array" }, anyOf: [{ required: ["findings"] }] },
-  "spec-authoring": { artifacts: { type: "object", required: ["specs", "proposal", "tasks"] } },
-  reviewer: { verdict: { type: "string" }, anyOf: [{ required: ["findings"] }] },
-  supervisor: { finalizationSafety: { type: "string" }, allOf: [{ required: ["unresolved"] }] },
+  explorer: { relevantFiles: { type: "array", minItems: 1 }, findings: { type: "array" }, anyOf: [{ required: ["findings"] }] },
+  "spec-authoring": { artifacts: { type: "object", required: ["specs", "proposal", "tasks"], properties: { proposal: { type: "string", minLength: 1 }, tasks: { type: "string", minLength: 1 } } } },
+  reviewer: { verdict: { enum: ["PASS", "FAIL", "PASS_WITH_WARNINGS"] }, findings: { type: "array", minItems: 1 }, finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] }, anyOf: [{ required: ["findings"] }] },
+  supervisor: { finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] }, unresolved: { type: "array", maxItems: 0 }, missingEvidence: { type: "array", maxItems: 0 }, allOf: [{ required: ["unresolved", "missingEvidence"] }] },
 };
 `;
 
@@ -211,7 +213,7 @@ function checkById(checks: any[], id: string) {
 describe("preflight L1 gate", () => {
   it("PASSES every check on a crafted compliant fixture", () => {
     const checks = evaluateAll(compliantFixture());
-    expect(checks).toHaveLength(10);
+    expect(checks).toHaveLength(11);
     for (const check of checks) {
       expect(check.status, `${check.id}: ${JSON.stringify(check.evidence)}`).toBe("PASS");
     }
@@ -341,6 +343,136 @@ function capabilityAdapter(capability: string): string | undefined {
     expect(check.id).toBe("L1-G-ADAPTER-COVERAGE");
     expect(check.status).toBe("FAIL");
     expect(check.evidence.unmapped).toEqual(["architecture", "policy", "command"]);
+  });
+
+  it("HIGH-1 FAILS L1-A1 when review/validate are granted above maxCapabilities (old token-check would PASS)", () => {
+    const fx = compliantFixture();
+    // Planner maxCapabilities ["read","plan","validate"]: no review.
+    fx.agents.planner.permissions = { ...fx.agents.planner.permissions, review: "allow" };
+    // Compliant Lead maxCapabilities lack validate: ["read","plan","review","supervise","delegate"].
+    fx.agents.lead.permissions = { ...fx.agents.lead.permissions, validate: "allow" };
+    const check = checkPermissionCeiling(fx.agents, fx.roles);
+    expect(check.id).toBe("L1-A1-PERMISSION-CEILING");
+    expect(check.status).toBe("FAIL");
+    const byPerm = Object.fromEntries(check.evidence.violations.map((v: any) => [`${v.agent}:${v.permission}`, v]));
+    expect(byPerm["planner:review"]).toMatchObject({ agent: "planner", permission: "review", granted: "allow" });
+    expect(byPerm["lead:validate"]).toMatchObject({ agent: "lead", permission: "validate", granted: "allow" });
+    // ask is also a grant.
+    const fx2 = compliantFixture();
+    fx2.agents.planner.permissions = { ...fx2.agents.planner.permissions, review: "ask" };
+    expect(checkPermissionCeiling(fx2.agents, fx2.roles).status).toBe("FAIL");
+    // deny/absent is no grant.
+    const fx3 = compliantFixture();
+    fx3.agents.planner.permissions = { ...fx3.agents.planner.permissions, review: "deny" };
+    expect(checkPermissionCeiling(fx3.agents, fx3.roles).status).toBe("PASS");
+  });
+
+  it("HIGH-2 FAILS L1-E on minItems:0 and bare-anyOf shapes the old token-checks would PASS", () => {
+    const minZero = `
+const jsonSchemas = {
+  planner: { workUnits: { type: "array", minItems: 0 } },
+  explorer: { relevantFiles: { type: "array", minItems: 0 }, anyOf: [{ required: ["findings"] }] },
+  "spec-authoring": { artifacts: { type: "object", required: ["specs", "proposal", "tasks"] }, proposal: { type: "string" }, tasks: { type: "string" } },
+  reviewer: { verdict: { enum: ["PASS", "FAIL"] }, findings: { type: "array" }, finalizationSafety: { enum: ["SAFE"] }, anyOf: [{ required: ["findings"] }] },
+  supervisor: { finalizationSafety: { enum: ["SAFE"] }, unresolved: { type: "array" }, missingEvidence: { type: "array" }, allOf: [{ required: ["unresolved"] }] },
+};
+// PLANNER_EMPTY_RESULT EXPLORER_EMPTY_RESULT SPEC_MANAGER_INCOMPLETE_RESULT
+// REVIEWER_FAIL_WITHOUT_FINDING REVIEWER_UNSAFE_PASS SUPERVISOR_UNSAFE_SAFE
+`;
+    const check = checkWireParity(minZero);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    // Every gate must still be listed missing: 0/absent cardinality, required-without-minLength,
+    // anyOf-without-minItems/FAIL, allOf-without-SAFE/maxItems:0 all FAIL the semantic test.
+    expect(check.evidence.missing.sort()).toEqual([
+      "explorer-nonvacuous",
+      "planner-nonvacuous",
+      "reviewer-coherence",
+      "spec-ready-artifacts",
+      "supervisor-coherence",
+    ]);
+    // Old token shapes: planner minItems present (even 0), explorer anyOf present,
+    // spec required proposal+tasks present, reviewer/supervisor anyOf/allOf present.
+    expect(/workUnits:\s*\{[^}]*minItems/.test(minZero)).toBe(true);
+    expect(/(anyOf|allOf|oneOf|minItems)/.test(minZero)).toBe(true);
+  });
+
+  it("HIGH-3 FAILS L1-F on unrelated-equality verifiers and snippet-proximity call sites the old check would PASS", () => {
+    const unrelatedLane = `
+export async function verifyProviderLaneEvidenceV1(root, config, evidence, expected, expectedCommand) {
+  // commandDigest recorded below; expectedCommand is the verified command value.
+  const digest = evidence.commandDigest;
+  if (evidence.candidate.revision !== expected.revision) throw new Error("STALE");
+  return { ok: true };
+}`;
+    // Old co-occurrence shape: commandDigest + expected + === all present.
+    expect(unrelatedLane.includes("commandDigest")).toBe(true);
+    expect(/expected/i.test(unrelatedLane)).toBe(true);
+    expect(/(===|!==)/.test(unrelatedLane)).toBe(true);
+    const unrelated = checkLaneCommandBinding(unrelatedLane, [
+      { file: "src/core/run.ts:1", line: 1, snippet: "await verifyProviderLaneEvidenceV1({ root, command: action.command, candidate })" },
+    ]);
+    expect(unrelated.evidence.verifyComparesCommandDigest).toBe(false);
+    expect(unrelated.status).toBe("FAIL");
+    // Snippet proximity: `command:` appears outside the call's own parens.
+    const nearbySnippet = [
+      "await requireProviderLaneEvidenceForActionV1({",
+      "  root: input.root,",
+      "  candidate: input.report.candidate!,",
+      "})",
+      "const config = { command: action.command };",
+    ].join("\n");
+    expect(/\bcommand\s*:/.test(nearbySnippet)).toBe(true);
+    const proximity = checkLaneCommandBinding(COMPLIANT_LANE_SOURCE, [
+      { file: "src/core/run.ts:9", line: 9, snippet: nearbySnippet },
+    ]);
+    expect(proximity.status).toBe("FAIL");
+    expect(proximity.evidence.consumerCallSitesMissingCommand).toHaveLength(1);
+    // The compliant same-expression + in-parens binding still passes.
+    expect(parseVerifyCommandParam(COMPLIANT_LANE_SOURCE).param).toBe("expectedCommand");
+    expect(checkLaneCommandBinding(COMPLIANT_LANE_SOURCE, COMPLIANT_CALL_SITES).status).toBe("PASS");
+  });
+
+  it("MEDIUM PASSES L1-A3 for the all-deny assessor and skips it in L1-A1/L1-B", () => {
+    const assessor = {
+      role: "Semantic Assessor",
+      skills: [],
+      mcps: [],
+      permissions: {
+        read: "deny",
+        write: "deny",
+        shell: "deny",
+        network: "deny",
+        delegate: "deny",
+        review: "deny",
+        validate: "deny",
+        gitWrite: "deny",
+      },
+    };
+    const fx = compliantFixture();
+    (fx.agents as any)["semantic-assessor"] = assessor;
+    expect(checkPermissionCeiling(fx.agents, fx.roles).status).toBe("PASS");
+    expect(checkSpecializationsClosed(fx.agents, fx.routing, fx.roles).status).toBe("PASS");
+    const nonparticipant = checkNonparticipantConstraints(fx.agents);
+    expect(nonparticipant.id).toBe("L1-A3-NONPARTICIPANT");
+    expect(nonparticipant.status).toBe("PASS");
+    expect(evaluateAll(fx).find((c) => c.id === "L1-A3-NONPARTICIPANT")?.status).toBe("PASS");
+    // Violating assessors fail the dedicated check: opened permission, skill, MCP, args.
+    const bad = compliantFixture();
+    (bad.agents as any)["semantic-assessor"] = {
+      ...assessor,
+      skills: ["operation-coordination"],
+      mcps: ["context7"],
+      args: ["--debug"],
+      permissions: { ...assessor.permissions, read: "allow" },
+    };
+    const badCheck = checkNonparticipantConstraints(bad.agents);
+    expect(badCheck.status).toBe("FAIL");
+    expect(badCheck.evidence.violations.length).toBeGreaterThanOrEqual(4);
+    // But the violating assessor is still not reported as unknown-profile under A1.
+    expect(
+      checkPermissionCeiling(bad.agents, bad.roles).evidence.violations.some((v: any) => v.reason.includes("unknown role")),
+    ).toBe(false);
   });
 
   it("locks the real-tree parsers to the verified campaign evidence", () => {

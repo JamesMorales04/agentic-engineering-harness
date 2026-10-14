@@ -336,20 +336,33 @@ function mkCheck(id, violations, evidence) {
 
 const GRANTED = new Set(["allow", "ask"]);
 
+/** Roles that are CanonicalAgentRoles but intentionally not WorkGraph participants. */
+export const NONPARTICIPANT_ROLES = ["Semantic Assessor"];
+
+function isNonparticipantRole(role) {
+  return NONPARTICIPANT_ROLES.includes(role);
+}
+
 /**
  * L1-A1-PERMISSION-CEILING — preset permission grants must fit the role
- * ceiling (authority + delegation + toolPack). Mapping (and only this
- * mapping; network/review/validate have no role-ceiling source and are
- * documented as omitted in `notes`):
+ * ceiling (authority + delegation + toolPack + maxCapabilities). Mapping:
  * read→authority.canRead, write→authority.canWrite,
  * gitWrite→authority.canWrite, delegate→delegation.allowed,
- * shell→authority.canExecute AND `command-execute` ∈ toolPack.required∪optional.
- * A grant is `allow`|`ask`; `deny`|absent is no grant. Unknown roles and
- * unresolvable toolPacks fail closed.
+ * shell→authority.canExecute AND `command-execute` ∈ toolPack.required∪optional,
+ * review→`review` ∈ maxCapabilities (roles.ts maxCapabilities, compiled via
+ * src/participants/skillCompiler.ts:30-32 roleCapabilities),
+ * validate→`validate` ∈ maxCapabilities (same source).
+ * network has no role-ceiling source in roles.ts and is intentionally
+ * unchecked (validateExecutionCapabilities in permissions.ts:23-67 likewise
+ * gates only a subset); documented as omitted in `notes`.
+ * A grant is `allow`|`ask`; `deny`|absent is no grant. Unknown participant
+ * roles and unresolvable toolPacks fail closed. Nonparticipant roles
+ * (e.g. Semantic Assessor) are skipped here and covered by L1-A3 instead.
  */
 export function checkPermissionCeiling(agents, roles) {
   const violations = [];
   for (const [name, agent] of Object.entries(agents)) {
+    if (isNonparticipantRole(agent.role)) continue;
     const profile = roles[agent.role];
     if (!profile) {
       violations.push({ agent: name, role: agent.role, reason: "unknown role: no canonical profile" });
@@ -386,8 +399,70 @@ export function checkPermissionCeiling(agents, roles) {
     if ((profile.toolPack.unresolved ?? []).length && (grant("shell"))) {
       violations.push({ agent: name, role: agent.role, permission: "shell", granted: perms.shell, reason: `role toolPack unresolvable: [${profile.toolPack.unresolved.join(", ")}]` });
     }
+    if (grant("review") && !(profile.maxCapabilities ?? []).includes("review")) {
+      violations.push({
+        agent: name,
+        role: agent.role,
+        permission: "review",
+        granted: perms.review,
+        reason: `role maxCapabilities lacks review: [${(profile.maxCapabilities ?? []).join(", ")}]`,
+      });
+    }
+    if (grant("validate") && !(profile.maxCapabilities ?? []).includes("validate")) {
+      violations.push({
+        agent: name,
+        role: agent.role,
+        permission: "validate",
+        granted: perms.validate,
+        reason: `role maxCapabilities lacks validate: [${(profile.maxCapabilities ?? []).join(", ")}]`,
+      });
+    }
   }
   return mkCheck("L1-A1-PERMISSION-CEILING", violations.length > 0, { violations });
+}
+
+/**
+ * L1-A3-NONPARTICIPANT — dedicated deterministic check for intentional
+ * nonparticipants (CanonicalAgentRole without a RoleProfileV1, e.g. Semantic
+ * Assessor per src/participants/types.ts canonicalAgentRoleValues vs
+ * canonicalRoleValues). Enforces the permissions.ts:55-61 preset-decidable
+ * constraints: all of read/write/shell/network/delegate/review/validate/
+ * gitWrite explicitly `deny`, plus no skills, no MCPs and no runtime
+ * arguments (agent.args or agent.execution.args). Transport/adapter/capability
+ * projection (paseo+codex, runtimeConfigInjection/structuredOutput/
+ * modelSelection) is runtime-resolved, not preset-decidable, and is a
+ * documented residual in `notes`; nativeAgent is likewise runtime-resolved
+ * and not checked here.
+ */
+export function checkNonparticipantConstraints(agents) {
+  const violations = [];
+  const denied = ["read", "write", "shell", "network", "delegate", "review", "validate", "gitWrite"];
+  for (const [name, agent] of Object.entries(agents)) {
+    if (!isNonparticipantRole(agent.role)) continue;
+    const perms = agent.permissions ?? {};
+    const opened = denied.filter((key) => perms[key] !== "deny");
+    if (opened.length) {
+      violations.push({
+        agent: name,
+        role: agent.role,
+        reason: `nonparticipant must explicitly deny ${opened.join(", ")} (permissions.ts:55-58)`,
+        opened,
+      });
+    }
+    const skills = agent.skills ?? [];
+    if (skills.length) {
+      violations.push({ agent: name, role: agent.role, reason: "nonparticipant must declare no skills (permissions.ts:61)", skills });
+    }
+    const mcps = agent.mcps ?? [];
+    if (mcps.length) {
+      violations.push({ agent: name, role: agent.role, reason: "nonparticipant must declare no MCP servers (permissions.ts:61)", mcps });
+    }
+    const args = agent.args ?? agent.execution?.args ?? [];
+    if ((args ?? []).length) {
+      violations.push({ agent: name, role: agent.role, reason: "nonparticipant must declare no runtime arguments (permissions.ts:61)", args });
+    }
+  }
+  return mkCheck("L1-A3-NONPARTICIPANT", violations.length > 0, { violations });
 }
 
 /**
@@ -416,10 +491,13 @@ export function checkSkillRoleFit(agents, seed) {
  * selector specializations must be subsets of the role profile's
  * `specializations` (unknown specializations fail closed; the shipped
  * compiler validates role only — src/agents/compiler.ts:63-67).
+ * Nonparticipant roles (e.g. Semantic Assessor) carry no profile by design
+ * and are skipped here; they are covered by L1-A3 instead.
  */
 export function checkSpecializationsClosed(agents, routing, roles) {
   const violations = [];
   for (const [name, agent] of Object.entries(agents)) {
+    if (isNonparticipantRole(agent.role)) continue;
     const profile = roles[agent.role];
     if (!profile) {
       violations.push({ scope: "agent", agent: name, role: agent.role, reason: "unknown role: no canonical profile" });
@@ -433,6 +511,7 @@ export function checkSpecializationsClosed(agents, routing, roles) {
   }
   for (const rule of routing ?? []) {
     for (const selector of [rule.select, ...(rule.review ?? [])].filter(Boolean)) {
+      if (isNonparticipantRole(selector.role)) continue;
       const profile = roles[selector.role];
       if (!profile) {
         violations.push({ scope: "routing", rule: rule.id, role: selector.role, reason: "unknown role: no canonical profile" });
@@ -519,10 +598,68 @@ export function checkMcpRefsConfigured(agents, configured) {
   return mkCheck("L1-D2-MCP-REF-CONFIGURED", violations.length > 0, { violations });
 }
 
+// Semantic wire-parity helpers (decidable approximations; residual limits in notes).
+// JSON Schema cannot express zod superRefine implications exactly (e.g. "if
+// status READY then proposal/tasks non-empty"), so each test below checks the
+// strongest decidable structural+cardinality coupling, not full implication
+// semantics. minItems:0 never satisfies a non-emptiness requirement; only a
+// numeric value >=1 does. maxItems:0 is the empty-enforcement dual.
+
+/** Return the object literal block for `field:` inside a contract block, or null. */
+function fieldObjectBlock(block, field) {
+  const idx = block.search(new RegExp(`${field}\\s*:`));
+  if (idx === -1) return null;
+  const brace = block.indexOf("{", idx);
+  if (brace === -1) return null;
+  return matchBrace(block, brace);
+}
+
+/** True iff ANY `field:` object in the block carries `minItems: N` with N>=1 (rejects 0/absent). */
+function fieldHasMinItemsGE1(block, field) {
+  const re = new RegExp(`${field}\\s*:`, "g");
+  let m;
+  while ((m = re.exec(block)) !== null) {
+    const brace = block.indexOf("{", m.index);
+    if (brace === -1) continue;
+    const obj = matchBrace(block, brace);
+    if (!obj) continue;
+    const n = obj.match(/minItems\s*:\s*(\d+)/);
+    if (n && Number(n[1]) >= 1) return true;
+  }
+  return false;
+}
+
+/** True iff ANY `field:` object in the block carries `minLength: N` with N>=1. */
+function fieldHasMinLengthGE1(block, field) {
+  const re = new RegExp(`${field}\\s*:`, "g");
+  let m;
+  while ((m = re.exec(block)) !== null) {
+    const brace = block.indexOf("{", m.index);
+    if (brace === -1) continue;
+    const obj = matchBrace(block, brace);
+    if (!obj) continue;
+    const n = obj.match(/minLength\s*:\s*(\d+)/);
+    if (n && Number(n[1]) >= 1) return true;
+  }
+  return false;
+}
+
+const EXPLORER_EVIDENCE_FIELDS = [
+  "relevantFiles",
+  "findings",
+  "moduleBoundaries",
+  "tests",
+  "dependencies",
+  "risks",
+  "openQuestions",
+];
+
 // Enumerated zod-gate → provider-JSON parity list, derived from
 // src/agents/outputContracts.ts superRefine blocks. `zodMarkers` must all be
 // present for the gate to be live; `test` inspects the contract's JSON
-// schema block for the corresponding constraint.
+// schema block for the SEMANTIC constraint (cardinality + coupling, not mere
+// token presence: minItems:0, bare anyOf without cardinality, or required
+// without non-emptiness all FAIL).
 const WIRE_GATES = [
   {
     gate: "planner-nonvacuous",
@@ -530,8 +667,8 @@ const WIRE_GATES = [
     zodMarkers: ["PLANNER_EMPTY_RESULT"],
     jsonContract: "planner",
     jsonPath: "planner.workUnits",
-    expectation: "JSON schema requires workUnits minItems>=1",
-    test: (block) => /workUnits:\s*\{[^}]*minItems/.test(block),
+    expectation: "JSON schema requires workUnits minItems>=1 (numeric >=1; 0/absent FAILs)",
+    test: (block) => fieldHasMinItemsGE1(block, "workUnits"),
   },
   {
     gate: "explorer-nonvacuous",
@@ -539,19 +676,37 @@ const WIRE_GATES = [
     zodMarkers: ["EXPLORER_EMPTY_RESULT"],
     jsonContract: "explorer",
     jsonPath: "explorer.* (evidence arrays)",
-    expectation: "JSON schema carries a non-vacuous constraint (minItems/anyOf/allOf/oneOf)",
-    test: (block) => /(anyOf|allOf|oneOf|minItems)/.test(block),
+    expectation:
+      "JSON schema enforces non-vacuous discovery: an evidence array carries minItems>=1, or an anyOf/oneOf disjunction carries minItems>=1 over evidence arrays (bare anyOf or minItems:0 FAILs)",
+    test: (block) => {
+      if (EXPLORER_EVIDENCE_FIELDS.some((field) => fieldHasMinItemsGE1(block, field))) return true;
+      const hasDisjunction = /(anyOf|oneOf)/.test(block);
+      const hasCardinalityGE1 = /minItems\s*:\s*([1-9]\d*)/.test(block);
+      const mentionsEvidence = EXPLORER_EVIDENCE_FIELDS.some((field) => block.includes(field));
+      return hasDisjunction && hasCardinalityGE1 && mentionsEvidence;
+    },
   },
   {
     gate: "spec-ready-artifacts",
     zodRef: "src/agents/outputContracts.ts:146-158",
     zodMarkers: ["SPEC_MANAGER_INCOMPLETE_RESULT"],
     jsonContract: "spec-authoring",
-    jsonPath: "spec-authoring.artifacts.required",
-    expectation: "JSON schema artifacts.required includes proposal and tasks",
+    jsonPath: "spec-authoring.artifacts.required + proposal/tasks minLength",
+    expectation:
+      "JSON schema artifacts.required includes proposal and tasks AND proposal/tasks schemas carry minLength>=1 (required-alone allows empty strings, so it FAILs)",
     test: (block) => {
-      const m = block.match(/artifacts:\s*\{[^]*?required:\s*\[([^\]]*)\]/);
-      return Boolean(m) && m[1].includes("proposal") && m[1].includes("tasks");
+      // Accept either top-level artifacts.required or an anyOf/oneOf branch
+      // encoding (e.g. READY-branch requires proposal+tasks). Search ALL
+      // required-lists in the block for one containing both keys.
+      let hasRequiredPair = false;
+      for (const m of block.matchAll(/required:\s*\[([^\]]*)\]/g)) {
+        if (m[1].includes("proposal") && m[1].includes("tasks")) {
+          hasRequiredPair = true;
+          break;
+        }
+      }
+      if (!hasRequiredPair) return false;
+      return fieldHasMinLengthGE1(block, "proposal") && fieldHasMinLengthGE1(block, "tasks");
     },
   },
   {
@@ -559,18 +714,33 @@ const WIRE_GATES = [
     zodRef: "src/agents/outputContracts.ts:208-223",
     zodMarkers: ["REVIEWER_FAIL_WITHOUT_FINDING", "REVIEWER_UNSAFE_PASS"],
     jsonContract: "reviewer",
-    jsonPath: "reviewer (verdict/findings/finalizationSafety)",
-    expectation: "JSON schema couples verdict↔findings↔finalizationSafety (anyOf/allOf/oneOf)",
-    test: (block) => /(anyOf|allOf|oneOf)/.test(block),
+    jsonPath: "reviewer (verdict FAIL → findings minItems>=1; verdict/finalizationSafety coupling)",
+    expectation:
+      "JSON schema couples verdict↔findings↔finalizationSafety with anyOf/allOf/oneOf/if AND mentions FAIL AND enforces findings minItems>=1 AND mentions finalizationSafety (severity-level critical/high coupling is NOT decidably verified: residual)",
+    test: (block) => {
+      const hasCoupling = /(anyOf|allOf|oneOf|\bif\b)/.test(block);
+      const hasFail = /\bFAIL\b/.test(block);
+      const hasFindingsNonempty = fieldHasMinItemsGE1(block, "findings");
+      const hasSafety = /finalizationSafety/.test(block);
+      return hasCoupling && hasFail && hasFindingsNonempty && hasSafety;
+    },
   },
   {
     gate: "supervisor-coherence",
     zodRef: "src/agents/outputContracts.ts:237-248",
     zodMarkers: ["SUPERVISOR_UNSAFE_SAFE"],
     jsonContract: "supervisor",
-    jsonPath: "supervisor (finalizationSafety/unresolved/missingEvidence)",
-    expectation: "JSON schema couples finalizationSafety with unresolved/missingEvidence (anyOf/allOf/oneOf)",
-    test: (block) => /(anyOf|allOf|oneOf)/.test(block),
+    jsonPath: "supervisor (SAFE → unresolved/missingEvidence empty)",
+    expectation:
+      "JSON schema couples finalizationSafety with unresolved/missingEvidence via anyOf/allOf/oneOf/if AND mentions SAFE AND mentions both fields AND enforces emptiness with maxItems:0",
+    test: (block) => {
+      const hasCoupling = /(anyOf|allOf|oneOf|\bif\b)/.test(block);
+      const hasSafe = /\bSAFE\b/.test(block);
+      const hasUnresolved = /unresolved/.test(block);
+      const hasMissing = /missingEvidence/.test(block);
+      const hasEmptyEnforcement = /maxItems\s*:\s*0/.test(block);
+      return hasCoupling && hasSafe && hasUnresolved && hasMissing && hasEmptyEnforcement;
+    },
   },
 ];
 
@@ -621,42 +791,144 @@ export function checkWireParity(contractsSource) {
 }
 
 /**
- * L1-F-LANE-COMMAND-BINDING — structural command-binding check for
- * provider lane evidence (src/validation/laneEvidence.ts:256-279 never
- * compares commandDigest). Precisely: (i) the `verifyProviderLaneEvidenceV1`
- * body must reference `commandDigest` together with an expected/command
- * value and an equality comparison; (ii) every in-repo consumer call site
- * of verify/require* lane functions must pass a `command:` argument.
- * Static-text limits (aliasing, re-exports, runtime-passed values) are
- * documented in `notes`; this check proves the presence/absence of the
- * binding shape, not runtime correctness.
+ * L1-F-LANE-COMMAND-BINDING — parameter-flow command-binding check for
+ * provider lane evidence (src/validation/laneEvidence.ts verify currently
+ * takes no command parameter and never compares commandDigest). Precisely:
+ * (i) parse the `verifyProviderLaneEvidenceV1` signature for a command
+ * parameter (name matching /command/i, e.g. expectedCommand/command); the
+ * body must contain a SINGLE comparison expression (one `===`/`!==`
+ * statement, delimited by `;`/`{`/`}`) that mentions BOTH the evidence's
+ * `commandDigest` field AND that command parameter (digest-wrapped or bare).
+ * An unrelated equality elsewhere (e.g. revision `!==`) plus a distant
+ * commandDigest mention does NOT satisfy this. (ii) For every in-repo
+ * consumer call site of verify/require* lane functions, paren-match the
+ * call's OWN argument list from the call expression and require a command
+ * value reference inside those parens (`command`/`expectedCommand` key or
+ * `*.command`/`command` value bound to the verified parameter). A `command:`
+ * token on a nearby line outside the call parens does NOT satisfy this.
+ * Residuals (in `notes`): aliasing, re-exports, wrapper indirection,
+ * digest-function name variations beyond sha256-plus-suffix, and runtime-passed
+ * values are not traced; this proves static parameter-flow shape, not runtime
+ * binding correctness.
  */
-export function checkLaneCommandBinding(laneSource, callSites) {
+export function parseVerifyCommandParam(laneSource) {
   const fnAnchor = laneSource.indexOf("verifyProviderLaneEvidenceV1");
+  if (fnAnchor === -1) return { found: false, param: null };
+  const parenOpen = laneSource.indexOf("(", fnAnchor);
+  if (parenOpen === -1) return { found: true, param: null };
+  let depth = 0;
+  let close = -1;
+  for (let i = parenOpen; i < laneSource.length; i += 1) {
+    if (laneSource[i] === "(") depth += 1;
+    if (laneSource[i] === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close === -1) return { found: true, param: null };
+  const params = laneSource
+    .slice(parenOpen + 1, close)
+    .split(",")
+    .map((part) => part.trim().split(":")[0].trim().split(" ").pop())
+    .filter(Boolean);
+  const commandParam = params.find((name) => /command/i.test(name)) ?? null;
+  return { found: true, param: commandParam, params };
+}
+
+function splitComparisonStatements(body) {
+  return body.split(/;|\n/).map((part) => part.trim()).filter(Boolean);
+}
+
+/** Paren-match `(...)` starting at openIndex (string-aware, minimal). */
+function matchParen(text, openIndex) {
+  if (text[openIndex] !== "(") return null;
+  let depth = 0;
+  let i = openIndex;
+  let inStr = null;
+  while (i < text.length) {
+    const ch = text[i];
+    if (inStr) {
+      if (ch === "\\") {
+        i += 2;
+        continue;
+      }
+      if (ch === inStr) inStr = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inStr = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "(") depth += 1;
+    if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) return text.slice(openIndex, i + 1);
+    }
+    i += 1;
+  }
+  return null;
+}
+
+/** Extract the call's own argument list for fnName from a collected snippet. */
+function extractCallArgs(snippet, fnName) {
+  const idx = snippet.indexOf(fnName);
+  if (idx === -1) return null;
+  const parenOpen = snippet.indexOf("(", idx + fnName.length);
+  if (parenOpen === -1) return null;
+  return matchParen(snippet, parenOpen);
+}
+
+export function checkLaneCommandBinding(laneSource, callSites) {
+  const { found, param: commandParam } = parseVerifyCommandParam(laneSource);
   let verifyCompares = false;
   let verifyNote = "";
-  if (fnAnchor === -1) {
+  if (!found) {
     verifyNote = "verifyProviderLaneEvidenceV1 not found in lane source.";
+  } else if (!commandParam) {
+    verifyNote = "verifyProviderLaneEvidenceV1 declares no command parameter (no /command/i param); no verified command value exists to compare.";
   } else {
-    const brace = laneSource.indexOf("{", laneSource.indexOf(")", fnAnchor));
+    const brace = laneSource.indexOf("{", laneSource.indexOf(")", laneSource.indexOf("verifyProviderLaneEvidenceV1")));
     const body = brace !== -1 ? matchBrace(laneSource, brace) : null;
     if (!body) {
       verifyNote = "verifyProviderLaneEvidenceV1 body is unparsable.";
     } else {
-      const refsDigest = body.includes("commandDigest");
-      const refsExpected = /expected/i.test(body);
-      const compares = /(===|!==)/.test(body);
-      verifyCompares = refsDigest && refsExpected && compares;
-      verifyNote = `body refs commandDigest=${refsDigest}, expected/command=${refsExpected}, equality=${compares}`;
+      const statements = splitComparisonStatements(body);
+      const hit = statements.find(
+        (stmt) => /(===|!==)/.test(stmt) && stmt.includes("commandDigest") && stmt.includes(commandParam),
+      );
+      verifyCompares = Boolean(hit);
+      verifyNote = hit
+        ? `same-expression comparison binds evidence.commandDigest to verified parameter '${commandParam}': ${hit.slice(0, 160)}`
+        : `no single ===/!== statement binds commandDigest to verified parameter '${commandParam}' (unrelated equalities do not satisfy this)`;
     }
   }
   const sitesMissing = (callSites ?? [])
-    .filter((site) => !/\bcommand\s*:/.test(site.snippet))
+    .filter((site) => {
+      const fnName = ["verifyProviderLaneEvidenceV1", "requireProviderLaneEvidenceV1", "requireProviderLaneEvidenceForActionV1"].find((name) =>
+        site.snippet.includes(name),
+      );
+      const args = fnName ? extractCallArgs(site.snippet, fnName) : null;
+      if (!args) return true;
+      // Argument-to-parameter tracing: the call's own parens must bind a
+      // command value (object key command/expectedCommand with a command
+      // value, or a positional *.command/command reference).
+      if (/(command|expectedCommand)\s*:\s*[^\n,}]*command/i.test(args)) return false;
+      if (/expectedCommand\s*:\s*[^\n,}]+/i.test(args) && /command/i.test(args)) return false;
+      if (/\.\s*command\b/.test(args)) return false;
+      if (/\(\s*[^,()]*\bcommand\b[^,()]*\)/.test(args)) return false;
+      return true;
+    })
     .map((site) => ({ file: site.file, line: site.line }));
   const failed = !verifyCompares || sitesMissing.length > 0;
   return mkCheck("L1-F-LANE-COMMAND-BINDING", failed, {
     verifyComparesCommandDigest: verifyCompares,
     verifyDetail: verifyNote,
+    verifiedCommandParam: commandParam,
     ref: "src/validation/laneEvidence.ts:256-279",
     consumerCallSitesMissingCommand: sitesMissing,
     consumerCallSitesChecked: (callSites ?? []).length,
@@ -684,6 +956,7 @@ export function evaluateAll(fx) {
   return [
     checkPermissionCeiling(fx.agents, fx.roles),
     checkSkillRoleFit(fx.agents, fx.skillSeed),
+    checkNonparticipantConstraints(fx.agents),
     checkSpecializationsClosed(fx.agents, fx.routing, fx.roles),
     checkSkillRootsExist(fx.skillRoots, fx.dirExists),
     checkSkillRefsResolve(fx.agents, fx.skillRoots, fx.fileExists),
@@ -814,16 +1087,17 @@ export function collectLaneCallSites(root) {
 const PREFLIGHT_NOTES = [
   "Mechanism=DETERMINISTIC for every check: static source/filesystem comparison only; no network, no model calls.",
   "Script-convention choice: pure-Node .mjs static inspection (scripts/architecture.mjs pattern). The gate reads source-as-text and never imports dist/ (a launcher + release snapshot per scripts/build.mjs, imported by no .mjs gate) nor tsx-loaded TypeScript (would execute provider/runtime code inside a read-only gate). It runs identically before and after build.",
-  "L1-A1 ceiling mapping covers read/write/gitWrite/delegate/shell only. network/review/validate have no role-ceiling source in roles.ts and are intentionally unchecked (validateExecutionCapabilities in permissions.ts:23-67 likewise gates only a subset).",
-  "L1-A2 mirrors skillCompiler.ts:77 role rejection; required/forbidden-tool coupling (skillCompiler.ts:78-80) is out of scope because preset skills carry no tool declarations.",
+  "L1-A1 ceiling mapping covers read/write/gitWrite/delegate/shell plus review/validate against maxCapabilities (roles.ts maxCapabilities, compiled via src/participants/skillCompiler.ts:30-32 roleCapabilities). network has no role-ceiling source in roles.ts and is intentionally unchecked (validateExecutionCapabilities in permissions.ts:23-67 likewise gates only a subset).",
+  "L1-A2 mirrors src/participants/skillCompiler.ts:77 role rejection; required/forbidden-tool coupling (src/participants/skillCompiler.ts:78-80) is out of scope because preset skills carry no tool declarations.",
+  "L1-A3 covers intentional nonparticipants (Semantic Assessor: a CanonicalAgentRole without a RoleProfileV1 per src/participants/types.ts). It enforces the preset-decidable subset of permissions.ts:55-61 (all of read/write/shell/network/delegate/review/validate/gitWrite explicitly deny; no skills; no MCPs; no args). L1-A1/L1-B skip nonparticipant roles instead of failing them as unknown-profile. Residual: transport/adapter/capability projection (paseo+codex, runtimeConfigInjection/structuredOutput/modelSelection) and nativeAgent are runtime-resolved, not preset-decidable, and are not checked here.",
   "L1-B checks profile-subset closure only; it does not require a matching enabled agent per selector.",
   "L1-C2 is exact parity with compiler.ts:54-60 (filesystem SKILL.md under configured roots). Seed-ID validity is L1-A2; the seed-vs-filesystem split itself is the reported drift.",
   "L1-D1 asserts the absence of the fail-open shape; any future allowlist/explicit-deny rewrite passes as long as no `if (!configured[name]) … = true` grant remains.",
   "L1-D2 reads <root>/.harness/project.yaml mcp.servers with a minimal indentation-aware parser (full YAML fidelity is a documented limit; block and inline `{…}` server forms are handled).",
   "L1-E enumeration follows the live zod markers; implementer/repair-result anyOf guards are already present in JSON and are therefore not listed as gates.",
-  "L1-F is structural: it proves whether a commandDigest comparison and command-argument threading exist in static text, not runtime binding correctness. verify() currently takes no command parameter, so (i) cannot pass without a signature change; consumer call-site coverage cannot see through aliases or re-exports.",
+  "L1-E is a decidable approximation, not a proof: planner requires workUnits minItems>=1 (0/absent FAILs); explorer requires minItems>=1 on an evidence array or anyOf/oneOf+minItems>=1 over evidence arrays (bare anyOf or minItems:0 FAILs; the full 'any one of seven non-empty' disjunction is approximated, not proven equivalent); spec-ready requires artifacts.required to include proposal+tasks AND proposal/tasks minLength>=1 (required-alone allows empty strings); reviewer requires anyOf/allOf/oneOf/if + FAIL literal + findings minItems>=1 + finalizationSafety (severity-level critical/high coupling is NOT verified: residual); supervisor requires anyOf/allOf/oneOf/if + SAFE + unresolved + missingEvidence + maxItems:0. JSON Schema cannot express the zod conditional implications exactly; this checks structural+cardinality coupling.",
+  "L1-F is parameter-flow, not token proximity: (i) requires a single ===/!== statement binding evidence.commandDigest to the verifier's /command/i parameter (unrelated equalities elsewhere do not satisfy this); verify() currently takes no command parameter, so (i) cannot pass without a signature change. (ii) requires each consumer call's OWN paren-matched argument list to bind a command value (command/expectedCommand key with command value, or *.command reference); a `command:` token outside the call parens does not satisfy this. Residuals: aliasing, re-exports, wrapper indirection, non-sha256 digest names beyond sha256*/digest* substring, and runtime-passed values are not traced.",
   "L1-G compares catalog values against the union of capabilityAdapter keys and capabilityForAdapter returns; provider-side registries (src/providers/validation/registry.ts) are out of scope.",
-  "L1-A1/L1-B fail closed on roles with no canonical participant profile (e.g. Semantic Assessor, a CanonicalAgentRole without a RoleProfileV1): with no ceiling there is nothing to check against, so the agent is reported, not silently passed.",
   "No backward-compatibility shims: unparsable inputs fail the affected check closed with a parse note instead of being silently accepted.",
 ];
 
