@@ -176,8 +176,11 @@ describe("v0.5 scale and governance", () => {
   });
 
   it("keeps planner native required fields aligned with Zod defaults", () => {
+    // Strict wire contract: required covers every property key (Zod-optional
+    // keys travel required-present/nullable); Zod defaults still fill legacy
+    // payloads that omit optional keys (asserted by the parse below).
     const schema = outputJsonSchema("planner");
-    expect(schema?.required).toEqual(["workUnits", "affectedAreas", "reviewDimensions", "validationRequirements", "outOfScopeImprovements"]);
+    expect(schema?.required).toEqual(["workUnits", "affectedAreas", "reviewDimensions", "validationRequirements", "outOfScopeImprovements", "filesNeededOutsideScope", "formalizationNeed", "formalizationReason", "formalizationEvidenceRefs"]);
     const workUnit = { id: "wu-1", objective: "Decompose the change", scope: ["src/**"], dependencies: [], requirementRefs: [], acceptanceRefs: [], competencies: [], riskTags: [], changeKinds: ["source"], risk: "low", resourceClaims: [] };
     expect(plannerOutputSchema.parse({ workUnits: [{ id: "wu-1", objective: "Decompose the change", scope: ["src/**"], dependencies: [], requirementRefs: [], acceptanceRefs: [], competencies: [], riskTags: [], changeKinds: ["source"], risk: "low" }] })).toEqual({
       workUnits: [workUnit],
