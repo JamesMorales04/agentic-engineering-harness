@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HarnessProjectConfig, TaskContract } from "../../src/core/types.js";
 import { computeWorktreeDigest } from "../../src/core/git.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../../src/operations/v2Contracts.js";
@@ -20,6 +20,23 @@ import { runExternalToolValidator } from "../../src/validators/external.js";
 
 const config: HarnessProjectConfig = { version: 1, project: { name: "sast-fixtures" }, evidence: { outputDir: ".harness/evidence" } };
 const contract: TaskContract = { version: 1, task: { id: "SAST-1", title: "sast fixture" } };
+// Hermetic missing-tool probe: route commandExists through explicit
+// toolchainExtraBinPaths: [] (the tests/managedChildEnvScrub.test.ts:264
+// pattern) so the probe resolves pinned-prefix + minimal only under a fixture
+// cwd with no toolchain state. Ambient PATH mutation cannot hide tools by
+// design (hermetic PATH ignores ambient PATH), and without this the frozen
+// controller startup snapshot marking would leak a real opengrep/trivy into
+// the probe. Only the missing-tool test below reaches this probe: every other
+// validator test in this file supplies an explicit `command`, which skips the
+// commandExists gate (src/validators/external.ts).
+vi.mock("../../src/utils/process.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/utils/process.js")>();
+  return {
+    ...actual,
+    commandExists: async (command: string, cwd: string) =>
+      actual.commandExists(command, cwd, { toolchainExtraBinPaths: [] }),
+  };
+});
 const rawReport = JSON.stringify({ SchemaVersion: 2, Trivy: { Version: "0.70.0" }, ArtifactName: ".", ArtifactType: "filesystem", Results: [] });
 const roots: string[] = [];
 
@@ -126,19 +143,18 @@ describe("candidate-bound SAST evidence", () => {
   });
 
   it("fails closed with an explicit blocker when a required SAST tool is missing", async () => {
+    // Hermetic by construction (see module mock above): the probe runs with
+    // explicit toolchainExtraBinPaths: [] under a fixture cwd with no
+    // toolchain state, so neither ambient PATH nor the controller startup
+    // snapshot marking can leak a real tool into it. Fail-closed assertions
+    // unchanged.
     const { root } = await fixture();
-    const originalPath = process.env.PATH;
-    process.env.PATH = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-empty-path-"));
-    try {
-      const check = await runExternalToolValidator({ root, config, contract, spec: { id: "sast-missing", adapter: "opengrep", required: true }, baseRef: "HEAD", changedFiles: [] });
-      expect(check.status).toBe("FAIL");
-      expect(check.message).toContain("opengrep is not installed");
-      const optional = await runExternalToolValidator({ root, config, contract, spec: { id: "sast-optional", adapter: "trivy", required: false }, baseRef: "HEAD", changedFiles: [] });
-      expect(optional.status).toBe("WARN");
-      expect(optional.message).toContain("trivy is not installed");
-    } finally {
-      process.env.PATH = originalPath;
-    }
+    const check = await runExternalToolValidator({ root, config, contract, spec: { id: "sast-missing", adapter: "opengrep", required: true }, baseRef: "HEAD", changedFiles: [] });
+    expect(check.status).toBe("FAIL");
+    expect(check.message).toContain("opengrep is not installed");
+    const optional = await runExternalToolValidator({ root, config, contract, spec: { id: "sast-optional", adapter: "trivy", required: false }, baseRef: "HEAD", changedFiles: [] });
+    expect(optional.status).toBe("WARN");
+    expect(optional.message).toContain("trivy is not installed");
   });
 
   it("persists candidate-bound evidence when a security validator runs with a candidate binding", async () => {

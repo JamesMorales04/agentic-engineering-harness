@@ -372,6 +372,15 @@ async function runChild(
     );
     inherited.PATH = buildHermeticChildPath(prefix, explicit);
     toolchainPrefixMissing = !prefix && explicit.length === 0;
+    // Nested-controller propagation (trust-preserving): when the caller
+    // explicitly supplied controller-input extra bins, re-emit the normalized
+    // value so a nested `aeh` controller spawned via runShell freezes a
+    // correct startup snapshot. Merged per-turn env stays scrubbed:
+    // options.env[AEH_TOOLCHAIN_EXTRA_BIN_PATHS] is never re-emitted, so a
+    // model-influenced decoy cannot widen a nested controller's snapshot.
+    if (options.toolchainExtraBinPaths !== undefined && explicit.length > 0) {
+      inherited[AEH_TOOLCHAIN_EXTRA_BIN_PATHS_ENV] = explicit.join(path.delimiter);
+    }
   } else {
     // toolchain:false (mise internal, container pulls, explicit-PATH setup):
     // keep ambient/explicit PATH to locate `mise` itself, but ambient MISE_*
