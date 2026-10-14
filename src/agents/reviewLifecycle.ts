@@ -278,6 +278,10 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
           reused: honored.reused,
         }).catch(() => undefined);
         const retryPrompt = `${buildRemediationPrompt(contract, stage, state, deduped.findings, replanContext)}\n\nYou are the canonical Repairer. Change implementation only within the frozen task scope. Do not change requirements, acceptance, validators, policy, or review outcomes. You cannot approve or accept the candidate. Out-of-scope blocker path (report, don't expand): if the fix needs files outside scope, return no changes and declare them via AEH_RESULT_JSON filesNeededOutsideScope[{path, reason}].`;
+        // AEH-V2-0133 P1 (controller-written, fail-closed): the scope-amended retry replacement
+        // identity records the blocked remediation attempt as its retry parent.
+        const blockedAttemptId = typeof remediation.id === "string" && remediation.id.length > 0 ? remediation.id
+          : typeof remediation.participantId === "string" && remediation.participantId.length > 0 ? remediation.participantId : undefined;
         mutation = await executeRepairerCandidateMutation({
           root,
           stateRoot,
@@ -295,7 +299,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
           prepareWorkspace: prepareRepairWorkspace,
           semanticAssessment: input.candidateImpactAssessment,
           scopeAmendment: honored.amendment,
-          execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, prompt, { outputContract: remediationSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true })
+          execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, prompt, { outputContract: remediationSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true, ...(blockedAttemptId ? { parentAgentId: blockedAttemptId } : {}) })
         });
         remediation = mutation.session;
         sessions.push(remediation);
