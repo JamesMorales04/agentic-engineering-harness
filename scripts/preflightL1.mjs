@@ -21,12 +21,15 @@
  * validateAgentOutput) and `dist/releases/<id>/validation/laneEvidence.js`
  * (verifyProviderLaneEvidenceV1 behavioral command-binding probe). The
  * release is resolved through `dist/current` relative to the INSPECTED root,
- * so auditing another checkout uses that checkout's snapshot. No `tsx` and
- * no TypeScript source-text scanning is used for E/F behavior: source text
- * cannot prove a parameter is consumed. When `dist/` is unavailable the gate
- * fails E closed and runs F's structural fallback, both explicitly marked in
- * evidence. See `notes` in the emitted report for every encoding
- * decision/limit.
+ * so auditing another checkout uses that checkout's snapshot — but only after
+ * the snapshot's build-identity.json binds to the inspected source tree
+ * (packageVersion + git HEAD; STALE_DIST refuses another tree's snapshot).
+ * No `tsx` and no TypeScript source-text scanning is used for E/F behavior:
+ * source text cannot prove a parameter is consumed. When `dist/` is
+ * unavailable or stale the gate fails E closed AND fails F closed (the
+ * structural text shape is advisory evidence only and never passes),
+ * both explicitly marked in evidence. See `notes` in the emitted report for
+ * every encoding decision/limit.
  *
  * Usage: `node scripts/preflightL1.mjs [root]` (root defaults to cwd).
  * Stdout is ALWAYS a single machine-readable JSON document:
@@ -434,23 +437,48 @@ export function checkPermissionCeiling(agents, roles) {
 }
 
 /**
+ * Resolve the runtime definition governing an agent: the resolved
+ * `agent.runtime` (name) wins, else `execution.runtime`, else the model-alias
+ * target in `models` (execution.model "@alias" → models[alias].runtime),
+ * mirroring resolveAgentTopology (config.ts:162-163) and
+ * executionSelectionForAgent (routing.ts:8).
+ */
+function runtimeForAgent(agent, runtimes, models) {
+  const table = runtimes ?? {};
+  const name =
+    (typeof agent.runtime === "object" && typeof agent.runtime?.name === "string" ? agent.runtime.name : null) ??
+    (typeof agent.execution?.runtime === "string" ? agent.execution.runtime : null) ??
+    (typeof agent.execution?.model === "string" && agent.execution.model.startsWith("@")
+      ? (models ?? {})[agent.execution.model.slice(1)]?.runtime ?? null
+      : null);
+  return name ? table[name] : undefined;
+}
+
+/**
  * L1-A3-NONPARTICIPANT — dedicated deterministic check for intentional
  * nonparticipants (CanonicalAgentRole without a RoleProfileV1, e.g. Semantic
  * Assessor per src/participants/types.ts canonicalAgentRoleValues vs
  * canonicalRoleValues). Enforces the permissions.ts:55-61 preset-decidable
  * constraints: all of read/write/shell/network/delegate/review/validate/
  * gitWrite explicitly `deny`, plus no skills, no MCPs, no top-level runtime
- * arguments, no execution runtime arguments, and no native-agent selection
- * at either level. execution.nativeAgent IS statically checkable: it is a
- * configured string (src/agents/config.ts:17 executionSchema) compiled into
- * selection.nativeAgent (src/agents/routing.ts:8 executionSelectionForAgent),
- * exactly like execution.args merging into selection.args there. The old
- * gate checked only `agent.args ?? agent.execution?.args`, which let an
- * empty top-level `args: []` mask a nonempty `execution.args` (`[]` is not
- * nullish, so `??` keeps it); both levels are now checked independently and
- * either nonempty is a violation.
+ * arguments, no execution runtime arguments, no runtime defaultArgs, and no
+ * native-agent selection at either level. execution.nativeAgent IS statically
+ * checkable: it is a configured string (src/agents/config.ts:17
+ * executionSchema) compiled into selection.nativeAgent
+ * (src/agents/routing.ts:8 executionSelectionForAgent), exactly like
+ * execution.args merging into selection.args there — and runtime.defaultArgs
+ * likewise merges (`args: [...(runtime.defaultArgs ?? []),
+ * ...(agent.execution.args ?? [])]`, routing.ts:8), so a nonparticipant whose
+ * runtime declares defaultArgs receives arguments even with empty
+ * agent.args/execution.args. The old gate checked only
+ * `agent.args ?? agent.execution?.args`, which let an empty top-level
+ * `args: []` mask a nonempty `execution.args` (`[]` is not nullish, so `??`
+ * keeps it); all three levels are now checked independently and either
+ * nonempty is a violation. `runtimes` maps runtime name → definition
+ * (with optional defaultArgs); `models` maps model alias → definition (with
+ * runtime) for "@alias" execution.model resolution. Both default to {}.
  */
-export function checkNonparticipantConstraints(agents) {
+export function checkNonparticipantConstraints(agents, runtimes, models) {
   const violations = [];
   const denied = ["read", "write", "shell", "network", "delegate", "review", "validate", "gitWrite"];
   for (const [name, agent] of Object.entries(agents)) {
@@ -486,6 +514,17 @@ export function checkNonparticipantConstraints(agents) {
         args: execArgs,
       });
     }
+    const runtime = runtimeForAgent(agent, runtimes, models);
+    const defaultArgs = Array.isArray(runtime?.defaultArgs) ? runtime.defaultArgs : [];
+    if (defaultArgs.length) {
+      violations.push({
+        agent: name,
+        role: agent.role,
+        reason: "nonparticipant runtime must declare no defaultArgs (routing.ts:8 merges runtime.defaultArgs into selection.args, so the agent receives arguments even with empty agent.args/execution.args)",
+        runtime: runtime?.name,
+        args: defaultArgs,
+      });
+    }
     const nativeTop = typeof agent.nativeAgent === "string" ? agent.nativeAgent.trim() : agent.nativeAgent;
     if (nativeTop) {
       violations.push({ agent: name, role: agent.role, reason: "nonparticipant must not select a top-level native agent (permissions.ts:61)", nativeAgent: agent.nativeAgent });
@@ -507,15 +546,34 @@ export function checkNonparticipantConstraints(agents) {
  * L1-A2-SKILL-ROLE-FIT — every preset skill must exist in the canonical
  * seed and, when the seed restricts it to roles, must include the agent's
  * role (mirrors src/participants/skillCompiler.ts role/required-tool
- * rejection; unknown ids fail closed).
+ * rejection). Mirrors the runtime compiler's registry split
+ * (src/agents/compiler.ts:74-78 validateReferences): the canonical seed is
+ * the registry of record for seed skill ids, while filesystem SKILL.md under
+ * the configured roots covers non-seed OpenCode skills — a non-seed skill
+ * that resolves on the filesystem is accepted here (its existence is L1-C2's
+ * verdict), and only a skill in NEITHER registry fails closed. When no
+ * filesystem probe is provided (pure evaluation), non-seed skills fail
+ * closed as unknown. "*" always passes (compiler skips it).
  */
-export function checkSkillRoleFit(agents, seed) {
+export function checkSkillRoleFit(agents, seed, skillRoots, fileExists) {
+  const roots = skillRoots && skillRoots.length ? skillRoots : [".harness/skills"];
+  const resolvesOnFilesystem = (skill) => {
+    if (typeof fileExists !== "function") return false;
+    return roots.some((root) => fileExists(`${root}/${skill}/SKILL.md`));
+  };
   const violations = [];
   for (const [name, agent] of Object.entries(agents)) {
     for (const skill of agent.skills ?? []) {
+      if (skill === "*") continue;
       const def = seed[skill];
       if (!def) {
-        violations.push({ agent: name, role: agent.role, skill, reason: "unknown skill id: absent from canonical seed" });
+        if (resolvesOnFilesystem(skill)) continue;
+        violations.push({
+          agent: name,
+          role: agent.role,
+          skill,
+          reason: "unknown skill id: absent from canonical seed and unresolvable as <skillRoot>/<id>/SKILL.md",
+        });
       } else if (def.roles && !def.roles.includes(agent.role)) {
         violations.push({ agent: name, role: agent.role, skill, reason: `seed restricts skill to roles [${def.roles.join(", ")}]` });
       }
@@ -566,14 +624,23 @@ export function checkSpecializationsClosed(agents, routing, roles) {
 }
 
 /**
- * L1-C1-SKILLROOT-EXISTS — every configured skillRoot must be an existing
- * directory (absent `skillRoots` defaults to [".harness/skills"], mirroring
- * resolveAgentTopology).
+ * L1-C1-SKILLROOT-EXISTS — the configured skillRoot topology must be
+ * materialized somewhere (absent `skillRoots` defaults to
+ * [".harness/skills"], mirroring resolveAgentTopology). Aligned with the
+ * runtime compiler (src/agents/compiler.ts:80-82 validateReferences): the
+ * compiler probes `<root>/<skill>/SKILL.md` under EACH root and only fails
+ * when NO root resolves — a single missing root dir is tolerated, never a
+ * hard error. C1 therefore fails closed only when EVERY configured root is
+ * missing (nowhere to resolve from); per-skill resolution is L1-C2. The
+ * previous "any missing root fails" shape false-REDed consumer topologies
+ * whose unioned skillRoots (preset roots plus consumer materialization)
+ * legitimately leave some roots unmaterialized.
  */
 export function checkSkillRootsExist(skillRoots, dirExists) {
   const roots = skillRoots && skillRoots.length ? skillRoots : [".harness/skills"];
   const missing = roots.filter((root) => !dirExists(root));
-  return mkCheck("L1-C1-SKILLROOT-EXISTS", missing.length > 0, { skillRoots: roots, missing });
+  const failed = missing.length >= roots.length;
+  return mkCheck("L1-C1-SKILLROOT-EXISTS", failed, { skillRoots: roots, missing });
 }
 
 /**
@@ -711,27 +778,75 @@ function disjunctionBranches(schema) {
   return out;
 }
 
+/** True iff the schema object lists field in its `required` array. */
+function schemaRequires(schema, field) {
+  return isObject(schema) && Array.isArray(schema.required) && schema.required.includes(field);
+}
+
+/**
+ * True iff a disjunction branch constrains nothing a violating payload could
+ * not satisfy: a non-object, an empty object, or an object with no
+ * properties/allOf/anyOf/oneOf/if constraint. Such a branch is an escape
+ * hatch — payloads take it with the constrained properties omitted — so any
+ * gate pairing a qualifying branch with one of these must FAIL.
+ */
+function isVacuousBranch(branch) {
+  if (!isObject(branch)) return true;
+  if (Object.keys(branch).length === 0) return true;
+  if (
+    !isObject(branch.properties) &&
+    !Array.isArray(branch.allOf) &&
+    !Array.isArray(branch.anyOf) &&
+    !Array.isArray(branch.oneOf) &&
+    !isObject(branch.if)
+  ) {
+    return true;
+  }
+  if (
+    isObject(branch.properties) &&
+    Object.keys(branch.properties).length === 0 &&
+    !branch.allOf &&
+    !branch.anyOf &&
+    !branch.oneOf &&
+    !branch.if
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /** Planner zod gate (outputContracts.ts:63-71 PLANNER_EMPTY_RESULT). */
 function plannerWireHolds(schema) {
+  if (!isObject(schema)) return false;
+  // The typed constraint is meaningless when the property can be omitted:
+  // a payload without workUnits satisfies the schema while the zod gate
+  // rejects []. Both required-membership and the typed cardinality must hold.
+  if (!schemaRequires(schema, "workUnits")) return false;
   return arrayNonemptyAt(isObject(schema) ? schema.properties : undefined, "workUnits");
 }
 
 /**
  * Explorer zod gate (outputContracts.ts:98-113 EXPLORER_EMPTY_RESULT).
- * Accepts a direct binding (one known evidence array required nonempty at
- * top level — stricter than zod's any-of-seven, documented residual) or a
- * disjunction whose EVERY branch binds at least one known evidence array
- * path to type=array+minItems>=1 (a branch that binds nothing is a vacuous
- * escape hatch and fails the whole gate).
+ * Accepts a direct binding (one known evidence array required AND bound to
+ * type=array+minItems>=1 at top level — stricter than zod's any-of-seven,
+ * documented residual) or a disjunction whose EVERY branch requires and binds
+ * at least one known evidence array path to type=array+minItems>=1. A branch
+ * that binds nothing (including a vacuous `{}`) is an escape hatch — a
+ * payload with every evidence array empty takes it — and fails the whole
+ * gate. A top-level constraint without required-membership likewise lets the
+ * payload omit the array and fails.
  */
 function explorerWireHolds(schema) {
   if (!isObject(schema)) return false;
   const top = schema.properties;
-  if (EXPLORER_KNOWN_EVIDENCE_ARRAYS.some((field) => arrayNonemptyAt(top, field))) return true;
+  if (EXPLORER_KNOWN_EVIDENCE_ARRAYS.some((field) => schemaRequires(schema, field) && arrayNonemptyAt(top, field))) return true;
   const branches = disjunctionBranches(schema);
   if (!branches.length) return false;
+  if (branches.some((branch) => isVacuousBranch(branch))) return false;
   return branches.every((branch) =>
-    EXPLORER_KNOWN_EVIDENCE_ARRAYS.some((field) => arrayNonemptyAt(isObject(branch) ? branch.properties : undefined, field)),
+    EXPLORER_KNOWN_EVIDENCE_ARRAYS.some(
+      (field) => schemaRequires(branch, field) && arrayNonemptyAt(isObject(branch) ? branch.properties : undefined, field),
+    ),
   );
 }
 
@@ -751,15 +866,19 @@ function specArtifactsNodeHolds(node) {
 
 /**
  * Spec READY gate (outputContracts.ts:146-158 SPEC_MANAGER_INCOMPLETE_RESULT).
- * Accepts: unconditional top-level enforcement (stricter than zod — BLOCKED
- * payloads would also need proposal/tasks at the wire; documented residual),
- * an allOf branch carrying the pair (allOf branches all apply), a READY-tied
- * anyOf/oneOf branch carrying the pair, or an if(status READY)/then(pair)
- * encoding. A bare anyOf branch carrying the pair without a READY tie is a
- * hole (READY payloads may satisfy another branch) and fails.
+ * Every acceptance path additionally requires the schema to list `artifacts`
+ * in its top-level `required`: an artifacts node carrying the pair is
+ * meaningless when a READY payload may omit the parent `artifacts` object
+ * entirely. Accepts: unconditional top-level enforcement (stricter than zod —
+ * BLOCKED payloads would also need proposal/tasks at the wire; documented
+ * residual), an allOf branch carrying the pair (allOf branches all apply), a
+ * READY-tied anyOf/oneOf branch carrying the pair, or an if(status
+ * READY)/then(pair) encoding. A bare anyOf branch carrying the pair without a
+ * READY tie is a hole (READY payloads may satisfy another branch) and fails.
  */
 function specWireHolds(schema) {
   if (!isObject(schema)) return false;
+  if (!schemaRequires(schema, "artifacts")) return false;
   if (specArtifactsNodeHolds(schema.properties?.artifacts)) return true;
   if (Array.isArray(schema.allOf) && schema.allOf.some((branch) => specArtifactsNodeHolds(isObject(branch) ? branch.properties?.artifacts : undefined))) {
     return true;
@@ -779,25 +898,58 @@ function specWireHolds(schema) {
 }
 
 /**
+ * True iff a reviewer branch object rejects every FAIL-with-empty-findings
+ * payload: it either excludes the FAIL verdict (const/enum without FAIL) or
+ * requires findings nonempty. A vacuous `{}` (or any branch constraining
+ * neither) admits the violator and is NOT safe.
+ */
+function reviewerBranchSafe(props) {
+  if (!isObject(props)) return false;
+  const verdict = props.verdict;
+  if (isObject(verdict)) {
+    if (verdict.const !== undefined && verdict.const !== "FAIL") return true;
+    if (Array.isArray(verdict.enum) && !verdict.enum.includes("FAIL")) return true;
+  }
+  return arrayNonemptyAt(props, "findings");
+}
+
+/** True iff the branch binds verdict to FAIL with findings nonempty (implies safe). */
+function reviewerBranchQualifies(props) {
+  if (!isObject(props)) return false;
+  return constrainsLiteral(props.verdict, "FAIL") && arrayNonemptyAt(props, "findings");
+}
+
+/**
  * Reviewer FAIL gate (outputContracts.ts:208-215 REVIEWER_FAIL_WITHOUT_FINDING).
- * Requires top-level properties.verdict to carry type "string" AND a single
- * branch object binding verdict to FAIL with findings type=array+minItems>=1
- * in that SAME branch (anyOf/oneOf branch or if(verdict FAIL)/then). Mere
- * co-occurrence of a FAIL literal, a findings minItems and a coupling keyword
- * spread across unrelated branches fails. The critical/high-severity ⇒
- * not-SAFE gate (outputContracts.ts:216-222 REVIEWER_UNSAFE_PASS) has no
- * honest object-graph encoding here and is an explicit residual, not a pass.
+ * Requires top-level properties.verdict to carry type "string", to be listed
+ * in top-level `required` (an omittable verdict lets FAIL payloads drop the
+ * field), AND a single branch object binding verdict to FAIL with findings
+ * type=array+minItems>=1 in that SAME branch (anyOf/oneOf branch or
+ * if(verdict FAIL)/then). Mere co-occurrence of a FAIL literal, a findings
+ * minItems and a coupling keyword spread across unrelated branches fails —
+ * and a qualifying branch paired with a vacuous `{}` alternative fails: the
+ * FAIL-with-empty-findings payload takes the vacuous branch. Every
+ * anyOf/oneOf branch must therefore either qualify or independently reject
+ * the violator. The critical/high-severity ⇒ not-SAFE gate
+ * (outputContracts.ts:216-222 REVIEWER_UNSAFE_PASS) has no honest
+ * object-graph encoding here and is an explicit residual, not a pass.
  */
 function reviewerWireHolds(schema) {
   if (!isObject(schema)) return false;
   const top = schema.properties;
   if (!isObject(top) || top.verdict?.type !== "string") return false;
-  for (const branch of disjunctionBranches(schema)) {
-    if (!isObject(branch)) continue;
-    const props = branch.properties;
-    if (!isObject(props)) continue;
-    if (constrainsLiteral(props.verdict, "FAIL") && arrayNonemptyAt(props, "findings")) return true;
+  if (!schemaRequires(schema, "verdict")) return false;
+  const branches = disjunctionBranches(schema);
+  if (
+    branches.length &&
+    branches.some((branch) => reviewerBranchQualifies(isObject(branch) ? branch.properties : undefined)) &&
+    branches.every((branch) => reviewerBranchSafe(isObject(branch) ? branch.properties : undefined))
+  ) {
+    return true;
   }
+  // A failing disjunction falls through: top-level if/then applies by
+  // conjunction, so a sound if-FAIL-then still constrains payloads that take
+  // a vacuous anyOf branch. Without one, the disjunction failure stands.
   if (
     constrainsLiteral(schema.if?.properties?.verdict, "FAIL") &&
     arrayNonemptyAt(schema.then?.properties, "findings")
@@ -808,14 +960,38 @@ function reviewerWireHolds(schema) {
 }
 
 /**
+ * True iff a supervisor branch object rejects every SAFE-with-pending-items
+ * payload: it either excludes the SAFE value (const/enum without SAFE) or
+ * requires BOTH unresolved and missingEvidence empty. A vacuous `{}` admits
+ * the violator and is NOT safe.
+ */
+function supervisorBranchSafe(props) {
+  if (!isObject(props)) return false;
+  const safety = props.finalizationSafety;
+  if (isObject(safety)) {
+    if (safety.const !== undefined && safety.const !== "SAFE") return true;
+    if (Array.isArray(safety.enum) && !safety.enum.includes("SAFE")) return true;
+  }
+  return arrayEmptyAt(props, "unresolved") && arrayEmptyAt(props, "missingEvidence");
+}
+
+/**
  * Supervisor SAFE gate (outputContracts.ts:237-248 SUPERVISOR_UNSAFE_SAFE).
  * Requires a single branch object binding finalizationSafety to SAFE with
  * unresolved AND missingEvidence as type=array+maxItems===0 in that SAME
  * branch (anyOf/oneOf branch, allOf branch, or if(safety SAFE)/then).
- * Co-occurrence across unrelated branches fails.
+ * Co-occurrence across unrelated branches fails — and a qualifying branch
+ * paired with a vacuous `{}` anyOf/oneOf alternative fails: the
+ * SAFE-with-pending-items payload takes the vacuous branch, so every
+ * anyOf/oneOf branch must either qualify or independently reject the
+ * violator. (allOf branches all apply, so a vacuous allOf sibling is not an
+ * escape hatch and is ignored.) The top-level schema must list
+ * `finalizationSafety` in `required`: an omittable safety field lets payloads
+ * drop it while pending items remain.
  */
 function supervisorWireHolds(schema) {
   if (!isObject(schema)) return false;
+  if (!schemaRequires(schema, "finalizationSafety")) return false;
   const safeBranch = (props) => {
     if (!isObject(props)) return false;
     return (
@@ -824,9 +1000,18 @@ function supervisorWireHolds(schema) {
       arrayEmptyAt(props, "missingEvidence")
     );
   };
-  for (const branch of disjunctionBranches(schema)) {
-    if (safeBranch(isObject(branch) ? branch.properties : undefined)) return true;
+  const branches = disjunctionBranches(schema);
+  if (
+    branches.length &&
+    branches.some((branch) => safeBranch(isObject(branch) ? branch.properties : undefined)) &&
+    branches.every((branch) => supervisorBranchSafe(isObject(branch) ? branch.properties : undefined))
+  ) {
+    return true;
   }
+  // A failing disjunction falls through: allOf branches and top-level
+  // if/then apply by conjunction, so an allOf emptiness branch or a sound
+  // if-SAFE-then still constrains payloads that take a vacuous anyOf branch.
+  // Without one, the disjunction failure stands.
   if (Array.isArray(schema.allOf)) {
     for (const branch of schema.allOf) {
       const props = isObject(branch) ? branch.properties : undefined;
@@ -859,8 +1044,8 @@ export const WIRE_GATES = [
     zodRef: "src/agents/outputContracts.ts:63-71",
     zodMarkers: ["PLANNER_EMPTY_RESULT"],
     jsonContract: "planner",
-    jsonPath: "planner.properties.workUnits (type=array AND minItems>=1)",
-    expectation: "properties.workUnits carries type:array with integer minItems>=1",
+    jsonPath: "planner required workUnits + planner.properties.workUnits (type=array AND minItems>=1)",
+    expectation: "required lists workUnits and properties.workUnits carries type:array with integer minItems>=1",
     test: plannerWireHolds,
   },
   {
@@ -868,9 +1053,9 @@ export const WIRE_GATES = [
     zodRef: "src/agents/outputContracts.ts:98-113",
     zodMarkers: ["EXPLORER_EMPTY_RESULT"],
     jsonContract: "explorer",
-    jsonPath: "explorer.* (known evidence array paths, type=array AND minItems>=1 per branch)",
+    jsonPath: "explorer.* (known evidence array paths, required AND type=array AND minItems>=1 per branch; no vacuous branch)",
     expectation:
-      "a known evidence array is bound to type:array+minItems>=1 at top level, or every anyOf/oneOf branch binds >=1 known evidence array path to type:array+minItems>=1",
+      "a known evidence array is required and bound to type:array+minItems>=1 at top level, or every anyOf/oneOf branch requires and binds >=1 known evidence array path to type:array+minItems>=1 with no vacuous branch",
     test: explorerWireHolds,
   },
   {
@@ -878,9 +1063,9 @@ export const WIRE_GATES = [
     zodRef: "src/agents/outputContracts.ts:146-158",
     zodMarkers: ["SPEC_MANAGER_INCOMPLETE_RESULT"],
     jsonContract: "spec-authoring",
-    jsonPath: "spec-authoring artifacts node (required proposal+tasks AND both type=string+minLength>=1)",
+    jsonPath: "spec-authoring required artifacts + artifacts node (required proposal+tasks AND both type=string+minLength>=1)",
     expectation:
-      "an artifacts node requires proposal+tasks with both typed type:string+minLength>=1 (unconditional, allOf branch, READY-tied anyOf/oneOf branch, or if-READY-then)",
+      "top-level required lists artifacts and an artifacts node requires proposal+tasks with both typed type:string+minLength>=1 (unconditional, allOf branch, READY-tied anyOf/oneOf branch, or if-READY-then)",
     test: specWireHolds,
   },
   {
@@ -888,9 +1073,9 @@ export const WIRE_GATES = [
     zodRef: "src/agents/outputContracts.ts:208-223",
     zodMarkers: ["REVIEWER_FAIL_WITHOUT_FINDING", "REVIEWER_UNSAFE_PASS"],
     jsonContract: "reviewer",
-    jsonPath: "reviewer branch binding verdict=FAIL with findings type=array+minItems>=1 (same branch) + top-level verdict type=string",
+    jsonPath: "reviewer required verdict + branch binding verdict=FAIL with findings type=array+minItems>=1 (same branch, no vacuous alternative) + top-level verdict type=string",
     expectation:
-      "properties.verdict carries type:string AND one anyOf/oneOf branch (or if-FAIL-then) binds verdict to FAIL with findings type:array+minItems>=1 in the same branch object",
+      "required lists verdict, properties.verdict carries type:string, and one anyOf/oneOf branch (or if-FAIL-then) binds verdict to FAIL with findings type:array+minItems>=1 in the same branch object while every anyOf/oneOf branch rejects FAIL-with-empty-findings",
     test: reviewerWireHolds,
   },
   {
@@ -898,9 +1083,9 @@ export const WIRE_GATES = [
     zodRef: "src/agents/outputContracts.ts:237-248",
     zodMarkers: ["SUPERVISOR_UNSAFE_SAFE"],
     jsonContract: "supervisor",
-    jsonPath: "supervisor branch binding finalizationSafety=SAFE with unresolved+missingEvidence type=array+maxItems===0 (same branch)",
+    jsonPath: "supervisor required finalizationSafety + branch binding finalizationSafety=SAFE with unresolved+missingEvidence type=array+maxItems===0 (same branch, no vacuous alternative)",
     expectation:
-      "one anyOf/oneOf/allOf branch (or if-SAFE-then) binds finalizationSafety to SAFE with unresolved and missingEvidence type:array+maxItems===0 in the same branch object",
+      "required lists finalizationSafety and one anyOf/oneOf/allOf branch (or if-SAFE-then) binds finalizationSafety to SAFE with unresolved and missingEvidence type:array+maxItems===0 in the same branch object while every anyOf/oneOf branch rejects SAFE-with-pending-items",
     test: supervisorWireHolds,
   },
 ];
@@ -915,9 +1100,12 @@ export const WIRE_GATES = [
  * gate id → boolean (behaviorally probed by probeWireLiveness on the real
  * tree; defaults to all-live for pure evaluation). Gates with live===false
  * are reported as stale, never failed: the enumeration follows the
- * deterministic validator, never a frozen assumption.
+ * deterministic validator, never a frozen assumption. `distStale` carries the
+ * STALE_DIST binding refusal from loadDistForRoot (a dist/ snapshot bound to
+ * a different source tree): it is reported explicitly and keeps the check
+ * failed closed.
  */
-export function checkWireParity(schemas, live) {
+export function checkWireParity(schemas, live, distStale) {
   const liveMap = live ?? {};
   const gates = [];
   const missing = [];
@@ -929,11 +1117,15 @@ export function checkWireParity(schemas, live) {
       continue;
     }
   }
+  const staleDist = distStale ?? null;
   if (!isObject(schemas)) {
     for (const def of liveGates) missing.push(def.gate);
     return mkCheck("L1-E-WIRE-PARITY", true, {
       distAvailable: false,
-      reason: "provider JSON Schemas unavailable (dist/ snapshot missing): object-graph parity cannot be asserted without the schema objects; failing closed with no source-text fallback.",
+      ...(staleDist ? { staleDist } : {}),
+      reason: staleDist
+        ? `STALE_DIST: refusing a dist/ snapshot bound to a different source tree (${staleDist.reason}); object-graph parity cannot be asserted without the schema objects for the inspected source.`
+        : "provider JSON Schemas unavailable (dist/ snapshot missing): object-graph parity cannot be asserted without the schema objects; failing closed with no source-text fallback.",
       gates: liveGates.map((def) => ({ gate: def.gate, zod: def.zodRef, jsonPath: def.jsonPath, expectation: def.expectation, live: true, found: false })),
       missing,
       stale,
@@ -950,7 +1142,13 @@ export function checkWireParity(schemas, live) {
     gates.push({ gate: def.gate, zod: def.zodRef, jsonPath: def.jsonPath, expectation: def.expectation, live: true, found });
     if (!found) missing.push(def.gate);
   }
-  return mkCheck("L1-E-WIRE-PARITY", missing.length > 0, { distAvailable: true, gates, missing, stale });
+  return mkCheck("L1-E-WIRE-PARITY", missing.length > 0, {
+    distAvailable: true,
+    ...(staleDist ? { staleDist } : {}),
+    gates,
+    missing,
+    stale,
+  });
 }
 
 /** Violating payloads proving each zod gate is live (behavioral, no text scan). */
@@ -1006,9 +1204,10 @@ export function probeWireLiveness(validateAgentOutput) {
 }
 
 /**
- * L1-F-LANE-COMMAND-BINDING — structural fallback (static parameter-flow
- * shape; used ONLY when the dist/ snapshot is unavailable and explicitly
- * marked mode:"structural-fallback" by evaluateAll). Precisely:
+ * L1-F-LANE-COMMAND-BINDING — structural parameter-flow shape (ADVISORY ONLY;
+ * never passes the gate since the M3 repair: see
+ * checkLaneCommandBindingWithBehavioral, which fails closed without a bound
+ * dist/ snapshot). Precisely:
  * (i) parse the `verifyProviderLaneEvidenceV1` signature for a command
  * parameter (name matching /command/i, e.g. expectedCommand/command); the
  * body must contain a SINGLE comparison expression (one `===`/`!==`
@@ -1295,17 +1494,24 @@ export async function probeLaneCommandBindingBehavioral(verifyFn, helpers, root,
 
 /**
  * Full L1-F check with behavioral enforcement. `input` is
- * { laneSource, callSites, behavioral? } where `behavioral` is
+ * { laneSource, callSites, behavioral?, distStale? } where `behavioral` is
  * { verifyFn, helpers, root, config } and `helpers` provides the built
  * { sha256Utf8, sha256Canonical, providerLaneEvidenceDirectory }. When
  * `behavioral` is present the verdict conjoins the consumption probe with the
  * consumer call-site threading shape (each in-repo call's own parens binding
  * a command digest value — threading shape, not runtime value correctness).
- * When absent (dist/ unavailable) the structural fallback runs and the
- * evidence is explicitly marked mode:"structural-fallback".
+ * When absent (dist/ unavailable or STALE_DIST) the check FAILS CLOSED with
+ * distAvailable:false: the structural text fallback proves static
+ * parameter-flow shape only (same-expression comparison + in-parens
+ * threading) and MUST NOT pass the gate — single-line compound comparisons,
+ * aliasing, re-exports, wrapper indirection and digest-function variations
+ * all fool it while the product gap (no consumption) remains. The structural
+ * result is still computed and reported as advisory evidence
+ * (structuralAdvisory) so operators see the static shape, but the verdict is
+ * unconditionally FAIL.
  */
 export async function checkLaneCommandBindingWithBehavioral(input) {
-  const { laneSource, callSites, behavioral } = input ?? {};
+  const { laneSource, callSites, behavioral, distStale } = input ?? {};
   const sites = callSites ?? [];
   const sitesMissing = sites
     .filter((site) => {
@@ -1323,11 +1529,19 @@ export async function checkLaneCommandBindingWithBehavioral(input) {
     .map((site) => ({ file: site.file, line: site.line }));
   if (!behavioral || typeof behavioral.verifyFn !== "function") {
     const structural = checkLaneCommandBinding(laneSource, sites);
-    return mkCheck("L1-F-LANE-COMMAND-BINDING", structural.status === "FAIL", {
-      ...structural.evidence,
+    const staleDist = distStale ?? null;
+    return mkCheck("L1-F-LANE-COMMAND-BINDING", true, {
       mode: "structural-fallback",
       distAvailable: false,
-      note: "dist/ snapshot unavailable: ran the structural fallback (same-expression comparison + in-parens threading). Known false-pass classes apply; see notes.",
+      ...(staleDist ? { staleDist } : {}),
+      reason: staleDist
+        ? `STALE_DIST: refusing a dist/ snapshot bound to a different source tree (${staleDist.reason}); failing closed without a behavioral consumption proof.`
+        : "dist/ snapshot unavailable: no behavioral consumption proof is possible; failing closed without trusting the structural text fallback.",
+      structuralAdvisory: structural.evidence,
+      note: "The structural text fallback (same-expression comparison + in-parens threading) is advisory only: known false-pass classes apply (compound comparisons, aliasing, re-exports, wrapper indirection); see notes. A PASS here would not prove command binding.",
+      ref: "src/validation/laneEvidence.ts",
+      consumerCallSitesMissingCommand: sitesMissing,
+      consumerCallSitesChecked: sites.length,
     });
   }
   const probe = await probeLaneCommandBindingBehavioral(behavioral.verifyFn, behavioral.helpers, behavioral.root, behavioral.config);
@@ -1365,28 +1579,31 @@ export function checkAdapterCoverage(catalogSource, registrySource) {
  * awaits the behavioral consumption probe when `fx.laneBehavioral` provides
  * the built (or injected) verifier; every other assertion is synchronous and
  * pure. `fx` is
- * { agents, roles, skillSeed, skillRoots, routing, permissionsSource,
- *   schemas, wireLive, laneSource, callSites, laneBehavioral,
- *   catalogSource, registrySource, dirExists, fileExists, mcpConfigured }.
+ * { agents, roles, skillSeed, skillRoots, routing, runtimes, models,
+ *   permissionsSource, schemas, wireLive, distStale, laneSource, callSites,
+ *   laneBehavioral, distStaleForLane, catalogSource, registrySource,
+ *   dirExists, fileExists, mcpConfigured }.
  * `schemas` maps contract name → provider JSON Schema object (dist DATA);
  * `wireLive` maps wire gate id → boolean (behaviorally probed liveness);
+ * `distStale` is the STALE_DIST refusal from loadDistForRoot (or null);
  * `laneBehavioral` is { verifyFn, helpers, root, config } or undefined
- * (undefined selects the explicitly-marked structural fallback).
+ * (undefined FAILS L1-F closed — the structural text fallback is advisory
+ * only and never passes the gate).
  */
 export async function evaluateAll(fx) {
   const laneCheck = fx.laneBehavioral
     ? await checkLaneCommandBindingWithBehavioral({ laneSource: fx.laneSource, callSites: fx.callSites, behavioral: fx.laneBehavioral })
-    : await checkLaneCommandBindingWithBehavioral({ laneSource: fx.laneSource, callSites: fx.callSites });
+    : await checkLaneCommandBindingWithBehavioral({ laneSource: fx.laneSource, callSites: fx.callSites, distStale: fx.distStaleForLane ?? fx.distStale });
   return [
     checkPermissionCeiling(fx.agents, fx.roles),
-    checkSkillRoleFit(fx.agents, fx.skillSeed),
-    checkNonparticipantConstraints(fx.agents),
+    checkSkillRoleFit(fx.agents, fx.skillSeed, fx.skillRoots, fx.fileExists),
+    checkNonparticipantConstraints(fx.agents, fx.runtimes, fx.models),
     checkSpecializationsClosed(fx.agents, fx.routing, fx.roles),
     checkSkillRootsExist(fx.skillRoots, fx.dirExists),
     checkSkillRefsResolve(fx.agents, fx.skillRoots, fx.fileExists),
     checkMcpFailClosed(fx.permissionsSource),
     checkMcpRefsConfigured(fx.agents, fx.mcpConfigured),
-    checkWireParity(fx.schemas, fx.wireLive),
+    checkWireParity(fx.schemas, fx.wireLive, fx.distStale),
     laneCheck,
     checkAdapterCoverage(fx.catalogSource, fx.registrySource),
   ];
@@ -1510,27 +1727,102 @@ export function collectLaneCallSites(root) {
 
 const PREFLIGHT_NOTES = [
   "Mechanism=DETERMINISTIC for every check: static source/filesystem comparison plus loaded dist/ DATA (JSON Schema objects, built validator and verifier functions) with bounded crafted-input probes; no network, no model calls, no randomness.",
-  "Dist-as-DATA choice: L1-E loads provider-facing JSON Schemas via outputJsonSchema from the dist/ release snapshot pinned by dist/current relative to the inspected root (auditing another checkout uses that checkout's snapshot); L1-F calls the built verifyProviderLaneEvidenceV1 with crafted digests and asserts on returned blockers. No tsx is required and no provider/runtime workflow executes: outputJsonSchema/validateAgentOutput are pure validators and the lane probe uses a synthetic artifacts:[] document. When dist/ is unavailable, L1-E fails closed with distAvailable:false (no source-text fallback is attempted — text cannot prove parity) and L1-F runs the explicitly-marked structural fallback.",
+  "Dist-as-DATA choice: L1-E loads provider-facing JSON Schemas via outputJsonSchema from the dist/ release snapshot pinned by dist/current relative to the inspected root (auditing another checkout uses that checkout's snapshot), but only after the snapshot's build-identity.json binds to the inspected source tree (packageVersion + git HEAD must match; a dirty build or a dirty source tree refuses with explicit STALE_DIST). L1-F calls the built verifyProviderLaneEvidenceV1 with crafted digests and asserts on returned blockers. No tsx is required and no provider/runtime workflow executes: outputJsonSchema/validateAgentOutput are pure validators and the lane probe uses a synthetic artifacts:[] document. When dist/ is unavailable or STALE_DIST, L1-E fails closed with distAvailable:false (no source-text fallback is attempted — text cannot prove parity) and L1-F fails closed with distAvailable:false (the structural text shape is advisory only and never passes the gate).",
   "L1-A1 ceiling mapping covers read/write/gitWrite/delegate/shell plus review/validate against maxCapabilities (roles.ts maxCapabilities, compiled via src/participants/skillCompiler.ts:30-32 roleCapabilities). network has no role-ceiling source in roles.ts and is intentionally unchecked (validateExecutionCapabilities in permissions.ts:23-67 likewise gates only a subset).",
-  "L1-A2 mirrors src/participants/skillCompiler.ts:77 role rejection; required/forbidden-tool coupling (src/participants/skillCompiler.ts:78-80) is out of scope because preset skills carry no tool declarations.",
-  "L1-A3 covers intentional nonparticipants (Semantic Assessor: a CanonicalAgentRole without a RoleProfileV1 per src/participants/types.ts). It enforces the preset-decidable subset of permissions.ts:55-61 (all of read/write/shell/network/delegate/review/validate/gitWrite explicitly deny; no skills; no MCPs; no top-level args; no execution.args; no top-level or execution.nativeAgent). execution.nativeAgent IS statically checkable: a configured string (config.ts:17) compiled into selection.nativeAgent (routing.ts:8), exactly like execution.args merging into selection.args there; the previous gate's `agent.args ?? agent.execution?.args` shape let an empty top-level args mask a nonempty execution.args and is fixed by checking both levels independently. L1-A1/L1-B skip nonparticipant roles instead of failing them as unknown-profile. Residual: runtime.defaultArgs merging (routing.ts:8) is not inspected — the shipped runtimes declare no defaultArgs; transport/adapter/capability projection (paseo+codex, runtimeConfigInjection/structuredOutput/modelSelection) remains runtime-resolved, not preset-decidable, and is not checked here.",
+  "L1-A2 mirrors src/participants/skillCompiler.ts:77 role rejection plus the compiler registry split (src/agents/compiler.ts:74-78): seed ids are role-ceiling-checked, non-seed OpenCode skills resolving as <skillRoot>/<id>/SKILL.md are accepted (existence is L1-C2's verdict), and anything in neither registry fails; required/forbidden-tool coupling (src/participants/skillCompiler.ts:78-80) is out of scope because preset skills carry no tool declarations.",
+  "L1-A3 covers intentional nonparticipants (Semantic Assessor: a CanonicalAgentRole without a RoleProfileV1 per src/participants/types.ts). It enforces the preset-decidable subset of permissions.ts:55-61 (all of read/write/shell/network/delegate/review/validate/gitWrite explicitly deny; no skills; no MCPs; no top-level args; no execution.args; no runtime.defaultArgs; no top-level or execution.nativeAgent). execution.nativeAgent IS statically checkable: a configured string (config.ts:17) compiled into selection.nativeAgent (routing.ts:8), exactly like execution.args merging into selection.args there; runtime.defaultArgs likewise merges (routing.ts:8 args spread) and is resolved per agent via agent.runtime.name, execution.runtime, or the execution.model @alias target. The previous gate's `agent.args ?? agent.execution?.args` shape let an empty top-level args mask a nonempty execution.args and is fixed by checking all three levels independently. L1-A1/L1-B skip nonparticipant roles instead of failing them as unknown-profile. Residual: transport/adapter/capability projection (paseo+codex, runtimeConfigInjection/structuredOutput/modelSelection) remains runtime-resolved, not preset-decidable, and is not checked here.",
   "L1-B checks profile-subset closure only; it does not require a matching enabled agent per selector.",
-  "L1-C2 is exact parity with compiler.ts:54-60 (filesystem SKILL.md under configured roots). Seed-ID validity is L1-A2; the seed-vs-filesystem split itself is the reported drift.",
+  "L1-C1 is aligned with the runtime compiler (src/agents/compiler.ts:80-82): missing root dirs are tolerated and only a fully unmaterialized topology (every configured root missing) fails; per-skill resolution is L1-C2, which is exact parity with compiler.ts:54-60 (filesystem SKILL.md under configured roots). The loader resolves the ACTIVE consumer topology (.harness/agents.source.jsonc extends-chain with skillRoots union, falling back to presets/agents/default.jsonc), so preset-only roots no longer false-RED consumer checkouts. Seed-ID validity is L1-A2; the seed-vs-filesystem split itself is the reported drift.",
   "L1-D1 asserts the absence of the fail-open shape; any future allowlist/explicit-deny rewrite passes as long as no `if (!configured[name]) … = true` grant remains.",
   "L1-D2 reads <root>/.harness/project.yaml mcp.servers with a minimal indentation-aware parser (full YAML fidelity is a documented limit; block and inline `{…}` server forms are handled).",
   "L1-E enumeration follows behaviorally-probed zod liveness (WIRE_LIVENESS_PROBES via validateAgentOutput); implementer/repair-result anyOf guards are already present in JSON and are therefore not listed as gates.",
-  "L1-E asserts exact object-graph bindings, never token co-occurrence: planner properties.workUnits type=array AND minItems>=1; explorer either a known evidence array bound to type=array+minItems>=1 at top level or an anyOf/oneOf whose EVERY branch binds >=1 known evidence array path to type=array+minItems>=1 (unrelated disjunctions fail); spec an artifacts node whose required includes proposal+tasks with both typed type:string+minLength>=1 (unconditional, allOf branch, READY-tied anyOf/oneOf branch, or if-READY-then); reviewer top-level properties.verdict type:string AND one anyOf/oneOf branch (or if-FAIL-then) binding verdict to FAIL with findings type:array+minItems>=1 in the SAME branch object; supervisor one anyOf/oneOf/allOf branch (or if-SAFE-then) binding finalizationSafety to SAFE with unresolved and missingEvidence type:array+maxItems===0 in the SAME branch object. A bare `{minItems:1}` without type:array, a `{minLength:1}` without type:string, or a constraint on an unrelated path fails. Residuals (not faked): the reviewer critical/high-severity to not-SAFE implication has no honest object-graph encoding here and is NOT asserted; full conditional-implication semantics (READY/SAFE/FAIL constraining every conforming payload) are approximated by same-branch presence, not proven; unconditional (non-READY-tied) spec shapes and single-field explorer shapes are accepted as fail-closed enforcement though stricter than zod (they may reject payloads zod accepts — a completeness cost, not a soundness hole).",
-  "L1-F command binding is proven behaviorally: the built verifier is called with (a) the matching command digest (must verify ok, no COMMAND_MISMATCH), (b) a well-formed different digest (must return ok:false with a COMMAND_MISMATCH blocker), (c) undefined and malformed digests (each must return ok:false with a COMMAND_MISMATCH fail-closed blocker). A verifier ignoring its expected-command parameter returns ok for (b)/(c) and cannot pass. The probe uses a synthetic candidate-bound document (artifacts:[], directory-correct artifact path); a full persist-to-load filesystem round-trip is a residual. Consumer call-site threading (each in-repo verify/require* call's own parens binding a command digest value) is conjoined statically: it proves threading shape, not runtime value correctness. Structural-fallback residuals (dist-unavailable mode only): single-line compound comparisons mentioning both sides without relating them, aliasing, re-exports, wrapper indirection, and non-sha256 digest spellings are not traced.",
+  "L1-E asserts exact object-graph bindings, never token co-occurrence: planner required workUnits with properties.workUnits type=array AND minItems>=1; explorer either a known evidence array required and bound to type=array+minItems>=1 at top level or an anyOf/oneOf whose EVERY branch requires and binds >=1 known evidence array path to type=array+minItems>=1 with no vacuous branch (unrelated disjunctions fail); spec top-level required artifacts plus an artifacts node whose required includes proposal+tasks with both typed type:string+minLength>=1 (unconditional, allOf branch, READY-tied anyOf/oneOf branch, or if-READY-then); reviewer required verdict with top-level properties.verdict type:string AND one anyOf/oneOf branch (or if-FAIL-then) binding verdict to FAIL with findings type:array+minItems>=1 in the SAME branch object while every anyOf/oneOf branch rejects FAIL-with-empty-findings (a qualifying branch paired with a vacuous {} fails); supervisor required finalizationSafety with one anyOf/oneOf/allOf branch (or if-SAFE-then) binding finalizationSafety to SAFE with unresolved and missingEvidence type:array+maxItems===0 in the SAME branch object while every anyOf/oneOf branch rejects SAFE-with-pending-items. A bare `{minItems:1}` without type:array, a `{minLength:1}` without type:string, an omittable (unrequired) constrained property, a missing parent artifacts, or a constraint on an unrelated path all fail. Residuals (not faked): the reviewer critical/high-severity to not-SAFE implication has no honest object-graph encoding here and is NOT asserted; full conditional-implication semantics (READY/SAFE/FAIL constraining every conforming payload) are approximated by same-branch presence, not proven; unconditional (non-READY-tied) spec shapes and single-field explorer shapes are accepted as fail-closed enforcement though stricter than zod (they may reject payloads zod accepts — a completeness cost, not a soundness hole).",
+  "L1-F command binding is proven behaviorally: the built verifier is called with (a) the matching command digest (must verify ok, no COMMAND_MISMATCH), (b) a well-formed different digest (must return ok:false with a COMMAND_MISMATCH blocker), (c) undefined and malformed digests (each must return ok:false with a COMMAND_MISMATCH fail-closed blocker). A verifier ignoring its expected-command parameter returns ok for (b)/(c) and cannot pass. The probe uses a synthetic candidate-bound document (artifacts:[], directory-correct artifact path); a full persist-to-load filesystem round-trip is a residual. Consumer call-site threading (each in-repo verify/require* call's own parens binding a command digest value) is conjoined statically: it proves threading shape, not runtime value correctness. Without a bound dist/ snapshot L1-F fails closed: the structural text shape (same-expression comparison + in-parens threading) is reported as advisory evidence only and never passes the gate. Structural-fallback residuals (advisory mode only): single-line compound comparisons mentioning both sides without relating them, aliasing, re-exports, wrapper indirection, and non-sha256 digest spellings are not traced.",
   "L1-G compares catalog values against the union of capabilityAdapter keys and capabilityForAdapter returns; provider-side registries (src/providers/validation/registry.ts) are out of scope.",
   "No backward-compatibility shims: unparsable inputs fail the affected check closed with a parse note instead of being silently accepted.",
 ];
 
 /**
+ * Pure STALE_DIST binder: decide whether a dist/ release identity belongs to
+ * the inspected source tree. `identity` is the release's build-identity.json
+ * ({ packageVersion, gitSha, releaseId, buildDigest, dirty }); `source` is
+ * { packageVersion, gitSha, dirty } observed from the inspected root.
+ * Returns null when bound, otherwise { reason } naming every mismatch. A
+ * version or commit mismatch, a build recorded dirty, or an unresolvable
+ * source identity all refuse the binding — the gate must fail closed rather
+ * than assert parity/probe behavior against another tree's snapshot.
+ */
+export function checkDistBindsSource(identity, source) {
+  if (!identity || typeof identity !== "object") return { reason: "dist build-identity.json is missing or unparsable" };
+  if (!source || typeof source.packageVersion !== "string") return { reason: "source build identity is unresolvable (package.json unreadable)" };
+  const mismatches = [];
+  if (identity.packageVersion !== source.packageVersion) {
+    mismatches.push(`packageVersion dist=${identity.packageVersion} source=${source.packageVersion}`);
+  }
+  if (typeof identity.gitSha === "string" && identity.gitSha !== "unknown" && typeof source.gitSha === "string" && source.gitSha) {
+    if (identity.gitSha !== source.gitSha) mismatches.push(`gitSha dist=${identity.gitSha} source=${source.gitSha}`);
+  } else {
+    mismatches.push("gitSha binding unavailable (unknown dist sha or unresolvable source HEAD)");
+  }
+  if (identity.dirty === true) mismatches.push("dist snapshot was built from a dirty tree");
+  if (source.dirty === true) mismatches.push("inspected source tree is dirty relative to HEAD");
+  if (mismatches.length) return { reason: mismatches.join("; ") };
+  return null;
+}
+
+/**
+ * Best-effort HEAD SHA of the inspected root. Reads .git/HEAD directly
+ * (plain checkouts); worktrees keep a `.git` FILE, so fall back to
+ * `git rev-parse HEAD`. Returns "" when unresolvable — the binder then
+ * refuses the binding explicitly instead of trusting the snapshot.
+ */
+async function readSourceHeadSha(root) {
+  try {
+    const dotGit = path.join(root, ".git");
+    if (fs.statSync(dotGit).isDirectory()) {
+      const head = fs.readFileSync(path.join(dotGit, "HEAD"), "utf8").trim();
+      const refMatch = head.match(/^ref:\s*(.+)$/);
+      if (refMatch) return fs.readFileSync(path.join(dotGit, refMatch[1]), "utf8").trim();
+      if (/^[a-f0-9]{40}$/i.test(head)) return head;
+    }
+  } catch {
+    // Fall through to git CLI.
+  }
+  try {
+    const { execFileSync } = await import("node:child_process");
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
+/** Best-effort dirty probe of the inspected root (tracked files only: untracked
+ *  worktree scaffolding such as symlinked node_modules must not force stale). */
+async function readSourceDirty(root) {
+  try {
+    const { execFileSync } = await import("node:child_process");
+    const out = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Load the dist/ DATA snapshot for the inspected root. Resolves
- * <root>/dist/current to a release id and dynamically imports the three
- * behavior-bearing modules (outputContracts, laneEvidence, digest). Returns
- * null when dist/ is unavailable or unimportable — callers fail E closed and
- * run F's structural fallback, both explicitly marked. Never throws.
+ * <root>/dist/current to a release id, binds the release's build-identity to
+ * the inspected source tree (packageVersion + git HEAD; dirty on either side
+ * refuses), and dynamically imports the three behavior-bearing modules
+ * (outputContracts, laneEvidence, digest). Returns null when dist/ is
+ * unavailable or unimportable — callers fail E closed and fail F closed, both
+ * explicitly marked. Returns { releaseId, staleDist } (with no modules) when
+ * the snapshot binds to a DIFFERENT source tree — callers fail E/F closed
+ * with the explicit STALE_DIST reason instead of trusting another tree's
+ * snapshot. Never throws.
  */
 export async function loadDistForRoot(root) {
   try {
@@ -1538,6 +1830,27 @@ export async function loadDistForRoot(root) {
     const releaseId = fs.readFileSync(pointerPath, "utf8").trim();
     if (!/^[A-Za-z0-9._-]+$/.test(releaseId)) return null;
     const releaseDir = path.join(root, "dist", "releases", releaseId);
+    let identity = null;
+    try {
+      identity = JSON.parse(fs.readFileSync(path.join(releaseDir, "build-identity.json"), "utf8"));
+    } catch {
+      return null;
+    }
+    let sourceVersion = null;
+    try {
+      sourceVersion = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version ?? null;
+    } catch {
+      sourceVersion = null;
+    }
+    const sourceSha = await readSourceHeadSha(root);
+    const sourceDirty = await readSourceDirty(root);
+    const stale = checkDistBindsSource(identity, { packageVersion: sourceVersion, gitSha: sourceSha, dirty: sourceDirty });
+    if (stale) {
+      return {
+        releaseId,
+        staleDist: { releaseId, reason: stale.reason, identity, source: { packageVersion: sourceVersion, gitSha: sourceSha || null, dirty: sourceDirty } },
+      };
+    }
     const [contracts, lane, digest] = await Promise.all([
       import(pathToFileURL(path.join(releaseDir, "agents", "outputContracts.js")).href),
       import(pathToFileURL(path.join(releaseDir, "validation", "laneEvidence.js")).href),
@@ -1553,15 +1866,104 @@ export async function loadDistForRoot(root) {
     ) {
       return null;
     }
-    return { releaseId, contracts, lane, digest };
+    return { releaseId, contracts, lane, digest, buildIdentity: identity };
   } catch {
     return null;
   }
 }
 
+/**
+ * Resolve the ACTIVE agent topology for the inspected root (consumer-aware).
+ * The old loader read presets/agents/default.jsonc alone, which false-REDed
+ * real checkouts two ways: it missed the unioned `skillRoots skills/` from
+ * the consumer overlay (.harness/agents.source.jsonc extends
+ * aeh:orchestration → aeh:default, unioning ["skills"] over the preset
+ * [".harness/skills", ".agents/skills", ".opencode/skills"]), and it checked
+ * preset agents/runtimes/models instead of the composed consumer layer. This
+ * mirrors loadComposedLayer/composeAgentTopologyLayers (config.ts:39-77) for
+ * the preflight-relevant subset: extends-chain resolution (aeh:default,
+ * aeh:orchestration, relative paths), skillRoots UNION, and per-key
+ * agent/runtime/model merges with execution-map merging. Profile overrides
+ * are out of scope (base agents govern the checked ceilings). Falls back to
+ * presets/agents/default.jsonc when no consumer source exists. Never throws:
+ * returns { topology, notes } with parse failures as notes (fail-closed
+ * downstream via empty topology + note).
+ */
+export function resolveConsumerTopology(root) {
+  const notes = [];
+  const readLayer = (abs) => parseJsonc(fs.readFileSync(abs, "utf8"));
+  const resolveExtension = (extension, fromDirectory) => {
+    if (extension === "aeh:default") return path.join(root, "presets", "agents", "default.jsonc");
+    if (extension === "aeh:orchestration") return path.join(root, "presets", "agents", "orchestration.jsonc");
+    if (extension.startsWith("aeh:")) throw new Error(`Unknown built-in agent topology preset ${extension}.`);
+    return path.isAbsolute(extension) ? extension : path.resolve(fromDirectory, extension);
+  };
+  const union = (base, overlay) => [...new Set([...(base ?? []), ...(overlay ?? [])])];
+  const mergeRecord = (base, overlay, merger) => {
+    if (!base && !overlay) return undefined;
+    const result = { ...(base ?? {}) };
+    for (const [name, value] of Object.entries(overlay ?? {})) result[name] = merger(result[name], value);
+    return result;
+  };
+  const mergeAgent = (base, overlay) => ({
+    ...(base ?? {}),
+    ...overlay,
+    execution: { ...((base ?? {}).execution ?? {}), ...((overlay ?? {}).execution ?? {}) },
+    permissions: { ...((base ?? {}).permissions ?? {}), ...((overlay ?? {}).permissions ?? {}) },
+  });
+  const shallowMerge = (base, overlay) => ({ ...(base ?? {}), ...overlay });
+  const compose = (base, overlay) => ({
+    version: 1,
+    skillRoots: union(base.skillRoots, overlay.skillRoots),
+    runtimes: mergeRecord(base.runtimes, overlay.runtimes, shallowMerge),
+    models: mergeRecord(base.models, overlay.models, shallowMerge),
+    agents: mergeRecord(base.agents, overlay.agents, mergeAgent),
+    routing: [...(base.routing ?? []), ...(overlay.routing ?? [])],
+  });
+  const loadComposed = (file, stack) => {
+    const absolute = path.resolve(file);
+    if (stack.has(absolute)) throw new Error(`Circular agent topology extension detected at ${absolute}.`);
+    const next = new Set(stack);
+    next.add(absolute);
+    const layer = readLayer(absolute);
+    let composed = { version: 1 };
+    for (const extension of layer.extends ?? []) {
+      composed = compose(composed, loadComposed(resolveExtension(extension, path.dirname(absolute)), next));
+    }
+    const { extends: _extends, ...rest } = layer;
+    return compose(composed, rest);
+  };
+  const consumerFile = path.join(root, ".harness", "agents.source.jsonc");
+  try {
+    if (fs.statSync(consumerFile).isFile()) {
+      const topology = loadComposed(consumerFile, new Set());
+      return { topology, notes };
+    }
+  } catch (error) {
+    notes.push(`agent topology composition failed (${String((error && error.message) || error)}); falling back to presets/agents/default.jsonc.`);
+  }
+  try {
+    const preset = parseJsonc(fs.readFileSync(path.join(root, "presets", "agents", "default.jsonc"), "utf8"));
+    return {
+      topology: {
+        version: 1,
+        skillRoots: preset.skillRoots,
+        runtimes: preset.runtimes,
+        models: preset.models,
+        agents: preset.agents,
+        routing: preset.routing,
+      },
+      notes,
+    };
+  } catch (error) {
+    notes.push(`presets/agents/default.jsonc unreadable (${String((error && error.message) || error)}).`);
+    return { topology: { version: 1 }, notes };
+  }
+}
+
 /** Load real-tree inputs and evaluate. Throws with a clear message on missing files. */
 export async function loadRealTreeInputs(root) {
-  const preset = parseJsonc(readText(root, "presets/agents/default.jsonc"));
+  const { topology, notes: topologyNotes } = resolveConsumerTopology(root);
   const rolesSource = readText(root, "src/participants/roles.ts");
   const skillsSource = readText(root, "src/participants/skills.ts");
   const { roles, parseNotes: roleNotes } = parseRolesProfiles(rolesSource);
@@ -1592,8 +1994,9 @@ export async function loadRealTreeInputs(root) {
   let schemas;
   let wireLive;
   let laneBehavioral;
+  let distStale = null;
   let distNote;
-  if (dist) {
+  if (dist && !dist.staleDist) {
     const names = ["planner", "explorer", "spec-authoring", "reviewer", "supervisor"];
     schemas = {};
     for (const name of names) {
@@ -1614,33 +2017,42 @@ export async function loadRealTreeInputs(root) {
       root,
       config: {},
     };
-    distNote = `dist: release snapshot ${dist.releaseId} loaded for object-graph (L1-E) and behavioral (L1-F) probes.`;
+    distNote = `dist: release snapshot ${dist.releaseId} bound to the inspected source tree (build-identity match) for object-graph (L1-E) and behavioral (L1-F) probes.`;
   } else {
     schemas = undefined;
     wireLive = undefined;
     laneBehavioral = undefined;
-    distNote = "dist: snapshot unavailable — L1-E fails closed with distAvailable:false and L1-F runs the explicitly-marked structural fallback (no source-text parity fallback is attempted).";
+    if (dist?.staleDist) {
+      distStale = dist.staleDist;
+      distNote = `dist: STALE_DIST — release snapshot ${dist.releaseId} is bound to a different source tree (${dist.staleDist.reason}); refusing it. L1-E fails closed with distAvailable:false and L1-F fails closed (no source-text parity fallback is attempted).`;
+    } else {
+      distNote = "dist: snapshot unavailable — L1-E fails closed with distAvailable:false and L1-F fails closed (no source-text parity fallback is attempted).";
+    }
   }
   return {
     fx: {
-      agents: preset.agents ?? {},
-      skillRoots: preset.skillRoots ?? [".harness/skills"],
-      routing: preset.routing ?? [],
+      agents: topology.agents ?? {},
+      skillRoots: topology.skillRoots ?? [".harness/skills"],
+      routing: topology.routing ?? [],
+      runtimes: topology.runtimes ?? {},
+      models: topology.models ?? {},
       roles,
       skillSeed: seed,
       permissionsSource: readText(root, "src/agents/permissions.ts"),
       schemas,
       wireLive,
+      distStale,
       laneSource,
       callSites,
       laneBehavioral,
+      distStaleForLane: distStale,
       catalogSource: readText(root, "src/validation/capabilityCatalog.ts"),
       registrySource: readText(root, "src/validators/registry.ts"),
       dirExists,
       fileExists,
       mcpConfigured,
     },
-    parseNotes: [...roleNotes, ...seedNotes],
+    parseNotes: [...roleNotes, ...seedNotes, ...topologyNotes],
     distNote,
   };
 }

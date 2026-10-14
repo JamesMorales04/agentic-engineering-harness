@@ -6,6 +6,7 @@ import {
   EXPLORER_KNOWN_EVIDENCE_ARRAYS,
   LANE_COMMAND_MISMATCH_MARKER,
   checkAdapterCoverage,
+  checkDistBindsSource,
   checkLaneCommandBinding,
   checkLaneCommandBindingWithBehavioral,
   checkMcpFailClosed,
@@ -23,6 +24,7 @@ import {
   parseVerifyCommandParam,
   probeLaneCommandBindingBehavioral,
   probeWireLiveness,
+  resolveConsumerTopology,
 } from "../scripts/preflightL1.mjs";
 
 // Mechanism classification: DETERMINISTIC. Every fixture below is an
@@ -151,6 +153,7 @@ function compliantSchemas(): Record<string, any> {
   return {
     planner: {
       type: "object",
+      required: ["workUnits", "affectedAreas", "reviewDimensions", "validationRequirements", "outOfScopeImprovements"],
       properties: { workUnits: { type: "array", minItems: 1, items: { type: "object" } } },
     },
     explorer: {
@@ -166,11 +169,13 @@ function compliantSchemas(): Record<string, any> {
         openQuestions: { type: "array", items: { type: "string" } },
       },
       anyOf: EXPLORER_KNOWN_EVIDENCE_ARRAYS.map((field) => ({
+        required: [field],
         properties: { [field]: { type: "array", minItems: 1 } },
       })),
     },
     "spec-authoring": {
       type: "object",
+      required: ["change", "status", "artifacts", "requirements", "unresolvedDecisions", "decisionRequests", "validationReady"],
       properties: {
         status: { enum: ["READY", "BLOCKED"] },
         artifacts: {
@@ -186,16 +191,18 @@ function compliantSchemas(): Record<string, any> {
     },
     reviewer: {
       type: "object",
+      required: ["verdict", "findings", "finalizationSafety", "followUp"],
       properties: {
         verdict: { type: "string", enum: ["PASS", "FAIL", "PASS_WITH_WARNINGS"] },
         findings: { type: "array", items: { type: "object" } },
         finalizationSafety: { enum: ["SAFE", "BLOCKED", "RISK_KNOWN"] },
         followUp: { type: "array" },
       },
-      anyOf: [{ properties: { verdict: { const: "FAIL" }, findings: { type: "array", minItems: 1 } } }],
+      anyOf: [{ required: ["verdict", "findings"], properties: { verdict: { const: "FAIL" }, findings: { type: "array", minItems: 1 } } }],
     },
     supervisor: {
       type: "object",
+      required: ["summary", "consolidatedFindings", "sourceFindingIds", "conflicts", "missingEvidence", "unresolved", "finalizationSafety"],
       properties: {
         summary: { type: "string" },
         unresolved: { type: "array", items: { type: "string" } },
@@ -204,6 +211,7 @@ function compliantSchemas(): Record<string, any> {
       },
       anyOf: [
         {
+          required: ["finalizationSafety", "unresolved", "missingEvidence"],
           properties: {
             finalizationSafety: { const: "SAFE" },
             unresolved: { type: "array", maxItems: 0 },
@@ -296,6 +304,8 @@ function compliantFixture(): any {
     agents: compliantAgents(),
     skillRoots: ["skills"],
     routing: [{ id: "r1", select: { role: "Reviewer", specializations: ["cross-cutting"] } }],
+    runtimes: {},
+    models: {},
     roles: compliantRoles(),
     skillSeed: compliantSeed(),
     permissionsSource: COMPLIANT_PERMISSIONS_SOURCE,
@@ -486,9 +496,9 @@ function capabilityAdapter(capability: string): string | undefined {
 
   it("HIGH-1 FAILS L1-A1 when review/validate are granted above maxCapabilities (old token-check would PASS)", () => {
     const fx = compliantFixture();
-    // Planner maxCapabilities ["read","plan","validate"]: no review.
+    // Planner fixture maxCapabilities ["read","plan","validate"]: no review.
     fx.agents.planner.permissions = { ...fx.agents.planner.permissions, review: "allow" };
-    // Compliant Lead maxCapabilities lack validate: ["read","plan","review","supervise","delegate"].
+    // Lead fixture maxCapabilities lack validate: ["read","plan","review","supervise","delegate"].
     fx.agents.lead.permissions = { ...fx.agents.lead.permissions, validate: "allow" };
     const check = checkPermissionCeiling(fx.agents, fx.roles);
     expect(check.id).toBe("L1-A1-PERMISSION-CEILING");
@@ -643,13 +653,17 @@ export async function verifyProviderLaneEvidenceV1(root, config, evidence, expec
   it("locks the real-tree parsers to the verified campaign evidence", () => {
     const repoRoot = path.resolve(__dirname, "..");
     const { roles } = parseRolesProfiles(fs.readFileSync(path.join(repoRoot, "src/participants/roles.ts"), "utf8"));
-    expect(roles["Operation Supervisor"].authority.canExecute).toBe(true);
+    // Post preset-ceiling coherence (origin/main): Operation Supervisor lost
+    // command execution (canExecute false, command-execute forbidden).
+    expect(roles["Operation Supervisor"].authority.canExecute).toBe(false);
     expect(roles["Operation Supervisor"].toolPack.required.concat(roles["Operation Supervisor"].toolPack.optional)).not.toContain(
       "command-execute",
     );
-    expect(roles["Reviewer"].specializations).not.toContain("high-assurance");
+    // Post preset-ceiling coherence: high-assurance is a canonical Reviewer
+    // specialization (held by high-assurance-reviewer), not an unknown one.
+    expect(roles["Reviewer"].specializations).toContain("high-assurance");
     const { seed } = parseSkillSeed(fs.readFileSync(path.join(repoRoot, "src/participants/skills.ts"), "utf8"));
-    expect(seed["acceptance-traceability"].roles).toEqual(["Spec Manager"]);
+    expect(seed["acceptance-traceability"].roles).toEqual(["Spec Manager", "Reviewer"]);
     expect(seed["operation-coordination"].roles).toEqual(["Operation Supervisor"]);
   });
 
@@ -878,5 +892,200 @@ export async function verifyProviderLaneEvidenceV1(root, config, evidence, expec
     const check = checkNonparticipantConstraints(masked);
     expect(check.status).toBe("FAIL");
     expect(check.evidence.violations.some((v: any) => String(v.reason).includes("execution runtime arguments"))).toBe(true);
+  });
+
+  it("H1-PLANNER FAILS L1-E when the typed workUnits constraint is omittable (required omits it)", () => {
+    // Old plannerWireHolds passed any properties.workUnits with type:array +
+    // minItems>=1. A schema that omits workUnits from required lets a payload
+    // drop the property while the zod gate rejects [] — vacuous wire parity.
+    const schemas = compliantSchemas();
+    (schemas.planner as any).required = ["affectedAreas"];
+    const check = checkWireParity(schemas, undefined);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.missing).toEqual(["planner-nonvacuous"]);
+  });
+
+  it("H1-EXPLORER FAILS L1-E when branches bind evidence arrays the payload may omit (required omits them)", () => {
+    // Old explorerWireHolds passed branches carrying type:array+minItems>=1
+    // without required-membership. A payload omitting the array takes the
+    // branch while every evidence array stays empty.
+    const schemas = compliantSchemas();
+    (schemas.explorer as any).anyOf = EXPLORER_KNOWN_EVIDENCE_ARRAYS.map((field) => ({
+      properties: { [field]: { type: "array", minItems: 1 } },
+    }));
+    const check = checkWireParity(schemas, undefined);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.missing).toEqual(["explorer-nonvacuous"]);
+  });
+
+  it("H1-SPEC FAILS L1-E when the parent artifacts object is omittable (top required omits it)", () => {
+    // Old specWireHolds passed an artifacts node carrying the
+    // required+typed proposal/tasks pair even when a READY payload could omit
+    // the parent artifacts object entirely.
+    const schemas = compliantSchemas();
+    (schemas["spec-authoring"] as any).required = ["change", "status"];
+    const check = checkWireParity(schemas, undefined);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.missing).toEqual(["spec-ready-artifacts"]);
+  });
+
+  it("H1-REVIEWER FAILS L1-E when a qualifying branch is paired with a vacuous {} alternative", () => {
+    // Old reviewerWireHolds passed when ANY anyOf branch qualified. A FAIL
+    // payload with empty findings takes the vacuous {} branch instead.
+    const schemas = compliantSchemas();
+    (schemas.reviewer as any).anyOf = [
+      { required: ["verdict", "findings"], properties: { verdict: { const: "FAIL" }, findings: { type: "array", minItems: 1 } } },
+      {},
+    ];
+    const check = checkWireParity(schemas, undefined);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.missing).toEqual(["reviewer-coherence"]);
+  });
+
+  it("H1-SUPERVISOR FAILS L1-E when a qualifying branch is paired with a vacuous {} alternative", () => {
+    // Old supervisorWireHolds passed when ANY anyOf branch qualified. A SAFE
+    // payload with pending unresolved items takes the vacuous {} branch.
+    const schemas = compliantSchemas();
+    (schemas.supervisor as any).anyOf = [
+      {
+        required: ["finalizationSafety", "unresolved", "missingEvidence"],
+        properties: {
+          finalizationSafety: { const: "SAFE" },
+          unresolved: { type: "array", maxItems: 0 },
+          missingEvidence: { type: "array", maxItems: 0 },
+        },
+      },
+      {},
+    ];
+    const check = checkWireParity(schemas, undefined);
+    expect(check.id).toBe("L1-E-WIRE-PARITY");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.missing).toEqual(["supervisor-coherence"]);
+  });
+
+  it("H2 STALE_DIST refuses a dist snapshot bound to a different source tree", () => {
+    const bound = checkDistBindsSource(
+      { packageVersion: "0.25.8", gitSha: "a".repeat(40), releaseId: "r", buildDigest: "b".repeat(64), dirty: false },
+      { packageVersion: "0.25.8", gitSha: "a".repeat(40), dirty: false },
+    );
+    expect(bound).toBeNull();
+    const versionMismatch = checkDistBindsSource(
+      { packageVersion: "0.25.6", gitSha: "a".repeat(40), dirty: false },
+      { packageVersion: "0.25.8", gitSha: "a".repeat(40), dirty: false },
+    );
+    expect(versionMismatch).toMatchObject({ reason: expect.stringContaining("packageVersion") });
+    const shaMismatch = checkDistBindsSource(
+      { packageVersion: "0.25.8", gitSha: "a".repeat(40), dirty: false },
+      { packageVersion: "0.25.8", gitSha: "c".repeat(40), dirty: false },
+    );
+    expect(shaMismatch).toMatchObject({ reason: expect.stringContaining("gitSha") });
+    const dirtyBuild = checkDistBindsSource(
+      { packageVersion: "0.25.8", gitSha: "a".repeat(40), dirty: true },
+      { packageVersion: "0.25.8", gitSha: "a".repeat(40), dirty: false },
+    );
+    expect(dirtyBuild).toMatchObject({ reason: expect.stringContaining("dirty") });
+    // A stale snapshot fails E closed with the explicit STALE_DIST reason.
+    const staleCheck = checkWireParity(undefined, undefined, { releaseId: "r", reason: "packageVersion dist=0.25.6 source=0.25.8" });
+    expect(staleCheck.status).toBe("FAIL");
+    expect(staleCheck.evidence.distAvailable).toBe(false);
+    expect(staleCheck.evidence.staleDist.reason).toContain("packageVersion");
+    expect(String(staleCheck.evidence.reason)).toContain("STALE_DIST");
+  });
+
+  it("M1-A2 accepts non-seed filesystem skills per the compiler registry split, failing only skills in neither registry", () => {
+    // Compiler semantics (compiler.ts:74-78): seed skills are ceiling-checked,
+    // non-seed OpenCode skills resolve via <skillRoot>/<id>/SKILL.md.
+    const agents = { lead: { role: "Lead/Director", skills: ["engineering-workflow", "ghost-skill"] } };
+    const seed = { "human-exception-handling": { id: "human-exception-handling", roles: ["Lead/Director"] } };
+    const check = checkSkillRoleFit(agents, seed, ["skills"], (rel) => rel === "skills/engineering-workflow/SKILL.md");
+    expect(check.id).toBe("L1-A2-SKILL-ROLE-FIT");
+    expect(check.status).toBe("FAIL");
+    expect(check.evidence.violations).toMatchObject([{ agent: "lead", skill: "ghost-skill" }]);
+    // Without a filesystem probe, non-seed skills fail closed as unknown.
+    expect(checkSkillRoleFit(agents, seed).evidence.violations.map((v: any) => v.skill).sort()).toEqual([
+      "engineering-workflow",
+      "ghost-skill",
+    ]);
+  });
+  it("M1 C1 tolerates a partially materialized skillRoot union (compiler semantics) and resolves the consumer overlay", () => {
+    // The runtime compiler probes every root and fails only when NO root
+    // resolves: a unioned topology with one materialized root passes.
+    expect(checkSkillRootsExist(["skills", ".harness/skills"], (rel) => rel === "skills").status).toBe("PASS");
+    expect(checkSkillRootsExist(["skills", ".harness/skills"], () => false).status).toBe("FAIL");
+    expect(checkSkillRootsExist(["skills", ".harness/skills"], () => false).evidence.missing).toEqual(["skills", ".harness/skills"]);
+    // Consumer-aware loader: the .harness overlay unions skills/ over the
+    // preset roots instead of checking presets/agents/default.jsonc alone.
+    const repoRoot = path.resolve(__dirname, "..");
+    const { topology } = resolveConsumerTopology(repoRoot);
+    expect(topology.skillRoots).toContain("skills");
+    expect(topology.skillRoots).toContain(".harness/skills");
+    expect(topology.agents?.["harness-reviewer"]).toBeDefined();
+  });
+
+  it("M2-A3 FAILS on runtime defaultArgs merged into selection.args (routing.ts:8)", () => {
+    const denyAll = {
+      read: "deny",
+      write: "deny",
+      shell: "deny",
+      network: "deny",
+      delegate: "deny",
+      review: "deny",
+      validate: "deny",
+      gitWrite: "deny",
+    };
+    const runtimes = { codex: { name: "codex", adapter: "codex", defaultArgs: ["--sandbox"] } };
+    const models = { "structured-assessor": { alias: "structured-assessor", runtime: "codex" } };
+    const viaAlias = {
+      "semantic-assessor": {
+        role: "Semantic Assessor",
+        skills: [],
+        mcps: [],
+        permissions: denyAll,
+        args: [],
+        execution: { model: "@structured-assessor", transport: "paseo" },
+      },
+    };
+    const aliasCheck = checkNonparticipantConstraints(viaAlias, runtimes, models);
+    expect(aliasCheck.status).toBe("FAIL");
+    expect(aliasCheck.evidence.violations.some((v: any) => String(v.reason).includes("defaultArgs"))).toBe(true);
+    // Direct execution.runtime resolution reports the same violation.
+    const viaDirect = {
+      "semantic-assessor": {
+        role: "Semantic Assessor",
+        skills: [],
+        mcps: [],
+        permissions: denyAll,
+        execution: { model: "@structured-assessor", runtime: "codex", transport: "paseo" },
+      },
+    };
+    expect(checkNonparticipantConstraints(viaDirect, runtimes, {}).status).toBe("FAIL");
+    // A runtime without defaultArgs still passes.
+    expect(checkNonparticipantConstraints(viaAlias, { codex: { name: "codex", adapter: "codex" } }, models).status).toBe("PASS");
+  });
+
+  it("M3 F FAILS closed without a bound dist snapshot (structural shape is advisory only)", async () => {
+    // Even a compliant-looking source cannot pass without the behavioral
+    // consumption proof: the text fallback is not the enforcement.
+    const closed = await checkLaneCommandBindingWithBehavioral({
+      laneSource: COMPLIANT_LANE_SOURCE,
+      callSites: COMPLIANT_CALL_SITES,
+    });
+    expect(closed.id).toBe("L1-F-LANE-COMMAND-BINDING");
+    expect(closed.status).toBe("FAIL");
+    expect(closed.evidence.distAvailable).toBe(false);
+    expect(closed.evidence.structuralAdvisory.verifyComparesCommandDigest).toBe(true);
+    // evaluateAll without laneBehavioral fails F closed while other checks pass.
+    const fx = compliantFixture();
+    delete (fx as any).laneBehavioral;
+    const checks = await evaluateAll(fx);
+    const lane = checks.find((c) => c.id === "L1-F-LANE-COMMAND-BINDING");
+    expect(lane?.status).toBe("FAIL");
+    expect((lane?.evidence as any).distAvailable).toBe(false);
+    const wire = checks.find((c) => c.id === "L1-E-WIRE-PARITY");
+    expect(wire?.status).toBe("PASS");
   });
 });
