@@ -358,6 +358,89 @@ function selectReviewers(eligible: readonly EligibleReviewerV1[], count: number,
   return { selected: [], blockers: [`INDEPENDENT_REVIEW_UNSATISFIED: independent reviewer assignments require ${count} eligible configured Reviewer candidate(s) but only ${eligible.length} are available.`] };
 }
 
+/**
+ * DETERMINISTIC bound for the exact covering-set search below. Reviewer
+ * candidate pools are operationally tiny; beyond this cap the search would
+ * risk exponential blowup, so compilation BLOCKS with an explicit
+ * too-large-pool blocker (never silent greedy, never unbounded search).
+ * Mechanism: DETERMINISTIC.
+ */
+const REVIEWER_COVER_SEARCH_POOL_CAP = 16 as const;
+
+function coveringSubsetSatisfiesDiversity(subset: readonly EligibleReviewerV1[], providerDiversity: boolean): boolean {
+  if (!providerDiversity) return true;
+  const providers = subset.map((reviewer) => reviewer.provider);
+  if (providers.some((provider) => !provider)) return false;
+  return new Set(providers).size === subset.length;
+}
+
+function coveringSubsetCoversAll(subset: readonly EligibleReviewerV1[], required: readonly string[]): boolean {
+  return required.every((spec) => subset.some((reviewer) => specializationSatisfies(reviewer.specializations, [spec])));
+}
+
+/**
+ * DETERMINISTIC exact covering-set probe: the first subset of exactly `size`
+ * (eligible is sorted-identity order; combinations enumerated in
+ * lexicographic index order) whose union covers ALL required specs AND
+ * satisfies the distinct-provider rule. Returns undefined when no such
+ * subset exists at this size. Mechanism: DETERMINISTIC.
+ */
+function findCoveringSubsetOfSize(
+  eligible: readonly EligibleReviewerV1[],
+  required: readonly string[],
+  size: number,
+  providerDiversity: boolean
+): EligibleReviewerV1[] | undefined {
+  const total = eligible.length;
+  if (size <= 0 || size > total) return undefined;
+  const indices = Array.from({ length: size }, (_, position) => position);
+  for (;;) {
+    const subset = indices.map((index) => eligible[index]!);
+    if (coveringSubsetCoversAll(subset, required) && coveringSubsetSatisfiesDiversity(subset, providerDiversity)) return [...subset];
+    let pivot = -1;
+    for (let position = size - 1; position >= 0; position -= 1) {
+      if (indices[position]! < total - size + position) {
+        pivot = position;
+        break;
+      }
+    }
+    if (pivot === -1) return undefined;
+    indices[pivot]! += 1;
+    for (let position = pivot + 1; position < size; position += 1) indices[position] = indices[position - 1]! + 1;
+  }
+}
+
+/**
+ * DETERMINISTIC best-effort diagnostic for the no-cover case: among ALL
+ * diverse subsets (bounded by REVIEWER_COVER_SEARCH_POOL_CAP), the one
+ * covering the most required specs (tie-break: smallest size, then
+ * lexicographic order). The uncovered remainder names the blocker.
+ * Mechanism: DETERMINISTIC.
+ */
+function uncoveredSpecsForNoDiverseCover(
+  eligible: readonly EligibleReviewerV1[],
+  required: readonly string[],
+  providerDiversity: boolean
+): string[] {
+  let bestCovered: string[] = [];
+  let bestSize = Number.MAX_SAFE_INTEGER;
+  const total = eligible.length;
+  const maxMask = 1 << total;
+  for (let mask = 1; mask < maxMask; mask += 1) {
+    const subset: EligibleReviewerV1[] = [];
+    for (let index = 0; index < total; index += 1) if (mask & (1 << index)) subset.push(eligible[index]!);
+    if (!coveringSubsetSatisfiesDiversity(subset, providerDiversity)) continue;
+    const covered = required.filter((spec) => subset.some((reviewer) => specializationSatisfies(reviewer.specializations, [spec])));
+    if (covered.length > bestCovered.length || (covered.length === bestCovered.length && subset.length < bestSize)) {
+      bestCovered = covered;
+      bestSize = subset.length;
+    }
+  }
+  const coveredSet = new Set(bestCovered);
+  const uncovered = required.filter((spec) => !coveredSet.has(spec));
+  return uncovered.length ? uncovered : [...required];
+}
+
 function cloneRequirement(requirement: ValidationRequirementV1): ValidationRequirementV1 {
   return {
     ...requirement,
@@ -421,13 +504,23 @@ export function compileCandidateAssuranceV1(input: CandidateAssuranceInputV1): C
   // typescript-node]), every base-eligible candidate is checked: each required
   // specialization must have >=1 holder, otherwise the compilation is BLOCKED
   // naming the missing specialization with NO reviewer assigned. When all
-  // required are present, only holders are selectable, the assigned reviewer
-  // SET must collectively cover ALL required specializations (minimum counts
-  // are lower bounds, not targets: additional holders are assigned until the
-  // union covers every required spec), and each assignment records its
-  // satisfied subset for the review turn. If the eligible pool cannot
-  // collectively cover (e.g. distinct-provider constraint), BLOCKED naming the
-  // uncovered specs with NO under-covered READY. Mechanism: DETERMINISTIC.
+  // required are present, only holders are selectable and the assigned reviewer
+  // SET is the FIRST exact covering set in deterministic (sorted-identity,
+  // increasing-size from max(minimum,1)) order whose union covers ALL required
+  // specs AND satisfies the distinct-provider rule; exactly that set is
+  // assigned with each assignment recording its satisfied subset for the
+  // review turn. If no subset covers, BLOCKED naming the uncovered specs with
+  // NO under-covered READY.
+  //
+  // Minimum-vs-coverage rule (explicit): minimum is the policy floor for
+  // reviewer COUNT. The search starts at max(minimum,1) so a covering set
+  // smaller than minimum is grown to the floor whenever a diverse covering
+  // superset exists. When coverage holds only below the floor (growth would
+  // break coverage or diversity), the smallest covering diverse set is KEPT
+  // (coverage is never silently dropped to satisfy count) and an explicit
+  // INDEPENDENT_REVIEW_UNDER_MINIMUM blocker is recorded; the AcceptanceOracle
+  // count check (VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT) then judges the
+  // under-minimum as defense-in-depth. Mechanism: DETERMINISTIC.
   const requiredReviewSpecializations = [...new Set(input.requiredReviewSpecializations ?? [])].sort();
   const baseEligible = eligibleReviewers(input, policy.providerDiversity);
   let eligibleForSelection = baseEligible;
@@ -440,27 +533,41 @@ export function compileCandidateAssuranceV1(input: CandidateAssuranceInputV1): C
       eligibleForSelection = baseEligible.filter((reviewer) => specializationSatisfies(reviewer.specializations, requiredReviewSpecializations));
     }
   }
-  const initialSelection = selectReviewers(eligibleForSelection, minimumIndependentReviewers, policy.providerDiversity);
-  let selectedReviewers: EligibleReviewerV1[] = [...initialSelection.selected];
-  const selectionBlockers: string[] = [...initialSelection.blockers];
-  if (!selectionBlockers.length && requiredReviewSpecializations.length && eligibleForSelection.length) {
-    const coversUncovered = (reviewer: EligibleReviewerV1, uncovered: readonly string[]): boolean =>
-      uncovered.some((spec) => specializationSatisfies(reviewer.specializations, [spec]));
-    let uncovered = requiredReviewSpecializations.filter((spec) => !selectedReviewers.some((reviewer) => specializationSatisfies(reviewer.specializations, [spec])));
-    if (uncovered.length) {
-      const selectedIds = new Set(selectedReviewers.map((reviewer) => `${reviewer.identity}\0${reviewer.provider}`));
-      const usedProviders = new Set(selectedReviewers.map((reviewer) => reviewer.provider));
-      for (const reviewer of eligibleForSelection) {
-        if (!uncovered.length) break;
-        if (selectedIds.has(`${reviewer.identity}\0${reviewer.provider}`)) continue;
-        if (!coversUncovered(reviewer, uncovered)) continue;
-        if (policy.providerDiversity && usedProviders.has(reviewer.provider)) continue;
-        selectedReviewers.push(reviewer);
-        selectedIds.add(`${reviewer.identity}\0${reviewer.provider}`);
-        usedProviders.add(reviewer.provider);
-        uncovered = requiredReviewSpecializations.filter((spec) => !selectedReviewers.some((candidate) => specializationSatisfies(candidate.specializations, [spec])));
+  let selectedReviewers: EligibleReviewerV1[] = [];
+  const selectionBlockers: string[] = [];
+  if (!requiredReviewSpecializations.length) {
+    const initialSelection = selectReviewers(eligibleForSelection, minimumIndependentReviewers, policy.providerDiversity);
+    selectedReviewers = [...initialSelection.selected];
+    selectionBlockers.push(...initialSelection.blockers);
+  } else if (!eligibleForSelection.length) {
+    const floorSelection = selectReviewers(eligibleForSelection, minimumIndependentReviewers, policy.providerDiversity);
+    selectionBlockers.push(...floorSelection.blockers);
+  } else if (eligibleForSelection.length > REVIEWER_COVER_SEARCH_POOL_CAP) {
+    selectionBlockers.push(
+      `REVIEWER_COVER_SEARCH_POOL_TOO_LARGE: route-required collective coverage search requires an exact covering set but the eligible holder pool (${eligibleForSelection.length}) exceeds the deterministic cap (${REVIEWER_COVER_SEARCH_POOL_CAP}) for required [${requiredReviewSpecializations.join(",")}]; no greedy fallback is allowed.`
+    );
+  } else {
+    const startSize = Math.max(minimumIndependentReviewers, 1);
+    let found: EligibleReviewerV1[] | undefined;
+    for (let size = startSize; size <= eligibleForSelection.length; size += 1) {
+      found = findCoveringSubsetOfSize(eligibleForSelection, requiredReviewSpecializations, size, policy.providerDiversity);
+      if (found) break;
+    }
+    if (found) {
+      selectedReviewers = found;
+    } else {
+      let smallerCover: EligibleReviewerV1[] | undefined;
+      for (let size = 1; size < startSize; size += 1) {
+        smallerCover = findCoveringSubsetOfSize(eligibleForSelection, requiredReviewSpecializations, size, policy.providerDiversity);
+        if (smallerCover) break;
       }
-      if (uncovered.length) {
+      if (smallerCover) {
+        selectedReviewers = smallerCover;
+        selectionBlockers.push(
+          `INDEPENDENT_REVIEW_UNDER_MINIMUM: route-required collective coverage holds ${smallerCover.length} reviewer(s) covering [${requiredReviewSpecializations.join(",")}] but the policy minimum requires ${minimumIndependentReviewers}; coverage is preserved (assigned: ${smallerCover.map((reviewer) => reviewer.identity).join(",")}) and the AcceptanceOracle count check judges the under-minimum.`
+        );
+      } else {
+        const uncovered = uncoveredSpecsForNoDiverseCover(eligibleForSelection, requiredReviewSpecializations, policy.providerDiversity);
         for (const spec of uncovered) selectionBlockers.push(`MISSING_REQUIRED_REVIEW_SPECIALIZATION: no enabled Reviewer with specialization '${spec}' is available for the route-required collective coverage (required: ${requiredReviewSpecializations.join(",")}; uncovered: ${uncovered.join(",")}; ${eligibleForSelection.length} eligible candidate(s)).`);
         selectedReviewers = [];
       }

@@ -370,4 +370,117 @@ describe("candidate impact assurance recompilation", () => {
     expect(union).toEqual(["high-assurance", "typescript-node"]);
     expect(result.reviewAssignments.length).toBeGreaterThanOrEqual(1);
   });
+
+  it("exact cover with provider diversity skips the greedy trap: a-high-a blocks but b-high-b + c-ts-a covers (Luna counterexample)", () => {
+    // DETERMINISTIC exact-cover regression (Luna REJECT): required
+    // [high-assurance, typescript-node], minimum 1, diversity ENABLED,
+    // candidates in identity order a-high-a (A, high), b-high-b (B, high),
+    // c-ts-a (A, ts). Greedy takes a-high-a then BLOCKS on c-ts-a (provider A
+    // used), yet b-high-b + c-ts-a covers both with distinct providers. The
+    // exact search must assign {b-high-b, c-ts-a} with full union.
+    const setup = input({
+      providerDiversity: true,
+      reviewers: [
+        { identity: "a-high-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance"] },
+        { identity: "b-high-b", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["high-assurance"] },
+        { identity: "c-ts-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments.map((assignment) => assignment.reviewerIdentity).sort()).toEqual(["b-high-b", "c-ts-a"]);
+    const union = [...new Set(result.reviewAssignments.flatMap((assignment) => assignment.satisfiedSpecializations ?? []))].sort();
+    expect(union).toEqual(["high-assurance", "typescript-node"]);
+    expect(result.reviewAssignments.find((assignment) => assignment.reviewerIdentity === "b-high-b")?.satisfiedSpecializations).toEqual(["high-assurance"]);
+    expect(result.reviewAssignments.find((assignment) => assignment.reviewerIdentity === "c-ts-a")?.satisfiedSpecializations).toEqual(["typescript-node"]);
+    const providers = result.reviewAssignments.map((assignment) => assignment.provider).sort();
+    expect(new Set(providers).size).toBe(result.reviewAssignments.length);
+  });
+
+  it("blocks with diversity enabled naming typescript-node when no holder exists (genuinely uncoverable)", () => {
+    const setup = input({
+      providerDiversity: true,
+      reviewers: [
+        { identity: "a-high-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance"] },
+        { identity: "b-high-b", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["high-assurance"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/MISSING_REQUIRED_REVIEW_SPECIALIZATION/);
+    expect(result.blockers.join(" ")).toMatch(/typescript-node/);
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("blocks naming the uncovered spec when holders share one provider under diversity (no diverse cover exists)", () => {
+    // Both specs have holders but every covering set reuses provider-a, so no
+    // diverse covering set exists. Fail closed naming the uncovered spec.
+    const setup = input({
+      providerDiversity: true,
+      reviewers: [
+        { identity: "a-high-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance"] },
+        { identity: "c-ts-a", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/MISSING_REQUIRED_REVIEW_SPECIALIZATION/);
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("blocks with an explicit too-large-pool blocker when the holder pool exceeds the deterministic cap (never silent greedy)", () => {
+    const poolCap = 16;
+    const reviewers = Array.from({ length: poolCap + 1 }, (_, index) => ({
+      identity: `r-${String(index).padStart(2, "0")}`,
+      role: "Reviewer",
+      provider: `provider-${String(index).padStart(2, "0")}`,
+      readOnly: true,
+      specializations: ["high-assurance"]
+    }));
+    const setup = input({ reviewers } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/REVIEWER_COVER_SEARCH_POOL_TOO_LARGE/);
+    expect(result.blockers.join(" ")).toContain(String(poolCap));
+    expect(result.reviewAssignments).toEqual([]);
+  });
+
+  it("grows a size-1 covering set to the minimum-2 floor when a diverse covering superset exists", () => {
+    // Minimum-vs-coverage rule: minimum is the COUNT floor. A generalist alone
+    // covers both specs but minimum 2 requires growth; the exact search starts
+    // at max(minimum,1) and assigns the smallest covering set at >= minimum.
+    const setup = input({
+      minimumIndependentReviewers: 2,
+      reviewers: [
+        { identity: "generalist-reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance", "typescript-node"] },
+        { identity: "typescript-reviewer", role: "Reviewer", provider: "provider-b", readOnly: true, specializations: ["typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("READY");
+    expect(result.reviewAssignments.length).toBe(2);
+    const union = [...new Set(result.reviewAssignments.flatMap((assignment) => assignment.satisfiedSpecializations ?? []))].sort();
+    expect(union).toEqual(["high-assurance", "typescript-node"]);
+  });
+
+  it("keeps the covering set with an explicit under-minimum note when growth would break coverage (oracle judges count)", () => {
+    // Minimum-vs-coverage rule (documented in candidateAssurance.ts): when only
+    // a size-1 covering set exists but minimum is 2, coverage is NEVER dropped
+    // to satisfy count. The covering set is kept and an explicit
+    // INDEPENDENT_REVIEW_UNDER_MINIMUM blocker is recorded; the
+    // AcceptanceOracle count check judges the under-minimum as defense-in-depth.
+    const setup = input({
+      minimumIndependentReviewers: 2,
+      reviewers: [
+        { identity: "generalist-reviewer", role: "Reviewer", provider: "provider-a", readOnly: true, specializations: ["high-assurance", "typescript-node"] }
+      ]
+    } as never);
+    const result = compileCandidateAssuranceV1({ ...setup, requiredReviewSpecializations: ["high-assurance", "typescript-node"] });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockers.join(" ")).toMatch(/INDEPENDENT_REVIEW_UNDER_MINIMUM/);
+    expect(result.reviewAssignments.length).toBe(1);
+    expect(result.reviewAssignments[0]?.reviewerIdentity).toBe("generalist-reviewer");
+    const union = [...new Set(result.reviewAssignments.flatMap((assignment) => assignment.satisfiedSpecializations ?? []))].sort();
+    expect(union).toEqual(["high-assurance", "typescript-node"]);
+  });
 });
