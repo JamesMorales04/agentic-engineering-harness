@@ -194,6 +194,49 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
     expect(wireValid(schema, { ...empty, openQuestions: ["q?"] })).toBe(true);
   });
 
+  it("explorer wire accepts each single-nonempty-array branch (all seven, no narrowing)", () => {
+    const schema = wireSchema("explorer");
+    expect((schema["anyOf"] as unknown[]).length).toBe(7);
+    const empty = {
+      summary: "done",
+      relevantFiles: [],
+      findings: [],
+      moduleBoundaries: [],
+      tests: [],
+      dependencies: [],
+      risks: [],
+      openQuestions: [],
+    };
+    // Each evidence array alone must satisfy its own full-shape branch.
+    expect(wireValid(schema, { ...empty, relevantFiles: [{ path: "src/a.ts", symbols: [], reason: "r" }] })).toBe(true);
+    expect(wireValid(schema, { ...empty, findings: [{ id: "F1", status: "CONFIRMED", evidence: [] }] })).toBe(true);
+    expect(wireValid(schema, { ...empty, moduleBoundaries: ["src/**"] })).toBe(true);
+    expect(wireValid(schema, { ...empty, tests: ["tests/a.test.ts"] })).toBe(true);
+    expect(wireValid(schema, { ...empty, dependencies: ["dep"] })).toBe(true);
+    expect(wireValid(schema, { ...empty, risks: ["risk"] })).toBe(true);
+    expect(wireValid(schema, { ...empty, openQuestions: ["q?"] })).toBe(true);
+    // Full-shape branches must still accept payloads where other arrays are
+    // present (empty or not): additionalProperties:false + full required must
+    // not reject extra present evidence.
+    expect(
+      wireValid(schema, {
+        summary: "done",
+        relevantFiles: [{ path: "src/a.ts", symbols: [], reason: "r" }],
+        findings: [{ id: "F1", status: "CONFIRMED", evidence: ["e"] }],
+        moduleBoundaries: ["m"],
+        tests: [],
+        dependencies: ["d"],
+        risks: [],
+        openQuestions: ["q?"],
+      }),
+    ).toBe(true);
+    // Zod agrees: fully-empty still rejected, single-branch still accepted.
+    expect(
+      explorerOutputSchema.safeParse({ summary: "s", relevantFiles: [], findings: [], moduleBoundaries: [], tests: [], dependencies: [], risks: [], openQuestions: [] }).success,
+    ).toBe(false);
+    expect(explorerOutputSchema.safeParse({ summary: "s", relevantFiles: [{ path: "src/a.ts", symbols: [], reason: "r" }], findings: [], moduleBoundaries: ["m"], tests: [], dependencies: [], risks: [], openQuestions: [] }).success).toBe(true);
+  });
+
   it("spec-authoring wire rejects READY without proposal/tasks, accepts BLOCKED", () => {
     const schema = wireSchema("spec-authoring");
     expect(schema).toHaveProperty("anyOf");
@@ -233,6 +276,20 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
     ).toBe(false);
   });
 
+  it("reviewer zod-valid PASS+SAFE with medium/low findings proves no narrowing", () => {
+    // The wire gate narrows only FAIL-empty; PASS with medium/low + SAFE must
+    // stay valid in BOTH layers (the unsafe-PASS residual is critical/high only).
+    for (const severity of ["medium", "low"] as const) {
+      const payload = { verdict: "PASS" as const, findings: [wireFinding(severity)], finalizationSafety: "SAFE" as const, followUp: [] as string[] };
+      expect(wireValid(wireSchema("reviewer"), payload)).toBe(true);
+      expect(validateAgentOutput("reviewer", payload).ok).toBe(true);
+    }
+    // PASS_WITH_WARNINGS with medium/low + SAFE is likewise valid.
+    const warnPayload = { verdict: "PASS_WITH_WARNINGS" as const, findings: [wireFinding("medium")], finalizationSafety: "SAFE" as const, followUp: [] as string[] };
+    expect(wireValid(wireSchema("reviewer"), warnPayload)).toBe(true);
+    expect(validateAgentOutput("reviewer", warnPayload).ok).toBe(true);
+  });
+
   it("supervisor wire rejects SAFE with unresolved/missingEvidence", () => {
     const schema = wireSchema("supervisor");
     expect(schema).toHaveProperty("anyOf");
@@ -242,6 +299,46 @@ describe("FAM-WIRE parity: JSON schema alone rejects violating payloads", () => 
     expect(wireValid(schema, { ...base, missingEvidence: [], unresolved: [], finalizationSafety: "SAFE" })).toBe(true);
     expect(wireValid(schema, { ...base, missingEvidence: [], unresolved: ["x"], finalizationSafety: "BLOCKED" })).toBe(true);
     expect(wireValid(schema, { ...base, missingEvidence: ["e"], unresolved: ["x"], finalizationSafety: "RISK_KNOWN" })).toBe(true);
+  });
+
+  it("spec-authoring whitespace-only proposal/tasks passes wire but fails zod (documented residual)", () => {
+    // Wire minLength:1 counts whitespace; zod trim rejects it. The deterministic
+    // zod gate stays authoritative for this half; wire must NOT narrow to trim.
+    const schema = wireSchema("spec-authoring");
+    const base = {
+      change: "change-test-1",
+      requirements: [],
+      unresolvedDecisions: [],
+      decisionRequests: [],
+      validationReady: true,
+    };
+    const whitespaceReady = { ...base, status: "READY", artifacts: { proposal: "   ", tasks: "  \n ", specs: [] } };
+    expect(wireValid(schema, whitespaceReady)).toBe(true);
+    expect(validateAgentOutput("spec-authoring", whitespaceReady).ok).toBe(false);
+    // Genuine content still passes both layers.
+    const genuine = { ...base, status: "READY", artifacts: { proposal: "# Proposal", tasks: "- [ ] work", specs: [] } };
+    expect(wireValid(schema, genuine)).toBe(true);
+    expect(validateAgentOutput("spec-authoring", genuine).ok).toBe(true);
+  });
+
+  it("planner optional properties stay accepted on wire and zod (strict-travel coverage)", () => {
+    // Planner travels strict:true (executeAgentPrompt outputContract "planner"
+    // via Paseo --output-schema / Codex --output-schema / MCP inputSchema:
+    // src/agents/waveExecutor.ts:201,242, src/operations/change.ts:879,
+    // src/agents/reviewLifecycle.ts:574). Optionals must not narrow.
+    const schema = wireSchema("planner");
+    const minimal = { workUnits: [workUnit()], affectedAreas: [], reviewDimensions: [], validationRequirements: [], outOfScopeImprovements: [] };
+    expect(wireValid(schema, minimal)).toBe(true);
+    expect(validateAgentOutput("planner", minimal).ok).toBe(true);
+    const full = {
+      ...minimal,
+      filesNeededOutsideScope: [{ path: "src/a.ts", reason: "needs protected file" }],
+      formalizationNeed: "RECOMMENDED" as const,
+      formalizationReason: "OTHER" as const,
+      formalizationEvidenceRefs: ["ev"],
+    };
+    expect(wireValid(schema, full)).toBe(true);
+    expect(validateAgentOutput("planner", full).ok).toBe(true);
   });
 
   it("wire schemas stay strict-legal (no rejected keywords)", () => {
