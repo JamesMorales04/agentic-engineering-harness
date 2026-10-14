@@ -19,7 +19,7 @@ const interactiveContextSchema = z.object({ pressureThreshold: z.number().min(0)
 const contextBudgetSchema = z.object({ inputTokens: z.number().int().positive().optional(), maxTokens: z.number().int().positive().optional(), reserved: z.object({ instructions: z.number().int().nonnegative().optional(), normative: z.number().int().nonnegative().optional(), evidence: z.number().int().nonnegative().optional(), response: z.number().int().nonnegative().optional() }).optional() });
 const executionLivenessSchema = z.object({
   hardDeadlineMs: z.number().int().positive().optional(), progressLeaseMs: z.number().int().positive().optional(), stallWindowMs: z.number().int().positive().optional(),
-  providerTurnDeadlineMs: z.number().int().positive().optional(), defaultToolDeadlineMs: z.number().int().positive().optional(),
+  providerTurnDeadlineMs: z.number().int().positive().optional(), participantTurnDeadlineMs: z.number().int().positive().optional(), reviewerTurnDeadlineMs: z.number().int().positive().optional(), permissionWaitTimeoutMs: z.number().int().positive().optional(), defaultToolDeadlineMs: z.number().int().positive().optional(),
   maxNoProgressRenewals: z.number().int().nonnegative().optional(), maxParticipantRestarts: z.number().int().nonnegative().optional(),
   maxLocalRetriesPerFailure: z.number().int().nonnegative().optional(), softBudgetThreshold: z.number().gt(0).lt(1).optional(),
   toolDeadlinesMs: z.record(z.string().min(1), z.number().int().positive()).optional()

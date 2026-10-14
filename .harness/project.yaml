@@ -68,6 +68,9 @@ orchestration:
       progressLeaseMs: 900000
       stallWindowMs: 900000
       providerTurnDeadlineMs: 1800000
+      participantTurnDeadlineMs: 1800000
+      reviewerTurnDeadlineMs: 900000
+      permissionWaitTimeoutMs: 300000
       defaultToolDeadlineMs: 1800000
       maxNoProgressRenewals: 2
       maxParticipantRestarts: 2

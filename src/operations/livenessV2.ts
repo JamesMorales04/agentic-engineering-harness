@@ -112,6 +112,22 @@ export function operationLivenessPolicy(config: HarnessProjectConfig, operation?
   };
 }
 
+/**
+ * DETERMINISTIC per-participant stall-vs-progress discrimination.
+ * STALLED = no heartbeat/tool event (lastActivityAt) within the stall window.
+ * PROGRESSING = heartbeat within the window (lease extended, no wake).
+ * A busy-but-stalled child never suppresses wakes for genuinely stalled
+ * siblings: classification is per participant. Mechanism: DETERMINISTIC.
+ */
+export function classifyParticipantStall(args: { lastActivityAt?: string; lastMeaningfulProgressAt?: string; startedAt?: string; registeredAt?: string; waitingDeadlineAt?: string; state?: string }, nowMs: number, stallWindowMs: number): "STALLED" | "PROGRESSING" {
+  if (args.state === "WAITING_TOOL" && args.waitingDeadlineAt) return Date.parse(args.waitingDeadlineAt) <= nowMs ? "STALLED" : "PROGRESSING";
+  const heartbeat = Date.parse(args.lastActivityAt ?? "");
+  if (Number.isFinite(heartbeat)) return nowMs - heartbeat >= stallWindowMs ? "STALLED" : "PROGRESSING";
+  const baseline = Date.parse(args.lastMeaningfulProgressAt ?? args.startedAt ?? args.registeredAt ?? "");
+  if (!Number.isFinite(baseline)) return "PROGRESSING";
+  return nowMs - baseline >= stallWindowMs ? "STALLED" : "PROGRESSING";
+}
+
 export function operationRevisionAcknowledged(operation: OperationRecordV2): boolean {
   return Boolean(operation.lead && operation.lead.acknowledgedRevision >= operation.revision);
 }
@@ -171,15 +187,26 @@ export function evaluateOperationWake(
     const liveness = participant.executionLiveness;
     if (!liveness) return Number.isFinite(progressAt) && nowMs - progressAt >= policy.stallThresholdMs;
     if (liveness.state === "WAITING_TOOL" && liveness.waitingDeadlineAt) return Date.parse(liveness.waitingDeadlineAt) <= nowMs;
-    // Paseo SDK providers do not guarantee interim heartbeats while reasoning.
-    // Provider silence alone is not evidence of a hung provider; the turn's
-    // frozen wall-clock deadline and the independent meaningful-progress lease
-    // provide bounded detection without preempting a legitimate provider turn.
-    const baseline = Date.parse(liveness.lastMeaningfulProgressAt ?? liveness.startedAt ?? participant.startedAt ?? participant.registeredAt);
-    return liveness.state === "STALL_SUSPECTED" || Boolean(liveness.progressLease && Date.parse(liveness.progressLease.expiresAt) <= nowMs)
-      || Number.isFinite(baseline) && nowMs - baseline >= policy.stallThresholdMs;
+    // DETERMINISTIC stall-vs-progress discrimination (per participant):
+    // STALLED = no heartbeat/tool event (lastActivityAt) within the stall
+    // window; PROGRESSING = heartbeat within the window (lease extended, no
+    // wake). Provider silence alone while the progress lease is still valid
+    // is not a stall; an expired lease or an explicit STALL_SUSPECTED state
+    // is. A busy-but-stalled child never suppresses a genuinely stalled
+    // sibling because this filter is per participant.
+    if (liveness.state === "STALL_SUSPECTED") return true;
+    if (liveness.progressLease && Date.parse(liveness.progressLease.expiresAt) <= nowMs) return true;
+    return classifyParticipantStall({ lastActivityAt: liveness.lastActivityAt, lastMeaningfulProgressAt: liveness.lastMeaningfulProgressAt, startedAt: liveness.startedAt ?? participant.startedAt, registeredAt: participant.registeredAt, waitingDeadlineAt: liveness.waitingDeadlineAt, state: liveness.state }, nowMs, policy.stallThresholdMs) === "STALLED";
   });
-  if (operation.status === "RUNNING" && (stalledParticipants.length > 0 || Number.isFinite(progressAt) && nowMs - progressAt >= policy.stallThresholdMs && !Object.values(operation.participants).some((participant) => participant.executionLiveness?.lastMeaningfulProgressAt && nowMs - Date.parse(participant.executionLiveness.lastMeaningfulProgressAt) < policy.stallThresholdMs))) {
+  // Per-participant accounting: the operation-level fallback only fires when
+  // NO participant shows a recent heartbeat; one PROGRESSING child suppresses
+  // only the anonymous operation fallback, never the per-participant wake for
+  // genuinely stalled siblings listed above.
+  const anyHeartbeatFresh = Object.values(operation.participants).some((participant) => {
+    const at = participant.executionLiveness?.lastActivityAt ?? participant.executionLiveness?.lastMeaningfulProgressAt;
+    return at !== undefined && nowMs - Date.parse(at) < policy.stallThresholdMs;
+  });
+  if (operation.status === "RUNNING" && (stalledParticipants.length > 0 || Number.isFinite(progressAt) && nowMs - progressAt >= policy.stallThresholdMs && !anyHeartbeatFresh)) {
     const supervisor = activeOperationSupervisor(operation);
     if (supervisor?.agentId && stallSupervisorWakeCount < policy.supervisorStallWakeLimit) {
       return {

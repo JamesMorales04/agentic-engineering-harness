@@ -34,7 +34,7 @@ export type ReviewFinalState = "ACCEPTED" | "SPEC_CONTRADICTION" | "REQUIRES_PRO
  */
 export interface ReviewerRoundFailureV1 {
   reviewer: string;
-  kind: "RUNTIME" | "CONTRACT" | "MUTATION";
+  kind: "RUNTIME" | "CONTRACT" | "MUTATION" | "TURN_DEADLINE" | "PERMISSION_WAIT";
   detail: string;
   sessionId?: string;
   exitCode?: number;
@@ -558,6 +558,13 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
   if (!selection) throw new Error(`REVIEW_EXECUTION_INVALID: no frozen selection exists for reviewer '${name}'.`);
   const candidate = report.candidate;
   if (!candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
+  // DETERMINISTIC: reviewer turns run under the short reviewer deadline
+  // (default 15 min), not the 30-min participant default or the 8h fuse.
+  // Local readers (not via the mocked agentPrompt module) keep unit mocks
+  // that stub executeAgentPrompt working.
+  const reviewerDeadlineMs = reviewerTurnDeadlineForConfig(config);
+  const permissionTimeoutMs = permissionWaitTimeoutForConfig(config);
+  const startedAt = Date.now();
   const isolated = await executeIsolatedCandidateMutation({
     root,
     operationId: candidate.operationId,
@@ -567,12 +574,25 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
     config,
     contract,
     prepareWorkspace: prepareReviewWorkspace,
-    execute: (isolatedRoot) => executeAgentPrompt(isolatedRoot, config, contract, selection, buildReviewerPrompt(contract, name, report, assignedDimensions), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind, requireExecutionAuthority: true })
+    execute: (isolatedRoot) => executeAgentPrompt(isolatedRoot, config, contract, selection, buildReviewerPrompt(contract, name, report, assignedDimensions), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind, requireExecutionAuthority: true, providerTurnDeadlineMs: reviewerDeadlineMs })
   });
   const session = isolated.session;
+  const elapsedMs = Date.now() - startedAt;
+  const outcome = classifyReviewerTurnOutcome(session, elapsedMs, reviewerDeadlineMs, permissionTimeoutMs);
   if (isolated.changeSet) {
     const detail = "Reviewer attempted to modify its isolated candidate snapshot; the output was rejected.";
     return { reviewer: name, session, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "MUTATION", detail, sessionId: session.id, exitCode: session.exitCode } };
+  }
+  // Typed permission-wait terminal: fail-closed BLOCKED, not a 30-min SYSTEM_FAILURE.
+  if (outcome === "PERMISSION_WAIT_EXHAUSTED") {
+    const detail = `PERMISSION_WAIT_EXHAUSTED: reviewer '${name}' stopped on a Paseo/external permission prompt within the short timer (timeoutMs=${permissionTimeoutMs}, elapsedMs=${elapsedMs}); BLOCKED fail-closed, safe to rotate with a narrower scope.`;
+    return { reviewer: name, session, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "PERMISSION_WAIT", detail, sessionId: session.id, exitCode: session.exitCode } };
+  }
+  // Typed turn-deadline terminal: steady-output turns die at the reviewer
+  // deadline, not at the 8h fuse.
+  if (outcome === "TURN_DEADLINE_EXCEEDED") {
+    const detail = `TURN_DEADLINE_EXCEEDED: reviewer '${name}' exceeded its wall-clock turn deadline (deadlineMs=${reviewerDeadlineMs}, elapsedMs=${elapsedMs}); steady-output turns die here, not at the operation hard deadline.`;
+    return { reviewer: name, session, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "TURN_DEADLINE", detail, sessionId: session.id, exitCode: session.exitCode } };
   }
   if (session.exitCode !== 0) {
     const stop = (session.stderr || session.stdout || "no provider output").replace(/\s+/g, " ").trim().slice(0, 600);
@@ -590,7 +610,19 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
 
 function reviewerProviderFailureResult(stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, failures: readonly ReviewerRoundFailureV1[], rounds: number, report: ValidationReport, findings: DedupedFindings, checks: ValidationCheck[], sessions: WorkerSession[], qualityHistory: QualityState[]): Promise<ReviewLifecycleResult> {
   const detail = failures.map((failure) => `${failure.reviewer} (${failure.kind}${failure.sessionId ? `, session ${failure.sessionId}` : ""}${failure.exitCode !== undefined ? `, exit ${failure.exitCode}` : ""}): ${failure.detail}`).join(" | ");
+  // Fail-closed permission path: typed PERMISSION_WAIT_EXHAUSTED BLOCKED, not post-hoc SYSTEM_FAILURE.
+  if (failures.some((failure) => failure.kind === "PERMISSION_WAIT")) {
+    return blockedExternalResult(stateRoot, config, contract, `Reviewer permission wait exhausted; this is not remediable implementation debt. ${detail}`, rounds, report, findings, checks, sessions, qualityHistory);
+  }
   return systemFailureResult(stateRoot, config, contract, `Reviewer provider turn failed; this is not remediable implementation debt. ${detail}`, rounds, report, findings, checks, sessions, qualityHistory);
+}
+
+async function blockedExternalResult(stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, message: string, rounds: number, report: ValidationReport, findings: DedupedFindings, checks: ValidationCheck[], sessions: WorkerSession[], qualityHistory: QualityState[]): Promise<ReviewLifecycleResult> {
+  const bounded = message.replace(/\s+/g, " ").trim().slice(0, 1200);
+  checks.push({ id: "agent.permission-wait-exhausted", category: "agent-review", status: "FAIL", message: bounded, details: { round: rounds } });
+  qualityHistory.push(analyzeQualityState(findings.findings, qualityHistory, config, report.candidate?.identityDigest));
+  await recordEvent(stateRoot, config, "harness.review.permission-wait-exhausted", { taskId: contract.task.id, round: rounds, message: bounded }).catch(() => undefined);
+  return { status: "FAIL", finalState: "BLOCKED_EXTERNAL", humanRequired: false, rounds, report, findings, checks, sessions, qualityHistory, leadAccepted: false };
 }
 
 async function systemFailureResult(stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, message: string, rounds: number, report: ValidationReport, findings: DedupedFindings, checks: ValidationCheck[], sessions: WorkerSession[], qualityHistory: QualityState[]): Promise<ReviewLifecycleResult> {
@@ -601,6 +633,41 @@ async function systemFailureResult(stateRoot: string, config: HarnessProjectConf
   qualityHistory.push(analyzeQualityState(findings.findings, qualityHistory, config, report.candidate?.identityDigest));
   await recordEvent(stateRoot, config, "harness.review.system-failure", { taskId: contract.task.id, round: rounds, message: bounded }).catch(() => undefined);
   return { status: "FAIL", finalState: "SYSTEM_FAILURE", humanRequired: false, rounds, report, findings, checks, sessions, qualityHistory, leadAccepted: false };
+}
+
+/**
+ * DETERMINISTIC reviewer-turn bound helpers (local so unit mocks that stub
+ * the worker module keep working). Defaults match the worker module:
+ * reviewer 15 min, permission-wait 5 min. Mechanism: DETERMINISTIC.
+ */
+export function reviewerTurnDeadlineForConfig(config: HarnessProjectConfig): number {
+  const liveness = config.orchestration?.operations?.liveness as { reviewerTurnDeadlineMs?: unknown } | undefined;
+  const configured = liveness?.reviewerTurnDeadlineMs ?? 15 * 60_000;
+  if (!Number.isSafeInteger(configured) || (configured as number) < 1) throw new Error("REVIEWER_TURN_DEADLINE_INVALID: reviewer-turn deadline must be a positive integer in milliseconds.");
+  return configured as number;
+}
+
+export function permissionWaitTimeoutForConfig(config: HarnessProjectConfig): number {
+  const liveness = config.orchestration?.operations?.liveness as { permissionWaitTimeoutMs?: unknown } | undefined;
+  const configured = liveness?.permissionWaitTimeoutMs ?? 5 * 60_000;
+  if (!Number.isSafeInteger(configured) || (configured as number) < 1) throw new Error("PERMISSION_WAIT_TIMEOUT_INVALID: permission-wait timeout must be a positive integer in milliseconds.");
+  return configured as number;
+}
+
+export function isReviewerPermissionWaitStop(session: Pick<WorkerSession, "status" | "permissionStopDiagnostic" | "stderr" | "stdout">): boolean {
+  const status = (session.status ?? "").toLowerCase();
+  if (status === "permission" || status === "waiting") return true;
+  if (session.permissionStopDiagnostic) return true;
+  return /PERMISSION_WAIT_EXHAUSTED|pending permission|waiting for approval|approval required/i.test(`${(session as { stderr?: unknown }).stderr ?? ""} ${(session as { stdout?: unknown }).stdout ?? ""}`);
+}
+
+export function classifyReviewerTurnOutcome(session: Pick<WorkerSession, "exitCode" | "status" | "stderr" | "stdout" | "permissionStopDiagnostic">, elapsedMs: number, deadlineMs: number, permissionTimeoutMs: number): "TURN_DEADLINE_EXCEEDED" | "PERMISSION_WAIT_EXHAUSTED" | "OTHER" {
+  if (`${(session as { stderr?: unknown }).stderr ?? ""} ${(session as { stdout?: unknown }).stdout ?? ""}`.includes("TURN_DEADLINE_EXCEEDED")) return "TURN_DEADLINE_EXCEEDED";
+  if (isReviewerPermissionWaitStop(session) && elapsedMs >= permissionTimeoutMs) return "PERMISSION_WAIT_EXHAUSTED";
+  const text = `${(session as { stderr?: unknown }).stderr ?? ""} ${(session as { stdout?: unknown }).stdout ?? ""}`;
+  const timedOut = (session as { exitCode?: unknown }).exitCode === 124 || ((session as { status?: unknown }).status !== undefined && String((session as { status?: unknown }).status).toLowerCase() === "timeout") || /timed out|timeout/i.test(text);
+  if (timedOut && elapsedMs >= deadlineMs) return "TURN_DEADLINE_EXCEEDED";
+  return "OTHER";
 }
 
 function candidateIdentityCheck(id: string, evidence: CandidateWorkspaceIdentityEvidenceV1): ValidationCheck {
