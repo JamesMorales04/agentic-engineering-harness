@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateFinalQualityGate } from "../src/agents/qualityConvergence.js";
-import { assertReviewerSelectionAuthority, assertReviewerSpecializationAuthority, remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1 } from "../src/agents/reviewLifecycle.js";
+import { assertReviewerSelectionAuthority, assertReviewerSetSpecializationCoverage, assertReviewerSpecializationAuthority, remediationBudgetReached, remediationBudgetRounds, replaceSupersededReviewerChecksV1 } from "../src/agents/reviewLifecycle.js";
 import type { AgentExecutionSelection } from "../src/agents/types.js";
 import { operationFailureDetail, validationFailureDetail } from "../src/core/run.js";
 import type { NormalizedFinding } from "../src/agents/outputContracts.js";
@@ -144,5 +144,46 @@ describe("reviewer specialization authority (high-assurance bypass regression)",
   });
   it("is a no-op when no specialization is required (role-only routes unaffected)", () => {
     expect(() => assertReviewerSpecializationAuthority(selection(undefined, "reviewer"), [], "reviewer")).not.toThrow();
+  });
+});
+
+describe("reviewer round collective specialization coverage (multi-specialization routes)", () => {
+  // DETERMINISTIC: the ROUND's reviewer set (union of satisfiedSpecializations)
+  // must cover every required specialization, in addition to per-reviewer checks.
+  const assignment = (reviewerIdentity: string, satisfiedSpecializations: string[]) => ({
+    reviewerIdentity,
+    provider: `provider-${reviewerIdentity}`,
+    dimensions: ["authentication/authorization"],
+    candidate: { candidateId: "candidate:OP:r1", revision: 1, identityDigest: "digest" },
+    impactDigest: "impact",
+    policyDigest: "policy",
+    satisfiedSpecializations,
+  });
+  it("passes when two reviewers each covering one required spec form a covered union", () => {
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("high-assurance-reviewer", ["high-assurance"]), assignment("typescript-reviewer", ["typescript-node"])],
+      ["high-assurance", "typescript-node"],
+    )).not.toThrow();
+  });
+  it("fails closed naming the uncovered spec when one reviewer covers only half the requirement (no silent under-review)", () => {
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("high-assurance-reviewer", ["high-assurance"])],
+      ["high-assurance", "typescript-node"],
+    )).toThrow(/REVIEW_SPECIALIZATION_REQUIRED/);
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("high-assurance-reviewer", ["high-assurance"])],
+      ["high-assurance", "typescript-node"],
+    )).toThrow(/typescript-node/);
+  });
+  it("keeps single-specialization behavior identical (holder passes, empty keeps current behavior)", () => {
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("high-assurance-reviewer", ["high-assurance"])],
+      ["high-assurance"],
+    )).not.toThrow();
+    expect(() => assertReviewerSetSpecializationCoverage([], ["high-assurance"])).not.toThrow();
+    expect(() => assertReviewerSetSpecializationCoverage(
+      [assignment("reviewer", ["cross-cutting"])],
+      [],
+    )).not.toThrow();
   });
 });

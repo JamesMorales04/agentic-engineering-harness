@@ -434,9 +434,43 @@ export function assertReviewerSpecializationAuthority(
   }
 }
 
+/**
+ * DETERMINISTIC collective specialization coverage for the assurance path.
+ * When the frozen route requires reviewer specialization(s), the ROUND's
+ * reviewer set must collectively cover EVERY required specialization (union of
+ * satisfiedSpecializations across the round's reviewers). Per-reviewer
+ * ANY-match checks alone admit a one-reviewer partial assignment for a
+ * multi-specialization route (e.g. [high-assurance, typescript-node]) with the
+ * other spec silently uncovered. Fail closed naming the uncovered specs with
+ * no silent under-review. Empty requirement or empty assignment set keeps
+ * current behavior (the assurance BLOCKED gate owns the empty case).
+ * Model reasoning never calls this. Mechanism: DETERMINISTIC.
+ */
+export function assertReviewerSetSpecializationCoverage(
+  assignments: readonly CandidateAssuranceReviewAssignmentV1[],
+  requiredSpecializations: readonly string[],
+): void {
+  const required = [...new Set(requiredSpecializations ?? [])].sort();
+  if (!required.length) return;
+  if (!assignments.length) return;
+  const uncovered = required.filter((spec) => !assignments.some((assignment) => matchesValues([...(assignment.satisfiedSpecializations ?? [])], [spec])));
+  if (uncovered.length) {
+    const covered = required.filter((spec) => !uncovered.includes(spec));
+    throw new Error(`REVIEW_SPECIALIZATION_REQUIRED: Reviewer round does not collectively cover required specialization(s) ${required.join(",")} (uncovered: ${uncovered.join(",")}; covered: ${covered.join(",") || "<none>"}; ${assignments.length} assigned reviewer(s)). No silent under-review is allowed.`);
+  }
+}
+
 async function runReviewRound(root: string, stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, reviewerSelections: Readonly<Record<string, AgentExecutionSelection>>, implementationSelection: AgentExecutionSelection, supervisorSelection: AgentExecutionSelection | undefined, reviewerNames: string[], report: ValidationReport, sessions: WorkerSession[], round: number, checks: ValidationCheck[], prepareReviewWorkspace?: (isolatedRoot: string) => Promise<void>, assuranceAssignments: readonly CandidateAssuranceReviewAssignmentV1[] = [], requiredReviewSpecializations: readonly string[] = []): Promise<ReviewRoundResult> {
   if (!report.candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
   const assuranceByIdentity = new Map(assuranceAssignments.map((assignment) => [assignment.reviewerIdentity, assignment]));
+  // DETERMINISTIC collective coverage gate: the round's assigned reviewer SET
+  // must cover every required specialization (union of satisfiedSpecializations).
+  // Runs before any reviewer invocation so an under-covered round fails closed
+  // without consuming provider turns. Per-reviewer checks below are retained.
+  assertReviewerSetSpecializationCoverage(
+    reviewerNames.map((name) => assuranceByIdentity.get(name)).filter((assignment): assignment is CandidateAssuranceReviewAssignmentV1 => Boolean(assignment)),
+    requiredReviewSpecializations,
+  );
   const outputs = await Promise.all(reviewerNames.map(async (name) => {
     const selection = reviewerSelections[name];
     assertReviewerSelectionAuthority(selection, name, implementationSelection.logicalAgent);

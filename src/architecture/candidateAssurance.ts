@@ -416,12 +416,18 @@ export function compileCandidateAssuranceV1(input: CandidateAssuranceInputV1): C
   const independentReviewRequired = policy.independentReviewRequired || input.impact.requiresIndependentReview;
   const minimumIndependentReviewers = Math.max(policy.minimumIndependentReviewers, independentReviewRequired ? 1 : 0, dimensions.length > 0 ? 1 : 0);
   // DETERMINISTIC route-required specialization enforcement (fail closed, never
-  // silent-fallback to an ordinary reviewer). When the frozen route requires a
-  // specialization (e.g. high-assurance), every base-eligible candidate is
-  // checked: each required specialization must have >=1 holder, otherwise the
-  // compilation is BLOCKED naming the missing specialization with NO reviewer
-  // assigned. When all required are present, only holders are selectable and
-  // each assignment records the satisfied specialization for the review turn.
+  // silent-fallback to an ordinary reviewer). When the frozen route requires
+  // specialization(s) (e.g. high-assurance, or collectively [high-assurance,
+  // typescript-node]), every base-eligible candidate is checked: each required
+  // specialization must have >=1 holder, otherwise the compilation is BLOCKED
+  // naming the missing specialization with NO reviewer assigned. When all
+  // required are present, only holders are selectable, the assigned reviewer
+  // SET must collectively cover ALL required specializations (minimum counts
+  // are lower bounds, not targets: additional holders are assigned until the
+  // union covers every required spec), and each assignment records its
+  // satisfied subset for the review turn. If the eligible pool cannot
+  // collectively cover (e.g. distinct-provider constraint), BLOCKED naming the
+  // uncovered specs with NO under-covered READY. Mechanism: DETERMINISTIC.
   const requiredReviewSpecializations = [...new Set(input.requiredReviewSpecializations ?? [])].sort();
   const baseEligible = eligibleReviewers(input, policy.providerDiversity);
   let eligibleForSelection = baseEligible;
@@ -434,14 +440,39 @@ export function compileCandidateAssuranceV1(input: CandidateAssuranceInputV1): C
       eligibleForSelection = baseEligible.filter((reviewer) => specializationSatisfies(reviewer.specializations, requiredReviewSpecializations));
     }
   }
-  const selection = selectReviewers(eligibleForSelection, minimumIndependentReviewers, policy.providerDiversity);
-  blockers.push(...selection.blockers);
+  const initialSelection = selectReviewers(eligibleForSelection, minimumIndependentReviewers, policy.providerDiversity);
+  let selectedReviewers: EligibleReviewerV1[] = [...initialSelection.selected];
+  const selectionBlockers: string[] = [...initialSelection.blockers];
+  if (!selectionBlockers.length && requiredReviewSpecializations.length && eligibleForSelection.length) {
+    const coversUncovered = (reviewer: EligibleReviewerV1, uncovered: readonly string[]): boolean =>
+      uncovered.some((spec) => specializationSatisfies(reviewer.specializations, [spec]));
+    let uncovered = requiredReviewSpecializations.filter((spec) => !selectedReviewers.some((reviewer) => specializationSatisfies(reviewer.specializations, [spec])));
+    if (uncovered.length) {
+      const selectedIds = new Set(selectedReviewers.map((reviewer) => `${reviewer.identity}\0${reviewer.provider}`));
+      const usedProviders = new Set(selectedReviewers.map((reviewer) => reviewer.provider));
+      for (const reviewer of eligibleForSelection) {
+        if (!uncovered.length) break;
+        if (selectedIds.has(`${reviewer.identity}\0${reviewer.provider}`)) continue;
+        if (!coversUncovered(reviewer, uncovered)) continue;
+        if (policy.providerDiversity && usedProviders.has(reviewer.provider)) continue;
+        selectedReviewers.push(reviewer);
+        selectedIds.add(`${reviewer.identity}\0${reviewer.provider}`);
+        usedProviders.add(reviewer.provider);
+        uncovered = requiredReviewSpecializations.filter((spec) => !selectedReviewers.some((candidate) => specializationSatisfies(candidate.specializations, [spec])));
+      }
+      if (uncovered.length) {
+        for (const spec of uncovered) selectionBlockers.push(`MISSING_REQUIRED_REVIEW_SPECIALIZATION: no enabled Reviewer with specialization '${spec}' is available for the route-required collective coverage (required: ${requiredReviewSpecializations.join(",")}; uncovered: ${uncovered.join(",")}; ${eligibleForSelection.length} eligible candidate(s)).`);
+        selectedReviewers = [];
+      }
+    }
+  }
+  blockers.push(...selectionBlockers);
 
   const minimumAssurance = maxAssurance(policy.minimumAssurance, policy.evidenceStrength, ...dimensions.map((dimension) => reviewDimensionRule(dimension).floor));
   const assertionAssurance = (forDimensions: readonly string[]): AssuranceLevel =>
     maxAssurance(policy.minimumAssurance, policy.evidenceStrength, ...forDimensions.map((dimension) => reviewDimensionRule(dimension).floor));
 
-  const reviewAssignments: CandidateAssuranceReviewAssignmentV1[] = selection.selected.map((reviewer) => ({
+  const reviewAssignments: CandidateAssuranceReviewAssignmentV1[] = selectedReviewers.map((reviewer) => ({
     reviewerIdentity: reviewer.identity,
     provider: reviewer.provider,
     dimensions: [...dimensions],
