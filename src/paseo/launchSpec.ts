@@ -30,6 +30,10 @@ export interface PaseoLaunchSpecOptions {
   supervisorAgent?: boolean;
   contextCapabilities?: EffectiveContextCapabilities;
   providerTurnDeadlineMs?: number;
+  /** Explicit managed-operation participant-turn bound; the effective launch
+   * timeout is the tighter of this (or the configured participant/reviewer
+   * key) and the provider ceiling. Mechanism: DETERMINISTIC. */
+  participantTurnDeadlineMs?: number;
   supervisorSessionId?: string;
   participantId?: string;
   candidateDigest?: string;
@@ -223,7 +227,7 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
     parentAgentId,
     supervisorGeneration,
     labels,
-    timeoutSeconds: Math.max(1, Math.ceil((options.providerTurnDeadlineMs ?? durable?.resolvedOperationPolicy?.executionLiveness.providerTurnDeadlineMs ?? (config.orchestration as (HarnessProjectConfig["orchestration"] & { operations?: { liveness?: { providerTurnDeadlineMs?: number } } }) | undefined)?.operations?.liveness?.providerTurnDeadlineMs ?? 30 * 60_000) / 1000)),
+    timeoutSeconds: Math.max(1, Math.ceil(effectivePaseoTurnTimeoutMs(options, config, durable?.resolvedOperationPolicy?.executionLiveness.providerTurnDeadlineMs, phase) / 1000)),
     ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
     ...(toolPolicy ? { toolPolicy } : {}),
     ...(providerOptions ? { providerOptions } : {}),
@@ -237,6 +241,29 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
 
 function candidateDigestFrom(options: PaseoLaunchSpecOptions): string | undefined {
   return options.executionBinding?.candidateDigest ?? options.candidateDigest ?? options.capabilityLeases?.[0]?.candidate.identityDigest;
+}
+
+/**
+ * DETERMINISTIC effective managed-turn timeout for a Paseo launch. Mirrors
+ * managedTurnDeadlineMs in the worker module (kept local to avoid a
+ * worker->launchSpec import cycle): the participant key (or the reviewer
+ * override for review phase) is the EFFECTIVE managed-operation bound and the
+ * provider deadline remains the ceiling/fallback (tightest wins).
+ * Mechanism: DETERMINISTIC.
+ */
+export function effectivePaseoTurnTimeoutMs(options: Pick<PaseoLaunchSpecOptions, "providerTurnDeadlineMs" | "participantTurnDeadlineMs">, config: HarnessProjectConfig, frozenProviderDeadlineMs?: unknown, phase = "work"): number {
+  const liveness = (config.orchestration as (HarnessProjectConfig["orchestration"] & { operations?: { liveness?: { providerTurnDeadlineMs?: unknown; participantTurnDeadlineMs?: unknown; reviewerTurnDeadlineMs?: unknown } } }) | undefined)?.operations?.liveness;
+  let managed: unknown;
+  if (phase === "review") {
+    managed = liveness?.reviewerTurnDeadlineMs ?? 15 * 60_000;
+  } else {
+    managed = options.participantTurnDeadlineMs ?? liveness?.participantTurnDeadlineMs ?? liveness?.providerTurnDeadlineMs ?? 30 * 60_000;
+  }
+  if (!Number.isSafeInteger(managed) || (managed as number) < 1) throw new Error("PARTICIPANT_TURN_DEADLINE_INVALID: participant-turn deadline must be a positive integer in milliseconds.");
+  const ceiling = options.providerTurnDeadlineMs ?? frozenProviderDeadlineMs ?? liveness?.providerTurnDeadlineMs;
+  if (ceiling === undefined) return managed as number;
+  if (!Number.isSafeInteger(ceiling) || (ceiling as number) < 1) throw new Error("PROVIDER_TURN_DEADLINE_INVALID: provider-turn deadline must be a positive integer in milliseconds.");
+  return Math.min(managed as number, ceiling as number);
 }
 
 function contextMcpServers(root: string, config: HarnessProjectConfig, selection: AgentExecutionSelection | undefined, logicalAgent: string, operationId: string, phase: string, capabilities?: EffectiveContextCapabilities, participantId?: string, controlRoot = root): Record<string, PaseoSdkMcpStdioServer> | undefined {

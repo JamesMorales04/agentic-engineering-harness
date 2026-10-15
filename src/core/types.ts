@@ -97,6 +97,7 @@ export interface HarnessProjectConfig {
       supervision?: { initializationTimeoutSeconds?: number; turnTimeoutSeconds?: number; context?: { handoffThreshold?: number; hardHandoffThreshold?: number } };
       liveness?: {
         hardDeadlineMs?: number; progressLeaseMs?: number; stallWindowMs?: number; providerTurnDeadlineMs?: number;
+        participantTurnDeadlineMs?: number; reviewerTurnDeadlineMs?: number; permissionWaitTimeoutMs?: number;
         defaultToolDeadlineMs?: number; maxNoProgressRenewals?: number; maxParticipantRestarts?: number;
         maxLocalRetriesPerFailure?: number; softBudgetThreshold?: number; toolDeadlinesMs?: Record<string, number>;
       };

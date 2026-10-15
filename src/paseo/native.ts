@@ -14,6 +14,35 @@ import {
 } from "./firstActivityDeadline.js";
 import { recordPaseoRuntimeActivityV1 } from "../operations/executionLiveness.js";
 
+/**
+ * DETERMINISTIC mid-turn pending-start capture (native subscription path).
+ * inspect() records the moment Paseo FIRST reports a pending approval prompt
+ * mid-turn; the terminal diagnostic threads that timestamp instead of
+ * stamping conversion time. Cleared when the prompt clears. Mechanism:
+ * DETERMINISTIC.
+ */
+const nativePendingStartByHandle = new WeakMap<object, string>();
+
+function nativeHasPendingPermissions(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some((entry) => entry !== null && typeof entry === "object");
+  return value !== null && typeof value === "object";
+}
+
+function noteNativePendingStart(handle: object, pending: unknown): string | undefined {
+  if (nativeHasPendingPermissions(pending)) {
+    let startedAt = nativePendingStartByHandle.get(handle);
+    if (!startedAt) {
+      startedAt = new Date().toISOString();
+      nativePendingStartByHandle.set(handle, startedAt);
+    }
+    return startedAt;
+  }
+  nativePendingStartByHandle.delete(handle);
+  return undefined;
+}
+
+/** Production native pending tracker exposes no test hooks (see suite-level hygiene assertion). */
+
 export interface PaseoNativeUsage {
   inputTokens?: number;
   cachedInputTokens?: number;
@@ -417,6 +446,11 @@ export async function waitForPaseoAgentHandle(
       const raw = await refetchAgent(handle);
       if (!raw || settled) return;
       latestAgentSnapshot = raw;
+      // PENDING-START CAPTURE SITE (native subscription/poll): Paseo first
+      // reports the mid-turn permission stop here, while the turn is still
+      // running. First-seen pending time is recorded now and threaded into
+      // the terminal diagnostic below. Mechanism: DETERMINISTIC.
+      const pendingStart = noteNativePendingStart(handle, raw.pendingPermissions);
       const status = statusText(raw.status);
       if (fromUpdate) updatesObserved += 1;
       if (isActiveStatus(status) || Boolean(raw.activeTurn)) sawActivity = true;
@@ -465,7 +499,7 @@ export async function waitForPaseoAgentHandle(
         return;
       }
 
-      const permission = await permissionStopDiagnostic(raw.pendingPermissions, handle.id, permissionScopeRoots);
+      const permission = await permissionStopDiagnostic(raw.pendingPermissions, handle.id, permissionScopeRoots, pendingStart);
       finish({
         id: handle.id,
         workspaceId: stringField(raw, ["workspaceId", "workspace_id"]),
@@ -901,8 +935,17 @@ function stringField(record: Record<string, unknown>, keys: string[]): string | 
   }
   return undefined;
 }
-async function permissionStopDiagnostic(value: unknown, sessionId: string, permissionScopeRoots?: string[]): Promise<PaseoSdkPermissionStop | undefined> {
+async function permissionStopDiagnostic(value: unknown, sessionId: string, permissionScopeRoots?: string[], observedWaitStartedAt?: string): Promise<PaseoSdkPermissionStop | undefined> {
   const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  let earliest: string | undefined;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const marker = (entry as Record<string, unknown>).waitStartedAt;
+    if (typeof marker === "string" && Number.isFinite(Date.parse(marker))) {
+      if (!earliest || Date.parse(marker) < Date.parse(earliest)) earliest = marker;
+    }
+  }
+  const waitStartedAt = earliest ?? observedWaitStartedAt;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
@@ -910,7 +953,7 @@ async function permissionStopDiagnostic(value: unknown, sessionId: string, permi
     const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
     const patterns = Array.isArray(input?.patterns) ? input.patterns.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 8).map((item) => item.slice(0, 300)) : undefined;
     if (name || patterns?.length) {
-      return createPermissionStopDiagnostic(name, patterns, permissionScopeRoots, sessionId, typeof record.id === "string" ? record.id : `${sessionId}:pending`);
+      return createPermissionStopDiagnostic(name, patterns, permissionScopeRoots, sessionId, typeof record.id === "string" ? record.id : `${sessionId}:pending`, waitStartedAt);
     }
   }
   return undefined;

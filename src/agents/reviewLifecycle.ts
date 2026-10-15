@@ -18,6 +18,7 @@ import { assertWorkspaceMatchesCandidate, type CandidateWorkspaceIdentityEvidenc
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import { recordEvent } from "../telemetry/events.js";
 import { currentOperationContext, loadOperation, resolveOperationStateRoot } from "../operations/state.js";
+import { earliestTrackedPendingStartMs, hasTrackedPendingPrompt } from "../paseo/sdk.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import type { CandidateImpactAssessmentRuntimeV1, CandidateImpactV1 } from "../candidates/assembler.js";
 import type { CandidateAssuranceCompilationV1, CandidateAssuranceReviewAssignmentV1 } from "../architecture/candidateAssurance.js";
@@ -34,7 +35,7 @@ export type ReviewFinalState = "ACCEPTED" | "SPEC_CONTRADICTION" | "REQUIRES_PRO
  */
 export interface ReviewerRoundFailureV1 {
   reviewer: string;
-  kind: "RUNTIME" | "CONTRACT" | "MUTATION";
+  kind: "RUNTIME" | "CONTRACT" | "MUTATION" | "TURN_DEADLINE" | "PERMISSION_WAIT";
   detail: string;
   sessionId?: string;
   exitCode?: number;
@@ -562,7 +563,25 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
   if (!selection) throw new Error(`REVIEW_EXECUTION_INVALID: no frozen selection exists for reviewer '${name}'.`);
   const candidate = report.candidate;
   if (!candidate) throw new Error("CANDIDATE_BINDING_REQUIRED: reviewer invocation requires a candidate-bound report.");
-  const isolated = await executeIsolatedCandidateMutation({
+  // DETERMINISTIC: reviewer turns run under the short reviewer deadline
+  // (default 15 min), not the 30-min participant default or the 8h fuse.
+  // Local readers (not via the mocked agentPrompt module) keep unit mocks
+  // that stub executeAgentPrompt working.
+  const reviewerDeadlineMs = reviewerTurnDeadlineForConfig(config);
+  const permissionTimeoutMs = permissionWaitTimeoutForConfig(config);
+  const startedAt = Date.now();
+  // DETERMINISTIC approval-wait gate on ACTUAL pending-prompt state: the
+  // reviewer call carries the 15-min reviewer deadline, which is the ONLY
+  // wall-clock bound on an active turn. A mid-turn timer must never cut a
+  // reviewer turn with no pending approval prompt, and a lost Promise.race
+  // cannot cancel the provider (executeIsolatedCandidateMutation keeps
+  // awaiting + cleans up after settle) — so there is no mid-turn interrupt
+  // here at all. The PERMISSION_WAIT_TIMEOUT fires only in settled
+  // approval-wait state (isReviewerPermissionWaitStop + wait-start evidence
+  // from the permission-gate producer) via classifyReviewerTurnOutcome
+  // below: fenced session + PERMISSION_WAIT_EXHAUSTED, BLOCKED fail-closed,
+  // rotation-friendly. Mechanism: DETERMINISTIC.
+  const reviewerRun = executeIsolatedCandidateMutation({
     root,
     operationId: candidate.operationId,
     taskId: contract.task.id,
@@ -571,12 +590,75 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
     config,
     contract,
     prepareWorkspace: prepareReviewWorkspace,
-    execute: (isolatedRoot) => executeAgentPrompt(isolatedRoot, config, contract, selection, buildReviewerPrompt(contract, name, report, assignedDimensions), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind, requireExecutionAuthority: true })
+    execute: (isolatedRoot) => executeAgentPrompt(isolatedRoot, config, contract, selection, buildReviewerPrompt(contract, name, report, assignedDimensions), { outputContract: "reviewer", phase: "review", operationKind: currentOperationContext().kind, requireExecutionAuthority: true, providerTurnDeadlineMs: reviewerDeadlineMs })
   });
+  // MID-TURN PERMISSION-WAIT WATCH (armed ONLY while a pending prompt holds):
+  // the watch fires on elapsed-since-pending-start, never as a blind race on
+  // every turn. Live pending observation is owned by the Paseo wait loops
+  // (sdk.ts poll loop + native inspect), which stamp the true first-seen
+  // pending-start into the diagnostic; this layer polls that same LIVE
+  // pending signal (hasTrackedPendingPrompt over the SDK-tracked
+  // first-seen state — the tracked waitStartedAt presence the terminal
+  // diagnostic reads), so a genuinely pending prompt arms the watch in
+  // production while clean turns never arm it. The settled approval-wait
+  // gate below stays authoritative: only a turn stopped on a pending prompt
+  // (wait-start evidence from the mid-turn capture) can exhaust the short
+  // timer. A reviewer turn with no pending prompt never trips this path
+  // regardless of elapsed time; only the reviewer deadline applies. A lost
+  // race cannot cancel the provider (executeIsolatedCandidateMutation keeps
+  // awaiting + cleans up after settle). Mechanism: DETERMINISTIC (watch) +
+  // DETERMINISTIC (settled gate).
+  const watched = await awaitReviewerRunWithPermissionWatch(reviewerRun, {
+    permissionTimeoutMs,
+    // LIVE wiring: armed if and only if the SDK wait loops have observed a
+    // pending approval prompt mid-turn (tracked first-seen state present);
+    // the externally observed start anchors elapsed-since-pending-start, and
+    // a mid-turn first-seen stamp covers prompts that appear after arming.
+    isPending: () => hasTrackedPendingPrompt(),
+    pendingStartedAtMs: earliestTrackedPendingStartMs(),
+  });
+  // The settled session carries the approval-wait gate: only a turn stopped
+  // on a pending prompt (permission-gate wait-start evidence) can exhaust
+  // the short timer. A reviewer turn with no pending prompt never trips this
+  // path regardless of elapsed time; only the reviewer deadline applies.
+  const isolated = watched.kind === "settled"
+    ? watched.value
+    : {
+        // Watchdog fired mid-wait while the prompt was still pending: fence
+        // the session view and terminalize PERMISSION_WAIT_EXHAUSTED below.
+        // The provider run keeps awaiting + cleans up after settle; this
+        // settled view is the fenced record, never a mutation of the run.
+        session: {
+          id: `fenced-permission-wait:${contract.task.id}:${name}`,
+          exitCode: 1,
+          status: "permission",
+          stdout: "",
+          stderr: `PERMISSION_WAIT_EXHAUSTED: reviewer '${name}' approval wait exceeded the short timer mid-turn (timeoutMs=${permissionTimeoutMs}, pendingWaitMs=${watched.pendingWaitMs}); fenced BLOCKED fail-closed.`,
+          finishedAt: new Date().toISOString(),
+          permissionStopDiagnostic: { name: "UNKNOWN", scopeRelation: "UNKNOWN" },
+          permissionWaitMs: watched.pendingWaitMs,
+        },
+      } as unknown as Awaited<typeof reviewerRun>;
   const session = isolated.session;
+  const elapsedMs = Date.now() - startedAt;
+  // Classify with the APPROVAL-WAIT duration, not the whole turn: provider
+  // wait-start evidence wins, whole-turn elapsed is the fail-closed fallback.
+  const permissionWaitMs = reviewerPermissionWaitMs(session, elapsedMs);
+  const outcome = classifyReviewerTurnOutcome(session, elapsedMs, reviewerDeadlineMs, permissionTimeoutMs, permissionWaitMs);
   if (isolated.changeSet) {
     const detail = "Reviewer attempted to modify its isolated candidate snapshot; the output was rejected.";
     return { reviewer: name, session, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "MUTATION", detail, sessionId: session.id, exitCode: session.exitCode } };
+  }
+  // Typed permission-wait terminal: fail-closed BLOCKED, not a 30-min SYSTEM_FAILURE.
+  if (outcome === "PERMISSION_WAIT_EXHAUSTED") {
+    const detail = `PERMISSION_WAIT_EXHAUSTED: reviewer '${name}' stopped on a Paseo/external permission prompt within the short timer (timeoutMs=${permissionTimeoutMs}, permissionWaitMs=${permissionWaitMs}, elapsedMs=${elapsedMs}); BLOCKED fail-closed, safe to rotate with a narrower scope.`;
+    return { reviewer: name, session, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "PERMISSION_WAIT", detail, sessionId: session.id, exitCode: session.exitCode } };
+  }
+  // Typed turn-deadline terminal: steady-output turns die at the reviewer
+  // deadline, not at the 8h fuse.
+  if (outcome === "TURN_DEADLINE_EXCEEDED") {
+    const detail = `TURN_DEADLINE_EXCEEDED: reviewer '${name}' exceeded its wall-clock turn deadline (deadlineMs=${reviewerDeadlineMs}, elapsedMs=${elapsedMs}); steady-output turns die here, not at the operation hard deadline.`;
+    return { reviewer: name, session, findings: [syntheticFinding(name, detail)], valid: false, failure: { reviewer: name, kind: "TURN_DEADLINE", detail, sessionId: session.id, exitCode: session.exitCode } };
   }
   if (session.exitCode !== 0) {
     const stop = (session.stderr || session.stdout || "no provider output").replace(/\s+/g, " ").trim().slice(0, 600);
@@ -594,7 +676,19 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
 
 function reviewerProviderFailureResult(stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, failures: readonly ReviewerRoundFailureV1[], rounds: number, report: ValidationReport, findings: DedupedFindings, checks: ValidationCheck[], sessions: WorkerSession[], qualityHistory: QualityState[]): Promise<ReviewLifecycleResult> {
   const detail = failures.map((failure) => `${failure.reviewer} (${failure.kind}${failure.sessionId ? `, session ${failure.sessionId}` : ""}${failure.exitCode !== undefined ? `, exit ${failure.exitCode}` : ""}): ${failure.detail}`).join(" | ");
+  // Fail-closed permission path: typed PERMISSION_WAIT_EXHAUSTED BLOCKED, not post-hoc SYSTEM_FAILURE.
+  if (failures.some((failure) => failure.kind === "PERMISSION_WAIT")) {
+    return blockedExternalResult(stateRoot, config, contract, `Reviewer permission wait exhausted; this is not remediable implementation debt. ${detail}`, rounds, report, findings, checks, sessions, qualityHistory);
+  }
   return systemFailureResult(stateRoot, config, contract, `Reviewer provider turn failed; this is not remediable implementation debt. ${detail}`, rounds, report, findings, checks, sessions, qualityHistory);
+}
+
+async function blockedExternalResult(stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, message: string, rounds: number, report: ValidationReport, findings: DedupedFindings, checks: ValidationCheck[], sessions: WorkerSession[], qualityHistory: QualityState[]): Promise<ReviewLifecycleResult> {
+  const bounded = message.replace(/\s+/g, " ").trim().slice(0, 1200);
+  checks.push({ id: "agent.permission-wait-exhausted", category: "agent-review", status: "FAIL", message: bounded, details: { round: rounds } });
+  qualityHistory.push(analyzeQualityState(findings.findings, qualityHistory, config, report.candidate?.identityDigest));
+  await recordEvent(stateRoot, config, "harness.review.permission-wait-exhausted", { taskId: contract.task.id, round: rounds, message: bounded }).catch(() => undefined);
+  return { status: "FAIL", finalState: "BLOCKED_EXTERNAL", humanRequired: false, rounds, report, findings, checks, sessions, qualityHistory, leadAccepted: false };
 }
 
 async function systemFailureResult(stateRoot: string, config: HarnessProjectConfig, contract: TaskContract, message: string, rounds: number, report: ValidationReport, findings: DedupedFindings, checks: ValidationCheck[], sessions: WorkerSession[], qualityHistory: QualityState[]): Promise<ReviewLifecycleResult> {
@@ -605,6 +699,148 @@ async function systemFailureResult(stateRoot: string, config: HarnessProjectConf
   qualityHistory.push(analyzeQualityState(findings.findings, qualityHistory, config, report.candidate?.identityDigest));
   await recordEvent(stateRoot, config, "harness.review.system-failure", { taskId: contract.task.id, round: rounds, message: bounded }).catch(() => undefined);
   return { status: "FAIL", finalState: "SYSTEM_FAILURE", humanRequired: false, rounds, report, findings, checks, sessions, qualityHistory, leadAccepted: false };
+}
+
+/**
+ * DETERMINISTIC reviewer-turn bound helpers (local so unit mocks that stub
+ * the worker module keep working). Defaults match the worker module:
+ * reviewer 15 min, permission-wait 5 min. Mechanism: DETERMINISTIC.
+ */
+export function reviewerTurnDeadlineForConfig(config: HarnessProjectConfig): number {
+  const liveness = config.orchestration?.operations?.liveness as { reviewerTurnDeadlineMs?: unknown } | undefined;
+  const configured = liveness?.reviewerTurnDeadlineMs ?? 15 * 60_000;
+  if (!Number.isSafeInteger(configured) || (configured as number) < 1) throw new Error("REVIEWER_TURN_DEADLINE_INVALID: reviewer-turn deadline must be a positive integer in milliseconds.");
+  return configured as number;
+}
+
+export function permissionWaitTimeoutForConfig(config: HarnessProjectConfig): number {
+  const liveness = config.orchestration?.operations?.liveness as { permissionWaitTimeoutMs?: unknown } | undefined;
+  const configured = liveness?.permissionWaitTimeoutMs ?? 5 * 60_000;
+  if (!Number.isSafeInteger(configured) || (configured as number) < 1) throw new Error("PERMISSION_WAIT_TIMEOUT_INVALID: permission-wait timeout must be a positive integer in milliseconds.");
+  return configured as number;
+}
+
+export function isReviewerPermissionWaitStop(session: Pick<WorkerSession, "status" | "permissionStopDiagnostic" | "stderr" | "stdout">): boolean {  const status = (session.status ?? "").toLowerCase();
+  if (status === "permission" || status === "waiting") return true;
+  if (session.permissionStopDiagnostic) return true;
+  return /PERMISSION_WAIT_EXHAUSTED|pending permission|waiting for approval|approval required/i.test(`${(session as { stderr?: unknown }).stderr ?? ""} ${(session as { stdout?: unknown }).stdout ?? ""}`);
+}
+
+export function classifyReviewerTurnOutcome(session: Pick<WorkerSession, "exitCode" | "status" | "stderr" | "stdout" | "finishedAt" | "permissionStopDiagnostic">, elapsedMs: number, deadlineMs: number, permissionTimeoutMs: number, permissionWaitMs?: number): "TURN_DEADLINE_EXCEEDED" | "PERMISSION_WAIT_EXHAUSTED" | "OTHER" {
+  if (`${(session as { stderr?: unknown }).stderr ?? ""} ${(session as { stdout?: unknown }).stdout ?? ""}`.includes("TURN_DEADLINE_EXCEEDED")) return "TURN_DEADLINE_EXCEEDED";
+  // DETERMINISTIC: the wait duration (permission-gate wait-start evidence,
+  // else the explicitly-marked whole-turn fallback) decides against the
+  // short timer — never the whole turn by default, so a brief late-turn
+  // prompt is not misread as exhausted. The isReviewerPermissionWaitStop
+  // check gates on ACTUAL pending-prompt state: a turn with no pending
+  // prompt can never yield PERMISSION_WAIT_EXHAUSTED here.
+  const waitMs = permissionWaitMs ?? reviewerPermissionWaitMs(session, elapsedMs);
+  if (isReviewerPermissionWaitStop(session) && waitMs >= permissionTimeoutMs) return "PERMISSION_WAIT_EXHAUSTED";
+  const text = `${(session as { stderr?: unknown }).stderr ?? ""} ${(session as { stdout?: unknown }).stdout ?? ""}`;
+  const timedOut = (session as { exitCode?: unknown }).exitCode === 124 || ((session as { status?: unknown }).status !== undefined && String((session as { status?: unknown }).status).toLowerCase() === "timeout") || /timed out|timeout/i.test(text);
+  if (timedOut && elapsedMs >= deadlineMs) return "TURN_DEADLINE_EXCEEDED";
+  return "OTHER";
+}
+
+/**
+ * DETERMINISTIC approval-wait duration for a settled reviewer turn. Local
+ * mirror of the worker helper (kept local so unit mocks that stub the worker
+ * module keep working). Precedence: explicit numeric wait evidence, then the
+ * permission-gate producer's pending-observed marker
+ * (`permissionStopDiagnostic.waitStartedAt`, stamped when the prompt went
+ * pending), then the legacy top-level wait-start fields, and only last the
+ * whole-turn elapsed fail-closed fallback for sessions with no wait-start
+ * evidence at all. Mechanism: DETERMINISTIC.
+ */
+export function reviewerPermissionWaitMs(session: Pick<WorkerSession, "finishedAt" | "permissionStopDiagnostic">, elapsedMs: number): number {
+  return reviewerPermissionWaitEvidence(session, elapsedMs).waitMs;
+}
+
+/**
+ * DETERMINISTIC wait-evidence source for a settled reviewer turn. Produced
+ * sessions (permission-gate diagnostic present) resolve to "evidence"; the
+ * whole-turn elapsed applies only when no wait-start evidence exists and is
+ * explicitly marked "fallback" so the classifier's fallback path is visible.
+ * Mechanism: DETERMINISTIC.
+ */
+export function reviewerPermissionWaitEvidence(session: Pick<WorkerSession, "finishedAt" | "permissionStopDiagnostic">, elapsedMs: number): { waitMs: number; source: "evidence" | "fallback" } {
+  const extended = session as Pick<WorkerSession, "finishedAt" | "permissionStopDiagnostic"> & { permissionWaitMs?: unknown; approvalWaitMs?: unknown; permissionWaitStartedAt?: unknown; approvalWaitStartedAt?: unknown };
+  for (const candidate of [extended.permissionWaitMs, extended.approvalWaitMs]) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return { waitMs: Math.max(0, candidate), source: "evidence" };
+  }
+  const gateStartedAt = extended.permissionStopDiagnostic?.waitStartedAt;
+  if (typeof gateStartedAt === "string" && Number.isFinite(Date.parse(gateStartedAt))) {
+    const endMs = Date.parse(extended.finishedAt ?? "");
+    return { waitMs: Math.max(0, (Number.isFinite(endMs) ? endMs : Date.now()) - Date.parse(gateStartedAt)), source: "evidence" };
+  }
+  for (const candidate of [extended.permissionWaitStartedAt, extended.approvalWaitStartedAt]) {
+    const startMs = typeof candidate === "number" ? candidate : Date.parse(String(candidate ?? ""));
+    if (Number.isFinite(startMs)) {
+      const endMs = Date.parse(extended.finishedAt ?? "");
+      return { waitMs: Math.max(0, (Number.isFinite(endMs) ? endMs : Date.now()) - (startMs as number)), source: "evidence" };
+    }
+  }
+  return { waitMs: elapsedMs, source: "fallback" };
+}
+
+/**
+ * DETERMINISTIC mid-turn permission-wait watchdog. Armed ONLY while a pending
+ * approval prompt holds: the watch starts at pending-start (the moment the
+ * prompt became pending, observed mid-turn) and fires when
+ * elapsed-since-pending-start reaches the short timer. A turn with no pending
+ * prompt never arms the watch, so clean turns — however long — are untouched
+ * and only the reviewer turn deadline applies. When the watch fires while the
+ * prompt is still pending the caller must fence the session and terminalize
+ * PERMISSION_WAIT_EXHAUSTED (BLOCKED fail-closed, rotation-friendly). If the
+ * prompt clears before the timer, the watch disarms. The pending probe is
+ * injected so the in-flight behavior is provable without a live provider.
+ * Mechanism: DETERMINISTIC.
+ */
+export interface ReviewerPermissionWatchConfig {
+  permissionTimeoutMs: number;
+  /** Live pending-prompt signal, polled mid-wait. */
+  isPending: () => boolean;
+  /** Externally observed pending-start (epoch ms); when omitted the first poll that reports pending stamps the start. */
+  pendingStartedAtMs?: number;
+  pollMs?: number;
+  now?: () => number;
+}
+
+export type ReviewerRunWatchResult<T> =
+  | { kind: "settled"; value: T }
+  | { kind: "permission-wait-exhausted"; pendingWaitMs: number };
+
+export async function awaitReviewerRunWithPermissionWatch<T>(
+  run: Promise<T>,
+  config: ReviewerPermissionWatchConfig
+): Promise<ReviewerRunWatchResult<T>> {
+  const now = config.now ?? Date.now;
+  const pollMs = Math.max(1, Math.floor(config.pollMs ?? 25));
+  let pendingStartMs = config.pendingStartedAtMs;
+  let settled: { value: T } | undefined;
+  let settledFlag = false;
+  void Promise.resolve(run).then(
+    (value) => { settled = { value }; settledFlag = true; },
+    () => { settledFlag = true; }
+  );
+  for (;;) {
+    if (config.isPending()) {
+      pendingStartMs ??= now();
+      const pendingWaitMs = Math.max(0, now() - pendingStartMs);
+      if (pendingWaitMs >= config.permissionTimeoutMs) {
+        return { kind: "permission-wait-exhausted", pendingWaitMs };
+      }
+    } else {
+      // No pending prompt: the watch is disarmed, never firing on clean turns.
+      pendingStartMs = undefined;
+    }
+    if (settledFlag) {
+      if (settled) return { kind: "settled", value: settled.value };
+      // The run rejected: surface the rejection to the caller.
+      return { kind: "settled", value: await run };
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
 }
 
 function candidateIdentityCheck(id: string, evidence: CandidateWorkspaceIdentityEvidenceV1): ValidationCheck {

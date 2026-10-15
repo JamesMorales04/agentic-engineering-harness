@@ -24,7 +24,11 @@ export function redactPermissionStopDiagnostic(value: unknown, fallbackSessionId
       .filter((item): item is string => typeof item === "string" && item.startsWith("/") && item.length <= 300)
       .slice(0, 16)
     : undefined;
-  return { name, scopeRelation: relation, ...(requestedScopeDigest ? { requestedScopeDigest } : {}), ...(authorizedRoots?.length ? { authorizedRoots } : {}), ...(sessionId ? { sessionId } : {}), ...(turnId ? { turnId } : {}) };
+  // Wait-start evidence passthrough: a revalidated diagnostic keeps its
+  // original pending-observed marker so the wait duration stays anchored to
+  // when the prompt went pending, not to a later re-read.
+  const waitStartedAt = typeof record.waitStartedAt === "string" && Number.isFinite(Date.parse(record.waitStartedAt)) ? record.waitStartedAt : undefined;
+  return { name, scopeRelation: relation, ...(requestedScopeDigest ? { requestedScopeDigest } : {}), ...(authorizedRoots?.length ? { authorizedRoots } : {}), ...(sessionId ? { sessionId } : {}), ...(turnId ? { turnId } : {}), ...(waitStartedAt ? { waitStartedAt } : {}) };
 }
 
 /** Redact provider scope data while classifying it against the frozen launch projection. */
@@ -33,18 +37,31 @@ export async function createPermissionStopDiagnostic(
   patterns: string[] | undefined,
   authorizedRoots: string[] | undefined,
   sessionId?: string,
-  turnId?: string
+  turnId?: string,
+  waitStartedAtOverride?: string
 ): Promise<PaseoSdkPermissionStop | undefined> {
   if (!name && !patterns?.length) return undefined;
   const requestedScopeDigest = patterns?.length ? createHash("sha256").update(JSON.stringify(patterns)).digest("hex") : undefined;
   const scopeRelation = await classifyPermissionScope(patterns, authorizedRoots);
+  // Production wait-start producer: the pending-observed moment is owned by
+  // the mid-turn wait loop that first reports the stop (first-seen pending
+  // state), threaded in as waitStartedAtOverride. Conversion-time stamping
+  // (new Date() here) is only the fallback when the prompt was already
+  // pending at terminal observation with no earlier sighting. The reviewer
+  // approval-wait gate arms ONLY on this state; a turn with no pending
+  // prompt carries no diagnostic and therefore no wait-start evidence.
+  // Cleared on resume/grant/deny (those paths produce no diagnostic).
+  // Mechanism: DETERMINISTIC.
+  const overrideMs = waitStartedAtOverride ? Date.parse(waitStartedAtOverride) : Number.NaN;
+  const waitStartedAt = Number.isFinite(overrideMs) ? new Date(overrideMs).toISOString() : new Date().toISOString();
   return redactPermissionStopDiagnostic({
     ...(name ? { name } : {}),
     scopeRelation,
     ...(requestedScopeDigest ? { requestedScopeDigest } : {}),
     ...(authorizedRoots?.length ? { authorizedRoots } : {}),
     sessionId,
-    turnId
+    turnId,
+    waitStartedAt
   }, sessionId);
 }
 

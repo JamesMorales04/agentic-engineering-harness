@@ -23,6 +23,83 @@ import {
   type ProviderTurnKillReason
 } from "./firstActivityDeadline.js";
 
+/**
+ * DETERMINISTIC mid-turn pending-start capture. The wait loop that polls the
+ * provider handle records the moment Paseo FIRST reports a pending approval
+ * prompt mid-turn (first-seen pendingPermissions while the turn is still
+ * running), not the later conversion/terminal observation. That timestamp is
+ * threaded into the stop diagnostic so the approval-wait duration measures
+ * the true prompt age instead of ~1ms at conversion. Cleared when the prompt
+ * clears (resume/grant/deny) AND when the turn settles (terminal conversion,
+ * stall/timeout verdict): a settled handle must never leak its pending marker
+ * into a later turn on any handle. Tracking is keyed per handle; the global
+ * presence/earliest queries only reflect currently-live (unsettled) handles.
+ * Mechanism: DETERMINISTIC.
+ */
+const pendingStartByHandle = new WeakMap<object, string>();
+
+function hasPendingPermissions(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some((entry) => entry !== null && typeof entry === "object");
+  return value !== null && typeof value === "object";
+}
+
+/** Record first-seen pending state for a live handle; returns the tracked start (if any). */
+function notePendingStart(handle: object, pending: unknown): string | undefined {
+  if (hasPendingPermissions(pending)) {
+    let startedAt = pendingStartByHandle.get(handle);
+    if (!startedAt) {
+      startedAt = new Date().toISOString();
+      pendingStartByHandle.set(handle, startedAt);
+      pendingLiveHandles.add(handle);
+    }
+    return startedAt;
+  }
+  pendingStartByHandle.delete(handle);
+  pendingLiveHandles.delete(handle);
+  return undefined;
+}
+
+function trackedPendingStart(handle: object): string | undefined {
+  return pendingStartByHandle.get(handle);
+}
+
+/**
+ * Terminal settlement: drop this handle's pending marker so no stale state
+ * survives into later turns (settled completed/failed/exhausted/cancelled/
+ * stalled/timed-out turns never re-arm a later reviewer watch).
+ * Mechanism: DETERMINISTIC.
+ */
+function clearTrackedPendingStart(handle: object): void {
+  pendingStartByHandle.delete(handle);
+  pendingLiveHandles.delete(handle);
+}
+
+/**
+ * LIVE pending-prompt presence across SDK handles, polled by the reviewer
+ * mid-turn watchdog (reviewLifecycle runReviewer arms its watch ONLY while
+ * this is true). Same underlying signal the terminal diagnostic reads
+ * (first-seen pendingPermissions); clean turns (no pending prompt) stay
+ * disarmed. Mechanism: DETERMINISTIC.
+ */
+const pendingLiveHandles = new Set<object>();
+
+export function hasTrackedPendingPrompt(): boolean {
+  return pendingLiveHandles.size > 0;
+}
+
+/** Earliest first-seen pending-start across live handles (epoch ms), if any. */
+export function earliestTrackedPendingStartMs(): number | undefined {
+  let earliest: number | undefined;
+  for (const handle of pendingLiveHandles) {
+    const iso = pendingStartByHandle.get(handle);
+    const ms = iso === undefined ? Number.NaN : Date.parse(iso);
+    if (Number.isFinite(ms) && (earliest === undefined || (ms as number) < earliest)) earliest = ms as number;
+  }
+  return earliest;
+}
+
+/** Production SDK pending tracker exposes no test hooks (see suite-level hygiene assertion). */
+
 export interface PaseoSdkMcpStdioServer {
   type: "stdio";
   command: string;
@@ -73,6 +150,14 @@ export interface PaseoSdkPermissionStop {
   authorizedRoots?: string[];
   sessionId?: string;
   turnId?: string;
+  /**
+   * DETERMINISTIC approval-wait start marker: stamped by the permission-gate
+   * producer (createPermissionStopDiagnostic) at the moment the prompt is
+   * observed pending. Absent when no prompt is pending (cleared on
+   * resume/grant/deny — those paths carry no diagnostic). Mechanism:
+   * DETERMINISTIC.
+   */
+  waitStartedAt?: string;
 }
 
 export interface PaseoSdkAgentResult {
@@ -599,8 +684,19 @@ export async function dispatchPaseoSdkAgentWithClient(
         // A4: the atomic dispatch-run carries the same first-activity watch
         // as the resumed-turn run path (same stop-then-read verdicts).
         const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs: attemptTimeout }), attemptTimeout, activityOptions);
-        if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+        if (turn.status === "timeout") {
+          try {
+            await stopPaseoSdkAgentHandle(handle);
+          } finally {
+            // Stop-outcome paths must never skip tracker cleanup: the second
+            // stop can reject (the handle was already stopped inside
+            // runWithFirstActivityWatch) and must still drop the marker.
+            clearTrackedPendingStart(handle);
+          }
+        }
         if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
+          // Stall settlement bypasses turnResult: drop the marker here.
+          clearTrackedPendingStart(handle);
           return {
             id: handle.id,
             workspaceId: handle.workspaceId ?? undefined,
@@ -710,8 +806,19 @@ export async function runPaseoSdkAgentWithClient(
       const handle = client.agents.ref(agentId);
       if (typeof handle.run === "function") {
         const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs: attemptTimeout, ...(outputSchema ? { outputSchema } : {}) }), attemptTimeout, activityOptions);
-        if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+        if (turn.status === "timeout") {
+          try {
+            await stopPaseoSdkAgentHandle(handle);
+          } finally {
+            // Stop-outcome paths must never skip tracker cleanup: the second
+            // stop can reject (the handle was already stopped inside
+            // runWithFirstActivityWatch) and must still drop the marker.
+            clearTrackedPendingStart(handle);
+          }
+        }
         if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
+          // Stall settlement bypasses turnResult: drop the marker here.
+          clearTrackedPendingStart(handle);
           return {
             id: handle.id,
             workspaceId: handle.workspaceId ?? undefined,
@@ -1091,11 +1198,20 @@ async function waitForHandle(
   for (;;) {
     const raw = await refreshHandle(handle);
     const status = statusText(raw?.status ?? handle.status);
+    // PENDING-START CAPTURE SITE (sdk poll loop): Paseo first reports the
+    // mid-turn permission stop here, while the turn is still running. The
+    // first-seen pending moment is recorded now so the terminal diagnostic
+    // below measures the true prompt age instead of conversion time.
+    // Mechanism: DETERMINISTIC.
+    const pendingStart = notePendingStart(handle, raw?.pendingPermissions ?? handle.pendingPermissions);
     if (isTerminalStatus(status)) {
       const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
         ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
         : undefined;
-      const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots);
+      const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots, pendingStart ?? trackedPendingStart(handle));
+      // Terminal settlement: the turn is over, so drop this handle's pending
+      // marker — a later clean turn must never re-observe it.
+      clearTrackedPendingStart(handle);
       return {
         id: handle.id,
         workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
@@ -1118,6 +1234,8 @@ async function waitForHandle(
       return stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs, synthetic);
     }
     if (Date.now() >= deadline) {
+      // Turn-deadline settlement: same stale-marker drop as terminal conversion.
+      clearTrackedPendingStart(handle);
       if (baseline && observed && !synthetic && lastActivity) {
         // The turn showed provider-visible activity but still hit the hard
         // deadline: regular DEADLINE with counts, never STALLED.
@@ -1180,13 +1298,27 @@ async function waitForFinishWithFirstActivityWatch(
   const waitPromise = handle.waitForFinish!(timeoutMs);
   try {
     pollTimer = setInterval(() => {
-      void captureRunActivityBaseline(handle).then((current) => {
-        if (runActivityHasGrown(baseline, current)) {
-          observed = true;
-          if (pollTimer) clearInterval(pollTimer);
-          pollTimer = undefined;
-        }
-      }).catch(() => undefined);
+      // Activity observation stays armed but never stops pending capture:
+      // the poll keeps running after first activity so a later-appearing
+      // prompt is still stamped at first-seen (re-armed, not one-shot).
+      if (!observed) {
+        void captureRunActivityBaseline(handle).then((current) => {
+          if (runActivityHasGrown(baseline, current)) {
+            observed = true;
+          }
+        }).catch(() => undefined);
+      }
+      // PENDING-START CAPTURE SITE (waitForFinish poll): the opaque provider
+      // wait exposes no mid-turn callback, so each activity poll also records
+      // the first-seen pending prompt. turnResult threads the tracked start
+      // into the diagnostic instead of stamping conversion time.
+      void Promise.resolve()
+        .then(() => refreshHandle(handle).catch(() => undefined))
+        .then((raw) => {
+          if (raw) notePendingStart(handle, (raw as Record<string, unknown>).pendingPermissions ?? handle.pendingPermissions);
+          else notePendingStart(handle, handle.pendingPermissions);
+        })
+        .catch(() => undefined);
     }, pollMs);
     const outcome = await Promise.race([
       waitPromise.then(
@@ -1235,6 +1367,9 @@ async function stallVerdictAfterStop(
   synthetic = false
 ): Promise<PaseoSdkAgentResult> {
   await stopPaseoSdkAgentHandle(handle).catch(() => undefined);
+  // Stall/timeout settlement freezes then ends the turn: drop the handle's
+  // pending marker so it cannot leak into a later turn.
+  clearTrackedPendingStart(handle);
   if (synthetic) {
     // Deadline-ONLY: progress unprovable, so the stall stands with zero
     // counts without consulting the final read (any content may pre-date
@@ -1357,13 +1492,29 @@ async function runWithFirstActivityWatch(
   const runPromise = run();
   try {
     pollTimer = setInterval(() => {
-      void captureRunActivityBaseline(handle).then((current) => {
-        if (hasGrown(current)) {
-          observed = true;
-          if (pollTimer) clearInterval(pollTimer);
-          pollTimer = undefined;
-        }
-      }).catch(() => undefined);
+      // Activity observation never stops pending capture: the poll keeps
+      // running after first activity so a later-appearing prompt is still
+      // stamped at first-seen instead of conversion time.
+      if (!observed) {
+        void captureRunActivityBaseline(handle).then((current) => {
+          if (hasGrown(current)) {
+            observed = true;
+          }
+        }).catch(() => undefined);
+      }
+      // PENDING-START CAPTURE SITE (atomic run() poll): the SDK run()
+      // primitive exposes no interim progress, so each activity poll also
+      // records the first-seen pending prompt — the same signal the
+      // waitForFinish poll and the terminal conversion read. turnResult
+      // threads the tracked start into the diagnostic instead of stamping
+      // conversion time.
+      void Promise.resolve()
+        .then(() => refreshHandle(handle).catch(() => undefined))
+        .then((raw) => {
+          if (raw) notePendingStart(handle, (raw as Record<string, unknown>).pendingPermissions ?? handle.pendingPermissions);
+          else notePendingStart(handle, handle.pendingPermissions);
+        })
+        .catch(() => undefined);
     }, pollMs);
     const outcome = await Promise.race([
       runPromise.then(
@@ -1577,7 +1728,14 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, messag
 }
 
 async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
-  const permission = await permissionStopDiagnostic(turn.final?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots);
+  // Terminal conversion threads the mid-turn first-seen pending start (when
+  // the wait loop observed it) instead of stamping conversion time, so a
+  // prompt pending for minutes measures its true age. Terminal settlement:
+  // the marker is consumed AND cleared here so a settled turn never leaks
+  // pending state into a later turn (clear-on-settle, per handle).
+  const waitStartedAt = trackedPendingStart(handle);
+  clearTrackedPendingStart(handle);
+  const permission = await permissionStopDiagnostic(turn.final?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots, waitStartedAt);
   if (turn.lastMessage) {
     return {
       id: handle.id,
@@ -1597,7 +1755,7 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult,
   const timeline = handle.timeline && typeof handle.timeline.refetch === "function"
     ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
     : undefined;
-  const observedPermission = permission ?? await permissionStopDiagnostic(raw?.pendingPermissions, handle.id, permissionScopeRoots);
+  const observedPermission = permission ?? await permissionStopDiagnostic(raw?.pendingPermissions, handle.id, permissionScopeRoots, waitStartedAt ?? trackedPendingStart(handle));
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
@@ -1612,8 +1770,20 @@ async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult,
   };
 }
 
-export async function permissionStopDiagnostic(value: unknown, sessionId?: string, permissionScopeRoots?: string[]): Promise<PaseoSdkPermissionStop | undefined> {
+export async function permissionStopDiagnostic(value: unknown, sessionId?: string, permissionScopeRoots?: string[], observedWaitStartedAt?: string): Promise<PaseoSdkPermissionStop | undefined> {
   const entries = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  // A revalidated diagnostic keeps its original pending-observed marker
+  // (earliest wins) so the wait duration stays anchored to when the prompt
+  // went pending, not to a later re-read.
+  let earliest: string | undefined;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const marker = (entry as Record<string, unknown>).waitStartedAt;
+    if (typeof marker === "string" && Number.isFinite(Date.parse(marker))) {
+      if (!earliest || Date.parse(marker) < Date.parse(earliest)) earliest = marker;
+    }
+  }
+  const waitStartedAt = earliest ?? observedWaitStartedAt;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
@@ -1621,7 +1791,7 @@ export async function permissionStopDiagnostic(value: unknown, sessionId?: strin
     const input = record.input && typeof record.input === "object" ? record.input as Record<string, unknown> : undefined;
     const patterns = boundedStringArray(input?.patterns);
     if (name || patterns?.length) {
-      return createPermissionStopDiagnostic(name, patterns, permissionScopeRoots, sessionId, typeof record.id === "string" ? record.id : `${sessionId ?? "session"}:pending`);
+      return createPermissionStopDiagnostic(name, patterns, permissionScopeRoots, sessionId, typeof record.id === "string" ? record.id : `${sessionId ?? "session"}:pending`, waitStartedAt);
     }
   }
   return undefined;
@@ -1647,7 +1817,7 @@ async function refreshHandle(handle: PaseoSdkAgentHandle): Promise<Record<string
 
 async function handleResult(handle: PaseoSdkAgentHandle, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
   const raw = handle.latest?.() ?? undefined;
-  const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots);
+  const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots, trackedPendingStart(handle));
   return {
     id: handle.id,
     workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),

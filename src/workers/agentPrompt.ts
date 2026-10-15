@@ -114,6 +114,10 @@ export interface AgentPromptOptions {
   participantGeneration?: string;
   /** Provider turn boundary, independently bounded from the operation hard deadline and progress lease. */
   providerTurnDeadlineMs?: number;
+  /** Explicit managed-operation participant-turn bound; the effective managed
+   * turn deadline is the tighter of this (or the configured participant /
+   * reviewer key) and the provider ceiling above. Mechanism: DETERMINISTIC. */
+  participantTurnDeadlineMs?: number;
   executionBlueprint?: ExecutionBlueprintV3;
   roleInvocationPolicy?: RoleInvocationPolicyV1;
   skillManifest?: SkillManifestV1;
@@ -694,6 +698,7 @@ async function executeViaPaseo(
     supervisorAgent: options.supervisorAgent,
     contextCapabilities: options.contextCapabilities,
     providerTurnDeadlineMs: options.providerTurnDeadlineMs,
+    participantTurnDeadlineMs: options.participantTurnDeadlineMs,
     supervisorSessionId: options.supervisorAgent ? options.resumeSessionId ?? options.materializedPaseoSession?.id : undefined,
     participantId: options.participantId,
     candidateDigest: options.capabilityAuthority?.candidateDigest,
@@ -935,9 +940,158 @@ function codexPermissionArgs(selection: AgentExecutionSelection, scratchPath?: s
 }
 
 function providerTurnDeadlineMs(config: HarnessProjectConfig, options: AgentPromptOptions): number {
-  const configured = options.providerTurnDeadlineMs ?? config.orchestration?.operations?.liveness?.providerTurnDeadlineMs ?? 30 * 60_000;
-  if (!Number.isSafeInteger(configured) || configured < 1) throw new Error("PROVIDER_TURN_DEADLINE_INVALID: provider-turn deadline must be a positive integer in milliseconds.");
-  return configured;
+  // DETERMINISTIC managed-operation bound: the participant (or reviewer, for
+  // review phase) key is the EFFECTIVE bound; the explicit/frozen provider
+  // deadline remains the ceiling/fallback (tightest wins). Steady-output
+  // turns die at this deadline with typed TURN_DEADLINE_EXCEEDED, not at the
+  // 8h fuse. Mechanism: DETERMINISTIC.
+  return managedTurnDeadlineMs(config, options);
+}
+
+/**
+ * DETERMINISTIC effective managed-turn deadline: the tighter of the managed
+ * participant/reviewer bound and the provider ceiling. The provider deadline
+ * (explicit option, else configured provider key) is never exceeded and acts
+ * as the fallback when no participant key is configured. Mechanism:
+ * DETERMINISTIC.
+ */
+export function managedTurnDeadlineMs(config: HarnessProjectConfig, options: AgentPromptOptions = {}): number {
+  const liveness = config.orchestration?.operations?.liveness as { providerTurnDeadlineMs?: unknown; participantTurnDeadlineMs?: unknown; reviewerTurnDeadlineMs?: unknown } | undefined;
+  let managed: unknown;
+  if (options.phase === "review") {
+    managed = liveness?.reviewerTurnDeadlineMs ?? 15 * 60_000;
+  } else {
+    managed = options.participantTurnDeadlineMs ?? liveness?.participantTurnDeadlineMs ?? liveness?.providerTurnDeadlineMs ?? 30 * 60_000;
+  }
+  if (!Number.isSafeInteger(managed) || (managed as number) < 1) throw new Error(options.phase === "review" ? "REVIEWER_TURN_DEADLINE_INVALID: reviewer-turn deadline must be a positive integer in milliseconds." : "PARTICIPANT_TURN_DEADLINE_INVALID: participant-turn deadline must be a positive integer in milliseconds.");
+  const ceiling = options.providerTurnDeadlineMs ?? liveness?.providerTurnDeadlineMs;
+  if (ceiling === undefined) return managed as number;
+  if (!Number.isSafeInteger(ceiling) || (ceiling as number) < 1) throw new Error("PROVIDER_TURN_DEADLINE_INVALID: provider-turn deadline must be a positive integer in milliseconds.");
+  return Math.min(managed as number, ceiling as number);
+}
+
+/**
+ * DETERMINISTIC participant-turn deadline (default = existing 30-min
+ * provider-turn value). Mechanism: DETERMINISTIC.
+ */
+export function participantTurnDeadlineMs(config: HarnessProjectConfig, options: AgentPromptOptions = {}): number {
+  const liveness = config.orchestration?.operations?.liveness as { providerTurnDeadlineMs?: unknown; participantTurnDeadlineMs?: unknown } | undefined;
+  const configured = options.participantTurnDeadlineMs ?? liveness?.participantTurnDeadlineMs ?? options.providerTurnDeadlineMs ?? liveness?.providerTurnDeadlineMs ?? 30 * 60_000;
+  if (!Number.isSafeInteger(configured) || (configured as number) < 1) throw new Error("PARTICIPANT_TURN_DEADLINE_INVALID: participant-turn deadline must be a positive integer in milliseconds.");
+  return configured as number;
+}
+
+/**
+ * DETERMINISTIC reviewer-turn deadline override (default 15 min).
+ * Mechanism: DETERMINISTIC.
+ */
+export function reviewerTurnDeadlineMs(config: HarnessProjectConfig): number {
+  const liveness = config.orchestration?.operations?.liveness as { reviewerTurnDeadlineMs?: unknown; participantTurnDeadlineMs?: unknown; providerTurnDeadlineMs?: unknown } | undefined;
+  const configured = liveness?.reviewerTurnDeadlineMs ?? 15 * 60_000;
+  if (!Number.isSafeInteger(configured) || (configured as number) < 1) throw new Error("REVIEWER_TURN_DEADLINE_INVALID: reviewer-turn deadline must be a positive integer in milliseconds.");
+  return configured as number;
+}
+
+/**
+ * DETERMINISTIC Paseo/external permission-wait timer (default 5 min).
+ * Mechanism: DETERMINISTIC.
+ */
+export function permissionWaitTimeoutMs(config: HarnessProjectConfig): number {
+  const liveness = config.orchestration?.operations?.liveness as { permissionWaitTimeoutMs?: unknown } | undefined;
+  const configured = liveness?.permissionWaitTimeoutMs ?? 5 * 60_000;
+  if (!Number.isSafeInteger(configured) || (configured as number) < 1) throw new Error("PERMISSION_WAIT_TIMEOUT_INVALID: permission-wait timeout must be a positive integer in milliseconds.");
+  return configured as number;
+}
+
+/** DETERMINISTIC: true when the settled turn stopped on a permission/approval prompt. */
+export function isPermissionWaitStop(session: Pick<WorkerSession, "status" | "permissionStopDiagnostic" | "stderr" | "stdout">): boolean {
+  const status = (session.status ?? "").toLowerCase();
+  if (status === "permission" || status === "waiting") return true;
+  if (session.permissionStopDiagnostic) return true;
+  return /PERMISSION_WAIT_EXHAUSTED|pending permission|waiting for approval|approval required/i.test(`${session.stderr ?? ""} ${session.stdout ?? ""}`);
+}
+
+/**
+ * DETERMINISTIC approval-wait duration for a settled turn. Prefers explicit
+ * provider-reported wait evidence (numeric `permissionWaitMs` /
+ * `approvalWaitMs`, or an ISO/epoch `permissionWaitStartedAt` /
+ * `approvalWaitStartedAt` measured against turn finish) so classification
+ * uses the WAIT duration, not the whole turn. Falls back to the whole-turn
+ * elapsed (fail-closed upper bound) when the provider reports no wait-start
+ * evidence. Mechanism: DETERMINISTIC.
+ */
+export function permissionWaitMsForSession(session: Pick<WorkerSession, "finishedAt">, elapsedMs: number): number {
+  const extended = session as Pick<WorkerSession, "finishedAt"> & { permissionWaitMs?: unknown; approvalWaitMs?: unknown; permissionWaitStartedAt?: unknown; approvalWaitStartedAt?: unknown };
+  for (const candidate of [extended.permissionWaitMs, extended.approvalWaitMs]) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return Math.max(0, candidate);
+  }
+  for (const candidate of [extended.permissionWaitStartedAt, extended.approvalWaitStartedAt]) {
+    const startMs = typeof candidate === "number" ? candidate : Date.parse(String(candidate ?? ""));
+    if (Number.isFinite(startMs)) {
+      const endMs = Date.parse(extended.finishedAt ?? "");
+      return Math.max(0, (Number.isFinite(endMs) ? endMs : Date.now()) - (startMs as number));
+    }
+  }
+  return elapsedMs;
+}
+
+/** DETERMINISTIC: true when elapsed wall time exhausts the permission-wait timer. */
+export function isPermissionWaitExhausted(elapsedMs: number, config: HarnessProjectConfig): boolean {
+  return elapsedMs >= permissionWaitTimeoutMs(config);
+}
+
+/** DETERMINISTIC: true when the settled text carries the typed turn-deadline terminal. */
+export function isTurnDeadlineExceeded(session: Pick<WorkerSession, "stderr" | "stdout">): boolean {
+  return `${session.stderr ?? ""} ${session.stdout ?? ""}`.includes("TURN_DEADLINE_EXCEEDED");
+}
+
+/**
+ * DETERMINISTIC turn-outcome classifier. A provider timeout (exit 124 /
+ * timeout status / DEADLINE text) whose elapsed wall time reached the
+ * participant deadline is a typed TURN_DEADLINE_EXHAUSTED terminal; a
+ * permission stop whose APPROVAL-WAIT duration reached the short timer is a
+ * typed PERMISSION_WAIT_EXHAUSTED BLOCKED. The wait duration comes from
+ * provider-reported wait-start evidence when present (see
+ * permissionWaitMsForSession), never the whole turn by default. Mechanism:
+ * DETERMINISTIC.
+ */
+export function classifyTurnOutcome(args: { session: Pick<WorkerSession, "exitCode" | "status" | "stderr" | "stdout" | "finishedAt" | "permissionStopDiagnostic">; elapsedMs: number; deadlineMs: number; permissionTimeoutMs: number; permissionWaitMs?: number }): "TURN_DEADLINE_EXCEEDED" | "PERMISSION_WAIT_EXHAUSTED" | "OTHER" {
+  if (isTurnDeadlineExceeded(args.session)) return "TURN_DEADLINE_EXCEEDED";
+  const waitMs = args.permissionWaitMs ?? permissionWaitMsForSession(args.session, args.elapsedMs);
+  if (isPermissionWaitStop(args.session) && waitMs >= args.permissionTimeoutMs) return "PERMISSION_WAIT_EXHAUSTED";
+  const text = `${args.session.stderr ?? ""} ${args.session.stdout ?? ""}`;
+  const timedOut = args.session.exitCode === 124 || (args.session.status ?? "").toLowerCase() === "timeout" || /timed out|timeout/i.test(text);
+  if (timedOut && args.elapsedMs >= args.deadlineMs) return "TURN_DEADLINE_EXCEEDED";
+  return "OTHER";
+}
+
+/**
+ * DETERMINISTIC worker-finalization terminal mapping. Timed-out general
+ * turns emit the typed terminal detail (TURN_DEADLINE_EXCEEDED family);
+ * permission-wait stops emit the typed BLOCKED detail. Returns undefined
+ * when the turn is not a typed terminal so callers keep their existing
+ * error shape. Reviewer turns are excluded by the caller (reviewer path
+ * classifies in reviewLifecycle and stays authoritative). Mechanism:
+ * DETERMINISTIC.
+ */
+export function workerTurnTerminalDetail(args: { session: Pick<WorkerSession, "exitCode" | "status" | "stderr" | "stdout" | "finishedAt" | "permissionStopDiagnostic">; elapsedMs: number; deadlineMs: number; permissionTimeoutMs: number; permissionWaitMs?: number }): string | undefined {
+  const outcome = classifyTurnOutcome(args);
+  if (outcome === "TURN_DEADLINE_EXCEEDED") return turnDeadlineExceededDetail(args.deadlineMs, args.elapsedMs);
+  if (outcome === "PERMISSION_WAIT_EXHAUSTED") {
+    const waitMs = args.permissionWaitMs ?? permissionWaitMsForSession(args.session, args.elapsedMs);
+    return permissionWaitExhaustedDetail(args.permissionTimeoutMs, waitMs);
+  }
+  return undefined;
+}
+
+/** DETERMINISTIC: typed terminal detail for a turn-deadline kill (refs-only, no provider content). */
+export function turnDeadlineExceededDetail(deadlineMs: number, elapsedMs: number): string {
+  return `TURN_DEADLINE_EXCEEDED: participant turn exceeded its wall-clock deadline (deadlineMs=${deadlineMs}, elapsedMs=${elapsedMs}); steady-output turns die here, not at the operation hard deadline.`;
+}
+
+/** DETERMINISTIC: typed blocked detail for an exhausted permission wait (fail-closed, rotation-friendly). */
+export function permissionWaitExhaustedDetail(timeoutMs: number, elapsedMs: number): string {
+  return `PERMISSION_WAIT_EXHAUSTED: Paseo/external permission wait exhausted its short timer (timeoutMs=${timeoutMs}, elapsedMs=${elapsedMs}); BLOCKED fail-closed, safe to rotate with a narrower scope.`;
 }
 
 function withDirectContextIdentity(environment: Record<string, string>, root: string, selection: AgentExecutionSelection, options: AgentPromptOptions): Record<string, string> {
@@ -1522,6 +1676,24 @@ async function finalizeOperationSession(
   const killMarker = killReason === "STALLED_FIRST_ACTIVITY" || killReason === "DEADLINE"
     ? `[turn-kill=${killReason}${observed.activityCounts ? ` updates=${observed.activityCounts.updatesObserved} toolEvents=${observed.activityCounts.toolEvents}` : ""}]`
     : undefined;
+  // DETERMINISTIC typed-terminal mapping for general worker turns: a timed-out
+  // turn emits the TURN_DEADLINE_EXCEEDED family detail (and a permission stop
+  // the PERMISSION_WAIT_EXHAUSTED detail) instead of generic DEADLINE text.
+  // The reviewer path is excluded here and stays authoritative in
+  // reviewLifecycle; contract failures keep their contract error.
+  const isReviewerTurn = (observed.phase ?? options.phase) === "review" || options.outputContract === "reviewer";
+  let typedTerminal: string | undefined;
+  if (failed && !isReviewerTurn && !contractFailure) {
+    const startedMs = Date.parse(observed.startedAt ?? "");
+    const finishedMs = Date.parse(observed.finishedAt ?? "");
+    const elapsedMs = Number.isFinite(startedMs)
+      ? (Number.isFinite(finishedMs) ? (finishedMs as number) - (startedMs as number) : Math.max(0, Date.now() - (startedMs as number)))
+      : undefined;
+    if (elapsedMs !== undefined && elapsedMs >= 0) {
+      typedTerminal = workerTurnTerminalDetail({ session: observed, elapsedMs, deadlineMs: providerTurnDeadlineMs(config, options), permissionTimeoutMs: permissionWaitTimeoutMs(config) });
+    }
+  }
+  const typedError = typedTerminal ? [killMarker, typedTerminal].filter(Boolean).join(" ") : undefined;
   await persistEfficiencyObservations(root, config, selection, result, options, operationStateRoot, operationId, failed ? "FAILED" : "SUCCEEDED");
   await updateOperationParticipant(operationStateRoot, operationId, sessionParticipantId, {
     logicalAgent: selection.logicalAgent,
@@ -1534,7 +1706,7 @@ async function finalizeOperationSession(
     transport: observed.transport,
     status: failed ? "FAILED" : "COMPLETED",
     resultArtifact: accepted?.artifact ?? transcriptArtifact,
-    error: failed ? ([killMarker, contractFailure ?? observed.stderr].filter(Boolean).join(" ") || `agent exited with ${observed.exitCode}`) : undefined
+    error: failed ? (typedError ?? ([killMarker, contractFailure ?? observed.stderr].filter(Boolean).join(" ") || `agent exited with ${observed.exitCode}`)) : undefined
   }).catch(() => undefined);
   const afterParticipant = await loadOperation(operationStateRoot, operationId).catch(() => undefined);
   const receiptArtifact = accepted?.artifact ?? transcriptArtifact;
