@@ -64,6 +64,18 @@ describe("toolchain", () => {
     expect(await fileExists(path.join(root, ".harness", "toolchain.state.json"))).toBe(false);
   });
 
+  it("refuses to install from a stale machine-local lock instead of silently downgrading", async () => {
+    const root = await fixture();
+    await fs.writeFile(path.join(root, ".harness", "toolchain.lock.json"), JSON.stringify({ version: 1, tools: { node: { command: "node", provisioning: "mise", source: "node", requestedVersion: "0.0.0-stale", resolvedVersion: "0.0.0-stale" } } }));
+    await expect(setupToolchain(root, project, { skipProjectDependencies: true })).rejects.toThrow(/TOOLCHAIN_LOCK_STALE.*node.*0\.0\.0-stale.*--update-lock/);
+  });
+
+  it("treats a lock entry missing requestedVersion as stale, never trusted", async () => {
+    const root = await fixture();
+    await fs.writeFile(path.join(root, ".harness", "toolchain.lock.json"), JSON.stringify({ version: 1, tools: { node: { command: "node", provisioning: "mise", source: "node", resolvedVersion: "0.0.0-unverifiable" } } }));
+    await expect(setupToolchain(root, project, { skipProjectDependencies: true })).rejects.toThrow(/TOOLCHAIN_LOCK_STALE.*missing requestedVersion/);
+  });
+
   it("reconciles through mise and produces a compliant lock/state without shell activation", async () => {
     const root = await fixture();
     const fakeSystem = path.join(root, "fake-system"); const fakeBins = path.join(root, "fake-tools");

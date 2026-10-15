@@ -35,7 +35,9 @@ import {
 const SCAN_TARGETS = ["src", "scripts", path.join("ui", "control-center", "src")];
 
 function fail(code, message) {
-  process.stderr.write(`${message}\n`);
+  // Drain-safe output: synchronous writes block until delivered, so a
+  // process.exit() immediately afterward can never truncate piped output.
+  fs.writeSync(process.stderr.fd, `${message}\n`);
   process.exit(code);
 }
 
@@ -85,14 +87,15 @@ function main() {
   if (!targets.length) {
     fail(2, "SCAN_SCOPE_EMPTY: none of src/, scripts/, ui/control-center/src/ exist under the candidate tree; refusing to report a vacuous pass.");
   }
-  process.stderr.write(`opengrep ${observedVersion} ruleset ${pins.ruleset.name} v${ruleset.version} digest ${ruleset.digest}\n`);
+  fs.writeSync(process.stderr.fd, `opengrep ${observedVersion} ruleset ${pins.ruleset.name} v${ruleset.version} digest ${ruleset.digest}\n`);
   const scan = spawnSync(binary, ["scan", "--json", ...ruleFiles.flatMap((file) => ["-f", file]), ...targets], {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024
   });
-  if (scan.stdout) process.stdout.write(scan.stdout);
-  if (scan.stderr) process.stderr.write(scan.stderr);
+  // Drain-safe: synchronous writes (see fail() above).
+  if (scan.stdout) fs.writeSync(process.stdout.fd, scan.stdout);
+  if (scan.stderr) fs.writeSync(process.stderr.fd, scan.stderr);
   if (scan.error) {
     fail(2, `TOOL_EXECUTION_FAILED: opengrep did not run: ${String(scan.error)}`);
   }

@@ -348,7 +348,9 @@ function main() {
   const failures = checks.filter((check) => !check.ok);
   const nodeVersion = process.version;
   if (failures.length) {
-    console.error(`ARCHITECTURE_FAILED: ${failures.map((check) => `${check.id}: ${check.message}`).join("; ")}`);
+    // Drain-safe output: synchronous write blocks until delivered, so the
+    // process.exit() immediately afterward can never truncate piped output.
+    fs.writeSync(process.stderr.fd, `ARCHITECTURE_FAILED: ${failures.map((check) => `${check.id}: ${check.message}`).join("; ")}\n`);
     process.exit(1);
   }
   console.log(`ARCHITECTURE_PASS ${checks.length} checks (tool=node ${nodeVersion}, ruleset=${RULESET}).`);

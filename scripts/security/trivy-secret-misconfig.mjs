@@ -11,13 +11,17 @@
  * the candidate tree root.
  */
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import { REPO_ROOT, assertToolVersion, providerVersions, resolveToolBinary, toolVersionOutput } from "./toolPin.mjs";
 
 const SCANNERS = "misconfig,secret";
 const SEVERITY = "HIGH,CRITICAL";
 
 function fail(code, message) {
-  process.stderr.write(`${message}\n`);
+  // Drain-safe output: synchronous writes block until delivered, so a
+  // process.exit() immediately afterward can never truncate piped output
+  // (async write + immediate exit drops buffered output).
+  fs.writeSync(process.stderr.fd, `${message}\n`);
   process.exit(code);
 }
 
@@ -39,14 +43,15 @@ function main() {
   } catch (error) {
     fail(2, String(error instanceof Error ? error.message : error));
   }
-  process.stderr.write(`trivy secret/misconfiguration scan (scanners=${SCANNERS} severity=${SEVERITY}) with pinned trivy ${pinned}\n`);
+  fs.writeSync(process.stderr.fd, `trivy secret/misconfiguration scan (scanners=${SCANNERS} severity=${SEVERITY}) with pinned trivy ${pinned}\n`);
   const scan = spawnSync(
     binary,
     ["fs", "--format", "json", "--exit-code", "1", "--severity", SEVERITY, "--scanners", SCANNERS, "."],
     { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }
   );
-  if (scan.stdout) process.stdout.write(scan.stdout);
-  if (scan.stderr) process.stderr.write(scan.stderr);
+  // Drain-safe: synchronous writes (see fail() above).
+  if (scan.stdout) fs.writeSync(process.stdout.fd, scan.stdout);
+  if (scan.stderr) fs.writeSync(process.stderr.fd, scan.stderr);
   if (scan.error) {
     fail(2, `TOOL_EXECUTION_FAILED: trivy did not run: ${String(scan.error)}`);
   }
