@@ -6,7 +6,8 @@ import type { HarnessProjectConfig, TaskContract, WorkerSession } from "../core/
 import { sha256Utf8 } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { providerGeneratedPathspecExcludes } from "../core/git.js";
-import { runExecutable } from "../utils/process.js";
+import { clearToolchainEnvCache, runExecutable } from "../utils/process.js";
+import { materializeToolchainStateForIsolatedRoot } from "../toolchain/config.js";
 import { markOperationResourceReleased, registerOperationResource } from "../runtime/operationResources.js";
 import { existingRepositoryPath, materializeRepairEvidence, repositoryPath, verifyRepairEvidenceUntampered } from "../utils/repositoryPath.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
@@ -174,6 +175,10 @@ export async function executeIsolatedCandidateMutation(input: {
     const add = await runExecutable("git", ["worktree", "add", "--detach", isolatedRoot, "HEAD"], { cwd: input.root, timeoutMs: 120_000 });
     if (add.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to create isolated DIRECT workspace: ${add.stderr || add.stdout}`);
 
+    // Toolchain state precedes any tool resolution inside the fresh root
+    // (same rationale as the wave per-unit path): without it, live
+    // provider probes fail even though the source tree is provisioned.
+    if (await materializeToolchainStateForIsolatedRoot(input.root, isolatedRoot, input.config)) clearToolchainEnvCache();
     await materializeCandidateState(input.root, isolatedRoot, input.candidate);
     // Owner heartbeat for the P-NEW-7 janitor: written AFTER the worktree add
     // (which requires an empty directory) and AFTER materialization (whose
