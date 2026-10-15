@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveCommit, resolveWorkspaceBase } from "../src/core/git.js";
+import { resolveHandoffWorkspaceBase } from "../src/delivery/handoff.js";
 import { buildBranchOffWorkspaceCommand } from "../src/operations/controller.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
@@ -72,5 +73,22 @@ describe("workspace base commit resolution (DETERMINISTIC)", () => {
     const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
     expect(await resolveWorkspaceBase(root, "main")).toEqual({ base: head, pinned: true });
     expect(await resolveWorkspaceBase(root, "no-such-ref")).toEqual({ base: "no-such-ref", pinned: false });
+  });
+
+  it("binds handoff authorization payloads to the same resolved base", async () => {
+    const root = await gitRepo();
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    // Remote-branch handoffs check out the branch; no base pinning applies.
+    expect(await resolveHandoffWorkspaceBase(root, "feature/remote", "main")).toEqual({
+      mode: "checkout-branch", branch: "feature/remote",
+    });
+    // Branch-off handoffs carry the pinned SHA so the gated request and the
+    // executor cannot diverge behind the authorization.
+    expect(await resolveHandoffWorkspaceBase(root, undefined, "main")).toEqual({
+      mode: "branch-off", branch: "", base: head, basePinned: true,
+    });
+    expect(await resolveHandoffWorkspaceBase(root, undefined, "no-such-ref")).toEqual({
+      mode: "branch-off", branch: "", base: "no-such-ref", basePinned: false,
+    });
   });
 });

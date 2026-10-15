@@ -27,6 +27,31 @@ export interface DeliveryRecord {
   github?: { repository: string; issueNumber?: number; issueUrl?: string; branch?: string; branchSha?: string; };
   paseo?: { workspaceId?: string; worktreePath?: string; };
 }
+
+export interface HandoffWorkspaceBase {
+  mode: "checkout-branch" | "branch-off";
+  branch: string;
+  /** Exact commit SHA when pinned, otherwise the configured name. */
+  base?: string;
+  /** Whether the base is a pinned SHA (false = fallthrough name, traced). */
+  basePinned?: boolean;
+}
+
+/**
+ * Resolve the delivery workspace base (DETERMINISTIC): branch names are
+ * pinned to the exact commit SHA observed now so the authorization payload
+ * and the actual workspace creation bind the SAME base. Extracted for unit
+ * coverage; the handoff passes the result straight through.
+ */
+export async function resolveHandoffWorkspaceBase(
+  root: string,
+  remoteBranch: string | undefined,
+  originatingBranch: string,
+): Promise<HandoffWorkspaceBase> {
+  if (remoteBranch) return { mode: "checkout-branch", branch: remoteBranch };
+  const resolved = await resolveWorkspaceBase(root, originatingBranch);
+  return { mode: "branch-off", branch: "", base: resolved.base, basePinned: resolved.pinned };
+}
 interface GithubIssue { number: number; html_url: string; body?: string; }
 interface GithubUser { login: string; }
 interface GithubRef { object: { sha: string } }
@@ -98,9 +123,12 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
       // The authorization payload and the actual workspace creation bind the
       // SAME resolved base: branch names are pinned to the exact commit SHA
       // observed now so a stale local branch cannot fork the workspace off an
-      // unintended base behind the authorization's back.
-      const workspaceBase = remoteBranch ? undefined : (await resolveWorkspaceBase(root, originatingBranch)).base;
-      const workspacePayload = { path: root, isolation: "worktree", mode: remoteBranch ? "checkout-branch" : "branch-off", branch: remoteBranch ?? localIssueBranch, base: workspaceBase, slug, title: taskId };
+      // unintended base behind the authorization's back. The pin decision is
+      // part of the authorized record.
+      const workspaceBase = remoteBranch
+        ? { mode: "checkout-branch" as const, branch: remoteBranch }
+        : { ...(await resolveHandoffWorkspaceBase(root, undefined, originatingBranch)), branch: localIssueBranch };
+      const workspacePayload = { path: root, isolation: "worktree", mode: workspaceBase.mode, branch: workspaceBase.branch, base: workspaceBase.base, basePinned: workspaceBase.basePinned, slug, title: taskId };
       let workspace: { workspaceId?: string; worktreePath?: string } | undefined;
       const gate = await executeGatedAction({
         root,
@@ -108,7 +136,7 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
         execute: async () => {
           workspace = remoteBranch
             ? await createCheckoutWorkspace(root, remoteBranch, slug, taskId, handoffAuthority!, record.github?.branchSha)
-            : await createBranchOffWorkspace(root, workspaceBase ?? originatingBranch, localIssueBranch, slug, taskId, handoffAuthority!.operationId);
+            : await createBranchOffWorkspace(root, workspaceBase.base ?? originatingBranch, localIssueBranch, slug, taskId, handoffAuthority!.operationId);
           return { outcome: "SUCCEEDED" as const, evidence: { workspaceId: workspace.workspaceId, worktreePath: workspace.worktreePath, branch: workspacePayload.branch } };
         },
         reconcile: (intent) => reconcileToolAction(root, intent, { ...workspacePayload, ...(record.paseo?.workspaceId ? { workspaceId: record.paseo.workspaceId } : {}) })
