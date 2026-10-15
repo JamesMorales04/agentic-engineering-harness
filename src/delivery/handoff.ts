@@ -28,14 +28,9 @@ export interface DeliveryRecord {
   paseo?: { workspaceId?: string; worktreePath?: string; };
 }
 
-export interface HandoffWorkspaceBase {
-  mode: "checkout-branch" | "branch-off";
-  branch: string;
-  /** Exact commit SHA when pinned, otherwise the configured name. */
-  base?: string;
-  /** Whether the base is a pinned SHA (false = fallthrough name, traced). */
-  basePinned?: boolean;
-}
+export type HandoffWorkspaceBase =
+  | { mode: "checkout-branch"; branch: string }
+  | { mode: "branch-off"; branch: string; base: string; basePinned: boolean };
 
 export interface HandoffWorkspacePayload {
   path: string;
@@ -49,12 +44,45 @@ export interface HandoffWorkspacePayload {
 }
 
 /**
- * Build the gated workspace-create authorization payload (DETERMINISTIC):
- * the payload, the executor call, and the receipt evidence all carry the
- * SAME resolved base and pin decision, so a stale local branch cannot fork
- * the workspace off an unintended base behind the authorization's back.
- * Extracted for unit coverage of the exact authorized shape.
+ * Create the delivery branch-off workspace with payload/executor/receipt
+ * bound to one resolution (DETERMINISTIC). Extracted so the exact
+ * production call site is unit-coverable: the authorization payload, the
+ * executor's `--base` argument, and the receipt evidence provably share the
+ * resolved base. The caller persists the returned workspace on the delivery
+ * record.
  */
+export async function createHandoffBranchOffWorkspace(input: {
+  root: string;
+  taskId: string;
+  originatingBranch: string;
+  localIssueBranch: string;
+  slug: string;
+  handoffAuthority: HandoffAuthority;
+}): Promise<{
+  workspace: { workspaceId?: string; worktreePath?: string } | undefined;
+  payload: HandoffWorkspacePayload;
+}> {
+  const { root } = input;
+  const resolved = await resolveHandoffWorkspaceBase(root, undefined, input.originatingBranch);
+  if (resolved.mode !== "branch-off") throw new Error("HANDOFF_BASE_REQUIRED: branch-off workspace creation requires a resolved base.");
+  const payload = buildHandoffWorkspacePayload({
+    root, slug: input.slug, taskId: input.taskId, mode: "branch-off", branch: input.localIssueBranch,
+    base: resolved.base, basePinned: resolved.basePinned,
+  });
+  let workspace: { workspaceId?: string; worktreePath?: string } | undefined;
+  const gate = await executeGatedAction({
+    root,
+    request: handoffActionRequest(root, input.handoffAuthority, `handoff:${input.taskId}:paseo-workspace`, "paseo.workspace.create", payload),
+    execute: async () => {
+      workspace = await createBranchOffWorkspace(root, resolved.base, input.localIssueBranch, input.slug, input.taskId, input.handoffAuthority.operationId);
+      return { outcome: "SUCCEEDED" as const, evidence: buildHandoffWorkspaceEvidence(workspace, payload) };
+    },
+    reconcile: (intent) => reconcileToolAction(root, intent, { ...payload, ...(workspace?.workspaceId ? { workspaceId: workspace.workspaceId } : {}) })
+  });
+  assertHandoffActionSucceeded(gate, "paseo.workspace.create");
+  return { workspace, payload };
+}
+
 export function buildHandoffWorkspacePayload(input: {
   root: string;
   slug: string;
@@ -177,31 +205,25 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
       const issue = record.github?.issueNumber; const slug = renderPattern(paseo.worktreeSlugPattern ?? "gh-{issue}-{slug}", contract, issue);
       const remoteBranch = record.github?.branch;
       const localIssueBranch = issue ? renderPattern(github?.branchPattern ?? "feature/gh-{issue}-{slug}", contract, issue) : renderPattern("aeh-{task}-{slug}", contract, issue);
-      // The authorization payload and the actual workspace creation bind the
-      // SAME resolved base: branch names are pinned to the exact commit SHA
-      // observed now so a stale local branch cannot fork the workspace off an
-      // unintended base behind the authorization's back. The pin decision is
-      // part of the authorized record.
-      const workspaceBase = remoteBranch
-        ? { mode: "checkout-branch" as const, branch: remoteBranch }
-        : { ...(await resolveHandoffWorkspaceBase(root, undefined, originatingBranch)), branch: localIssueBranch };
-      const workspacePayload = buildHandoffWorkspacePayload({
-        root, slug, taskId, mode: workspaceBase.mode, branch: workspaceBase.branch,
-        base: workspaceBase.base, basePinned: workspaceBase.basePinned,
-      });
       let workspace: { workspaceId?: string; worktreePath?: string } | undefined;
-      const gate = await executeGatedAction({
-        root,
-        request: handoffActionRequest(root, handoffAuthority!, `handoff:${taskId}:paseo-workspace`, "paseo.workspace.create", workspacePayload),
-        execute: async () => {
-          workspace = remoteBranch
-            ? await createCheckoutWorkspace(root, remoteBranch, slug, taskId, handoffAuthority!, record.github?.branchSha)
-            : await createBranchOffWorkspace(root, workspaceBase.base ?? originatingBranch, localIssueBranch, slug, taskId, handoffAuthority!.operationId);
-          return { outcome: "SUCCEEDED" as const, evidence: buildHandoffWorkspaceEvidence(workspace, workspacePayload) };
-        },
-        reconcile: (intent) => reconcileToolAction(root, intent, { ...workspacePayload, ...(record.paseo?.workspaceId ? { workspaceId: record.paseo.workspaceId } : {}) })
-      });
-      assertHandoffActionSucceeded(gate, "paseo.workspace.create");
+      if (remoteBranch) {
+        const gate = await executeGatedAction({
+          root,
+          request: handoffActionRequest(root, handoffAuthority!, `handoff:${taskId}:paseo-workspace`, "paseo.workspace.create", buildHandoffWorkspacePayload({ root, slug, taskId, mode: "checkout-branch", branch: remoteBranch })),
+          execute: async () => {
+            workspace = await createCheckoutWorkspace(root, remoteBranch, slug, taskId, handoffAuthority!, record.github?.branchSha);
+            return { outcome: "SUCCEEDED" as const, evidence: { workspaceId: workspace.workspaceId, worktreePath: workspace.worktreePath, branch: remoteBranch } };
+          },
+          reconcile: (intent) => reconcileToolAction(root, intent, { ...buildHandoffWorkspacePayload({ root, slug, taskId, mode: "checkout-branch", branch: remoteBranch }), ...(record.paseo?.workspaceId ? { workspaceId: record.paseo.workspaceId } : {}) })
+        });
+        assertHandoffActionSucceeded(gate, "paseo.workspace.create");
+      } else {
+        // Branch-off path binds payload, executor, and receipt to one
+        // resolution via createHandoffBranchOffWorkspace (unit-covered).
+        ({ workspace } = await createHandoffBranchOffWorkspace({
+          root, taskId, originatingBranch, localIssueBranch, slug, handoffAuthority: handoffAuthority!,
+        }));
+      }
       if (!workspace?.worktreePath) throw new Error("HANDOFF_RECONCILIATION_REQUIRED: workspace action has a receipt but its path is not durably recoverable; human inspection is required.");
       await materializeTaskContext(root, workspace.worktreePath, config, contract);
       record.paseo = workspace; record.status = "workspace-created"; record.updatedAt = new Date().toISOString(); await saveDeliveryRecord(root, config, record);

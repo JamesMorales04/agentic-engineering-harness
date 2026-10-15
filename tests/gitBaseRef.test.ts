@@ -8,8 +8,16 @@ import {
   buildHandoffWorkspaceEvidence,
   buildHandoffWorkspacePayload,
   createBranchOffWorkspace,
+  createHandoffBranchOffWorkspace,
   resolveHandoffWorkspaceBase,
 } from "../src/delivery/handoff.js";
+import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
+import {
+  bindResolvedOperationPolicy,
+  claimControllerEpoch,
+  loadOperation,
+  saveOperation,
+} from "../src/operations/state.js";
 import { buildBranchOffWorkspaceCommand } from "../src/operations/controller.js";
 
 vi.mock("../src/utils/process.js", async (importOriginal) => {
@@ -41,6 +49,9 @@ async function gitRepo(): Promise<string> {
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
   execFileSync("git", ["config", "user.email", "aeh@example.test"], { cwd: root });
   execFileSync("git", ["config", "user.name", "AEH Test"], { cwd: root });
+  // Mirror real checkouts: harness state never enters the candidate digest,
+  // so operation bookkeeping (including lock files) cannot perturb it.
+  await fs.writeFile(path.join(root, ".gitignore"), ".harness/\n");
   await fs.writeFile(path.join(root, "file.txt"), "v1\n");
   execFileSync("git", ["add", "-A"], { cwd: root });
   execFileSync("git", ["commit", "-qm", "one"], { cwd: root });
@@ -153,6 +164,52 @@ describe("workspace base commit resolution (DETERMINISTIC)", () => {
       expect(payload.base).toBe(head);
     } finally {
       delete process.env.AEH_TEST_PASEO_ARGV_LOG;
+    }
+  });
+
+  it("binds payload, executor, and receipt through the production handoff call site", async () => {
+    const root = await gitRepo();
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    const now = new Date().toISOString();
+    const operationId = "OP-HANDOFF-BASE";
+    await saveOperation(root, { version: 1, id: operationId, kind: "change", status: "RUNNING", phase: "preparing", root, payload: { request: "fixture" }, createdAt: now, updatedAt: now });
+    const owned = await claimControllerEpoch(root, operationId, "controller:test", { pid: process.pid });
+    // The migrated record already carries its initial candidate; use it as
+    // the authority binding directly.
+    const candidate = (await loadOperation(root, operationId)).candidateRevision!;
+    const policy = compileResolvedOperationPolicy({
+      projectId: candidate.projectId!, operationId, operationExecutionRevision: 1,
+      candidateRevision: candidate.revision, candidateDigest: candidate.identityDigest, controllerEpoch: owned.controller!.epoch,
+      intent: "handoff base fixture", route: "DIRECT", minimumAssurance: "NONE", policyVersions: {},
+      policyDigests: {}, validationPolicy: {}, reviewPolicy: {}, deliveryPolicy: {}, knowledgePolicy: {},
+      contextPolicy: {}, allowedExternalEffects: [], humanDecisionRequirements: [],
+    });
+    await bindResolvedOperationPolicy(root, operationId, policy);
+    const previousOperationId = process.env.AEH_OPERATION_ID;
+    process.env.AEH_OPERATION_ID = operationId;
+    // Paseo argv log lives outside the fixture repo so the boundary log
+    // itself can never perturb the candidate digest under test.
+    const argvLog = path.join(os.tmpdir(), `aeh-paseo-argv-${Date.now()}-${process.pid}.log`);
+    process.env.AEH_TEST_PASEO_ARGV_LOG = argvLog;
+    try {
+      const { workspace, payload } = await createHandoffBranchOffWorkspace({
+        root, taskId: "T-HO", originatingBranch: "main", localIssueBranch: "feature/T-HO",
+        slug: "slug", handoffAuthority: {
+          operationId, controllerEpoch: owned.controller!.epoch, candidate,
+          evidence: { kind: "controller-authority", operationId, controllerEpoch: owned.controller!.epoch },
+        },
+      });
+      expect(payload.base).toBe(head);
+      expect(payload.basePinned).toBe(true);
+      expect(workspace).toMatchObject({ workspaceId: "wks_test" });
+      const lines = (await fs.readFile(argvLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
+      const create = lines.find((args) => args[0] === "workspace" && args[1] === "create");
+      expect(create![create!.indexOf("--base") + 1]).toBe(payload.base);
+    } finally {
+      delete process.env.AEH_TEST_PASEO_ARGV_LOG;
+      await fs.rm(argvLog, { force: true });
+      if (previousOperationId === undefined) delete process.env.AEH_OPERATION_ID;
+      else process.env.AEH_OPERATION_ID = previousOperationId;
     }
   });
 });
