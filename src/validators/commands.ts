@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { HarnessProjectConfig, ValidationCheck, ValidationCommand } from "../core/types.js";
-import { runShell, type ProcessResult } from "../utils/process.js";
+import { pinnedWorkspaceBinPaths, runShell, type ProcessResult } from "../utils/process.js";
 import {
   ISOLATION_PROVIDER_UNAVAILABLE,
   assertSupportedIsolationProvider,
@@ -40,7 +40,23 @@ export async function runValidationCommand(root: string, command: ValidationComm
       return { id: `command.${command.id}`, category: "command", status: command.required === false ? "WARN" : "FAIL", message: `Validator-command isolation could not be established; the ${command.required === false ? "optional" : "required"} command did not run: ${message}`, details: { blocker, command: command.command, isolationRequired: true } };
     }
   } else {
-    result = await runShell(command.command, { cwd, timeoutMs });
+    // Trusted explicit marking (DETERMINISTIC): the validation root's own
+    // pinned prefix, so suite commands (npm -> test runners -> fixture
+    // validators in tmpdir roots without state) resolve the same pinned
+    // tools. Managed-child scrubbing removes ambient markings at this
+    // boundary and a detached monitor's frozen snapshot can be empty,
+    // which otherwise breaks every tool-spawning fixture test even
+    // though the workspace itself is fully provisioned. State-derived
+    // only — never ambient — so hermeticity is preserved; the existing
+    // nested re-emit carries the marking into the command subtree.
+    // (No equivalent marking exists on the isolated path: sandboxes start
+    // from an allowlisted environment by design.)
+    const explicitBins = await pinnedWorkspaceBinPaths(root);
+    result = await runShell(command.command, {
+      cwd,
+      timeoutMs,
+      ...(explicitBins.length ? { toolchainExtraBinPaths: explicitBins } : {})
+    });
   }
   const passed = result.exitCode === 0;
   return {
