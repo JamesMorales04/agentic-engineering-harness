@@ -25,7 +25,9 @@ results, or bypasses deterministic gates.
 
 - the delegated principal (`delegate:*`),
 - the human grantor (`human:*`),
-- the project (`projectId`, optional `owner/repo` binding),
+- the project (the configured project name, stable across worktrees of one
+  project — never the per-checkout path-hash runtime ids carried by operation
+  candidates — plus the configured repository binding when present),
 - the `FULL_PROJECT_OWNER` profile (or an explicit capability subset),
 - creation and expiry instants (max 366 days; unattended operation carries an
   explicit long expiry),

@@ -14,7 +14,7 @@ import { assertExecutionBindingV3, assertResolvedOperationPolicyV2, type Executi
 import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
 import { currentObjectiveIdentityV1, loadCurrentAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1 } from "../architecture/acceptanceOracle.js";
 import { HumanDecisionLedgerV2, assertContinuationRecordV1, assertDecisionRequestV1, type ContinuationRecordV1, type DecisionRequestV1, type HumanDecisionBindingV2, type HumanDecisionV2, type OperationControlCommandV1 } from "../security/humanDecision.js";
-import { isDelegatedOwnerActor, controlRootRepository, reverifyDelegatedDecisionForOperation, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
+import { isDelegatedOwnerActor, resolveDelegationProjectScope, reverifyDelegatedDecisionForOperation, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
 import { assertOwnerHardProtectionExemptionGrant, type OwnerHardProtectionExemptionGrantV1 } from "../security/ownerExemption.js";
 import type { OwnerEconomicBoundaryRequirementV1, OwnerEconomicBoundarySignalV1, ParticipantExecutionLivenessV1, SupervisorRecoveryDecisionV1 } from "./executionLiveness.js";
 import { assertOperationOriginV1, type OperationOriginV1 } from "./operationProvenance.js";
@@ -619,12 +619,12 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
   // currently-valid grant (`recovery.authorize` covers destructive control).
   let delegatedFrom: { grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined;
   if (options.humanActorId && isDelegatedOwnerActor(options.humanActorId)) {
-    const repository = await controlRootRepository(root);
+    const scope = await resolveDelegationProjectScope(root);
     const verified = await verifyOwnerActorForCapability(root, {
       actorId: options.humanActorId,
       ...(options.delegationId?.trim() ? { delegationId: options.delegationId.trim() } : {}),
-      projectId: policy.projectId,
-      ...(repository ? { repository } : {}),
+      projectId: scope.projectId,
+      ...(scope.repository ? { repository: scope.repository } : {}),
       requiredCapability: "recovery.authorize",
     });
     delegatedFrom = verified.delegatedFrom;
@@ -1376,12 +1376,10 @@ async function controlActorProvenance(
   delegationId?: string,
 ): Promise<{ grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined> {
   if (!isDelegatedOwnerActor(actorId)) return undefined;
-  const projectId = operation.candidateRevision?.projectId ?? operation.resolvedOperationPolicy?.projectId;
-  if (!projectId) throw new Error("DELEGATION_DENIED: operation has no project identity for delegation scope checks.");
-  const repository = await controlRootRepository(root);
+  const scope = await resolveDelegationProjectScope(root);
   const verified = await verifyOwnerActorForCapability(root, {
     actorId, ...(delegationId?.trim() ? { delegationId: delegationId.trim() } : {}),
-    projectId, ...(repository ? { repository } : {}), requiredCapability,
+    projectId: scope.projectId, ...(scope.repository ? { repository: scope.repository } : {}), requiredCapability,
   });
   if (!verified.delegatedFrom) throw new Error("DELEGATION_DENIED: delegated control produced no provenance.");
   return verified.delegatedFrom;
