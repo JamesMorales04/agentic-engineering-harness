@@ -427,4 +427,20 @@ describe("operation resource ownership and terminal/recovery reconciliation", ()
     expect(receipt.errors.length).toBe(1);
     expect(receipt.dispositions).toEqual([expect.objectContaining({ kind: "paseo-agent", identity: "participant:flaky-wu", outcome: "failed" })]);
   });
+
+  it("P. probe-exception paseo-agent (inspection errors around a failed archive) still fails loud, never already-absent", async () => {
+    const root = await makeRoot();
+    const id = "AUDIT-P";
+    await forceTerminal(root, id, "FAILED");
+    await registerOperationResource(root, id, { kind: "paseo-agent", identity: "participant:unverifiable-wu" });
+    const deps = {
+      ...passThroughDeps(),
+      inspectAgent: vi.fn(async (_root: string, _agentId: string) => { throw new Error("probe channel down"); }),
+      archiveAgent: vi.fn(async (_root: string, agentId: string) => { throw new Error(`Agent not found: ${agentId}`); })
+    };
+    const receipt = await reconcileOperationResources(root, id, deps);
+    expect(receipt.cleanupComplete).toBe(false);
+    expect(receipt.errors.length).toBe(1);
+    expect(receipt.dispositions).toEqual([expect.objectContaining({ kind: "paseo-agent", identity: "participant:unverifiable-wu", outcome: "failed" })]);
+  });
 });

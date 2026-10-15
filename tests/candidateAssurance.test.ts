@@ -166,6 +166,31 @@ describe("candidate impact assurance recompilation", () => {
     expect(result.blockers.join(" ")).not.toMatch(/UNRESOLVED_HIGH_RISK_IMPACT/);
   });
 
+  it("rejects forged NO_CHANGE impacts that carry changed files, dimensions, or no review", () => {
+    const candidateValue = candidate();
+    const binding = { candidateId: candidateValue.candidateId, revision: candidateValue.revision, identityDigest: candidateValue.identityDigest };
+    const forged = (overrides: Record<string, unknown>): CandidateImpactV1 => {
+      const body = {
+        version: 1 as const,
+        candidate: binding,
+        baseCandidate: binding,
+        patchDigest: sha256Utf8(""),
+        changedFiles: [],
+        changeKinds: [],
+        reviewDimensions: [],
+        requiresIndependentReview: true,
+        interpretation: "NO_CHANGE" as const,
+        unknowns: [],
+        ...overrides
+      };
+      return { ...body, digest: sha256Canonical(body) };
+    };
+    expect(() => compileCandidateAssuranceV1(input({ impact: forged({ changedFiles: ["src/auth.ts"] }) }))).toThrow(/NO_CHANGE impact must carry an empty 'changedFiles'/);
+    expect(() => compileCandidateAssuranceV1(input({ impact: forged({ reviewDimensions: ["behavior.correctness"] }) }))).toThrow(/NO_CHANGE impact must carry an empty 'reviewDimensions'/);
+    expect(() => compileCandidateAssuranceV1(input({ impact: forged({ requiresIndependentReview: false }) }))).toThrow(/NO_CHANGE impact must require independent review/);
+    expect(() => compileCandidateAssuranceV1(input({ impact: forged({ baseCandidate: { ...binding, revision: binding.revision + 1 } }) }))).toThrow(/NO_CHANGE impact candidate and baseCandidate must bind the identical candidate revision/);
+  });
+
   it("assigns configured read-only independent reviewers to every required dimension", () => {
     const result = compileCandidateAssuranceV1(input({
       reviewers: [
