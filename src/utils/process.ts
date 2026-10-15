@@ -949,6 +949,21 @@ async function toolchainPathPrefix(cwd: string): Promise<string | undefined> {
   toolchainPathCache.set(key, undefined); return undefined;
 }
 
+/**
+ * Pinned install dirs for a workspace root (MECHANISM: DETERMINISTIC).
+ * Same validated state-derived prefix as toolchainPathPrefix, exposed as
+ * an array for explicit `toolchainExtraBinPaths` marking. Lets a caller
+ * whose own root has state (e.g. a validation workspace) propagate its
+ * pinned tools explicitly across a managed-child scrub boundary (npm ->
+ * test runners -> fixture validators), where the frozen controller
+ * snapshot is empty and ambient markings are scrubbed. State-derived
+ * only — never ambient — so hermeticity is preserved.
+ */
+export async function pinnedWorkspaceBinPaths(root: string): Promise<string[]> {
+  const prefix = await toolchainPathPrefix(root);
+  return prefix ? prefix.split(path.delimiter).filter(Boolean) : [];
+}
+
 async function candidateRoots(start: string): Promise<string[]> {
   const roots: string[] = []; let current = start;
   while (true) {

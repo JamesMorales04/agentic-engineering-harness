@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ValidationCheck } from "../core/types.js";
-import { commandExists, runShell, type ProcessResult } from "../utils/process.js";
+import { commandExists, pinnedWorkspaceBinPaths, runShell, type ProcessResult } from "../utils/process.js";
 import type { ValidationContext } from "./types.js";
 import { missingTool, validatorEvidenceWritablePaths } from "./toolCommand.js";
 import { parseToolEvidenceResult } from "./toolEvidence.js";
@@ -125,9 +125,21 @@ export async function runExternalToolValidator(context: ValidationContext): Prom
       return isolationFailure(context, definition.category, rendered, error);
     }
   } else {
+    // Trusted explicit marking (DETERMINISTIC): the validation root's own
+    // pinned prefix, so nested toolchains (npm -> test runners -> fixture
+    // validators in tmpdir roots without state) resolve the same pinned
+    // tools. Managed-child scrubbing removes ambient markings at this
+    // boundary and the frozen controller snapshot can be empty in detached
+    // monitors, which otherwise breaks every tool-spawning fixture test.
+    // State-derived only — never ambient — so hermeticity is preserved;
+    // the existing nested re-emit carries it down the subtree.
+    // (No equivalent marking exists on the isolated path: sandboxes start
+    // from an allowlisted environment by design.)
+    const explicitBins = await pinnedWorkspaceBinPaths(context.root);
     result = await runShell(rendered, {
       cwd,
       timeoutMs,
+      ...(explicitBins.length ? { toolchainExtraBinPaths: explicitBins } : {}),
       ...(context.candidate ? { env: { [VALIDATION_CANDIDATE_ENVIRONMENT_VARIABLE]: JSON.stringify(context.candidate) } } : {})
     });
   }
