@@ -8,6 +8,13 @@ export interface OperationOwnerResolutionRefV1 {
   evidenceDigest: string;
 }
 
+export interface OperationDelegationProvenanceV1 {
+  delegationId: string;
+  grantorOwnerId: string;
+  delegatePrincipalId: string;
+  profile: "FULL_PROJECT_OWNER";
+}
+
 export interface OperationOriginV1 {
   version: 1;
   kind: "USER_REQUEST" | "LEAD_ACTION" | "FAILED_OPERATION_RECOVERY" | "EXPLICIT_CLI";
@@ -16,6 +23,13 @@ export interface OperationOriginV1 {
   requestEventId?: string;
   /** Exact pending Owner boundaries/task chains explicitly resolved by this CLI request. */
   ownerResolutionRefs?: OperationOwnerResolutionRefV1[];
+  /**
+   * Delegated Owner provenance. Present only when an EXPLICIT_CLI start was
+   * authorized by a FULL_PROJECT_OWNER delegate (`--as-delegate`); the grant
+   * itself is verified at start. Delegated starts are recorded as delegated,
+   * never attributed to the human grantor.
+   */
+  delegationProvenance?: OperationDelegationProvenanceV1;
   authorizationDigest: string;
   userTurnId?: string;
   parentOperationId?: string;
@@ -43,6 +57,12 @@ const originBodySchema = z.object({
     operationRevision: z.number().int().positive(),
     evidenceDigest: z.string().regex(/^[a-f0-9]{64}$/)
   }).strict()).max(500).optional(),
+  delegationProvenance: z.object({
+    delegationId: z.string().regex(/^delegation:[0-9a-f-]{36}$/i),
+    grantorOwnerId: z.string().regex(/^human:.+/),
+    delegatePrincipalId: z.string().regex(/^delegate:.+/),
+    profile: z.literal("FULL_PROJECT_OWNER")
+  }).strict().optional(),
   authorizationDigest: z.string().regex(/^[a-f0-9]{64}$/),
   userTurnId: z.string().min(1).optional(),
   parentOperationId: z.string().min(1).optional(),
@@ -71,6 +91,7 @@ export function assertOperationOriginV1(value: unknown): asserts value is Operat
   if (record.kind === "FAILED_OPERATION_RECOVERY" && (!record.parentOperationId || !record.parentTerminalRevision || !record.inheritedAuthorityDigest || !record.inheritedEconomicUsageDigest)) throw new Error("OPERATION_ORIGIN_INVALID: recovery continuations require a terminal parent, inherited authority, and exact parent economic-usage snapshot digest.");
   if (record.kind !== "FAILED_OPERATION_RECOVERY" && (record.parentOperationId || record.parentTerminalRevision || record.inheritedAuthorityDigest || record.inheritedEconomicUsageDigest)) throw new Error("OPERATION_ORIGIN_INVALID: only recovery continuations may carry parent authority.");
   if (record.ownerResolutionRefs?.length && record.kind !== "EXPLICIT_CLI") throw new Error("OPERATION_ORIGIN_INVALID: only an explicit Owner CLI origin may resolve pending Owner boundaries or failed task chains.");
+  if (record.delegationProvenance && record.kind !== "EXPLICIT_CLI") throw new Error("OPERATION_ORIGIN_INVALID: only an explicit Owner CLI origin may carry delegated Owner provenance.");
   if (record.ownerResolutionRefs && new Set(record.ownerResolutionRefs.map((item) => `${item.kind}:${item.operationId}`)).size !== record.ownerResolutionRefs.length) throw new Error("OPERATION_ORIGIN_INVALID: Owner resolution references must be unique by kind and operation.");
   if (record.kind === "USER_REQUEST" && !record.userTurnId) throw new Error("OPERATION_ORIGIN_INVALID: USER_REQUEST requires the durable originating userTurnId; use LEAD_ACTION when only a tool event is known.");
   if (record.kind === "LEAD_ACTION" && (!record.leadAgentId || !record.requestEventId)) throw new Error("OPERATION_ORIGIN_INVALID: LEAD_ACTION requires the bound Lead identity and exact request event id.");

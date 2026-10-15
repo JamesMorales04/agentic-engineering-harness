@@ -38,6 +38,7 @@ import { HumanDecisionLedgerV2 } from "./security/humanDecision.js";
 import { createManagedRuntime, readManagedRuntimeSnapshot, runtimeProjectId } from "./runtime/index.js";
 import { serveSerenaMcpProxy, serveSerenaPoolServer } from "./providers/serenaProxy.js";
 import { recordControlCenterDecision } from "./control-center/decision.js";
+import { grantDelegationForSession, listDelegationsForSession, recentDecisionsForDelegation, revokeDelegationForSession, verifyDelegateSessionGrant, type DelegationGrantRequestV1 } from "./control-center/delegation.js";
 import { controlCenterResourceId, type ControlCenterActionResultV1 } from "./control-center/contracts.js";
 import { projectOperationRecordV1 } from "./control-center/operationProjection.js";
 import { readOperationEfficiencySummary } from "./telemetry/efficiency.js";
@@ -179,6 +180,12 @@ async function runControlCenter(argv: string[]): Promise<void> {
         ...(typeof result.candidateRevision === "number" ? { candidateRevision: result.candidateRevision } : {}),
         ...(typeof result.requestId === "string" ? { requestId: result.requestId } : {}),
         ...(typeof result.choiceId === "string" ? { choiceId: result.choiceId } : {}),
+        ...("delegated" in result && result.delegated === true ? {
+          delegated: true,
+          actingPrincipal: (result as { actingPrincipal?: unknown }).actingPrincipal,
+          grantorOwnerId: (result as { grantorOwnerId?: unknown }).grantorOwnerId,
+          delegationId: (result as { delegationId?: unknown }).delegationId,
+        } : {}),
       };
     } : undefined,
     onCancelOperation: root ? async (operationId, actorId): Promise<ControlCenterActionResultV1> => {
@@ -194,7 +201,12 @@ async function runControlCenter(argv: string[]): Promise<void> {
       const decision = await requestOperationResume(root, operationId, actorId);
       const current = await loadOperation(root, operationId);
       return { accepted: true, operationId: current.id, decisionId: decision.decisionId, status: current.status, phase: current.phase, revision: current.revision };
-    } : undefined
+    } : undefined,
+    onListDelegations: root ? async (actorId) => listDelegationsForSession(root, actorId) : undefined,
+    onGrantDelegation: root && config ? async (body, actorId) => grantDelegationForSession(root, config.project.name, actorId, body as unknown as DelegationGrantRequestV1) : undefined,
+    onRevokeDelegation: root ? async (delegationId, actorId, reason) => revokeDelegationForSession(root, actorId, delegationId, reason) : undefined,
+    onDelegationDecisions: root && decisionLedger ? async (delegationId) => recentDecisionsForDelegation(root, decisionLedger, delegationId) : undefined,
+    onDelegateSession: root && config ? async (delegationId, delegatePrincipalId) => verifyDelegateSessionGrant(root, config.project.name, delegationId, delegatePrincipalId, config.delivery?.github?.repository) : undefined,
   });
   const started = await center.start();
   const serviceId = runtime ? `control-center:${runtime.projectId}` : undefined;

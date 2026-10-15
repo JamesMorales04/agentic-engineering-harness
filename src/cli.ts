@@ -28,7 +28,8 @@ import { dedupeFindings, extractFindings } from "./agents/findings.js";
 import { inspectGithubIssue } from "./issues/intake.js";
 import { executeIssueWorkflow as executeManagedIssueWorkflow, importIssueThroughManagedOperation } from "./issues/workflow.js";
 import { VERSION } from "./version.js";
-import { assertInteractiveRunSelfHostingV1 } from "./operations/selfHostingCharter.js";
+import { assertInteractiveRunSelfHostingV1, issueSelfHostingCharterV1 } from "./operations/selfHostingCharter.js";
+import { issueDelegatedOwnerGrantV1, listDelegatedOwnerGrantsV1, OWNER_CAPABILITIES_V1, revokeDelegatedOwnerGrantV1, assertCliOwnerIdentity, assertDirectCliContext, type OwnerCapabilityV1 } from "./security/ownerAuthority.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "./semantic/runtime.js";
 import { CodexAgentProvider } from "./certification/codex.js";
 import { createCommandOracle, runExternalSelfDogfood } from "./certification/bootstrap.js";
@@ -126,6 +127,57 @@ provenance.command("generate").requiredOption("--artifact <path>").option("--tas
 provenance.command("verify").option("--manifest <file>").option("--task <id>").argument("[directory]", "Project directory", ".").action(async (directory: string, options: { manifest?: string; task?: string }) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); if (options.manifest) { const result = await verifyProvenanceManifest(root, options.manifest, config.provenance?.verification?.publicKey); if (result.ok) console.log(`PASS provenance integrity manifest=${options.manifest} (candidate delivery gate not evaluated)`); else { for (const failure of result.failures) console.error(`FAIL ${failure}`); process.exitCode = 1; } return; } const candidate = options.task ? await currentCandidateForTask(root, options.task, config) : undefined; const result = await verifySupplyChainGate(root, config, candidate ? { candidate, artifactPath: config.provenance?.artifact ?? "" } : undefined); if (result.ok) console.log("PASS strict supply-chain gate"); else { result.failures.forEach((failure) => console.error(`FAIL ${failure}`)); process.exitCode = 1; } });
 program.command("graph-snapshot").argument("<taskId>").requiredOption("--phase <phase>").argument("[directory]", "Project directory", ".").action(async (taskId: string, directory: string, options: { phase: string }) => { if (options.phase !== "before" && options.phase !== "after") throw new Error("--phase must be before or after"); const root = path.resolve(directory); const config = await loadProjectConfig(root); const file = await snapshotGraph(root, config, taskId, options.phase); if (!file) { console.error("Graphify graph not found or unreadable."); process.exitCode = 1; } else console.log(`Graphify ${options.phase} snapshot: ${file}`); });
 program.command("graph-update").argument("[directory]", "Project directory", ".").action(async (directory: string) => { const root = path.resolve(directory); const config = await loadProjectConfig(root); try { await new GraphifyCodeIntelligenceProvider(config).refresh(root); console.log("Graphify graph refreshed through the configured provider."); } catch (error) { console.error(String(error)); process.exitCode = 1; } });
+
+const delegation = program.command("delegation").description("Issue, inspect, and revoke FULL_PROJECT_OWNER delegations (authenticated Owner entry point; managed worker contexts are refused)");
+delegation.command("grant").requiredOption("--grantor <owner>", "Authenticated human Owner ('human:*')").requiredOption("--confirm-grantor <owner>", "Deliberate re-attestation of the granting Owner (must equal --grantor)").requiredOption("--delegate <principal>", "Bound delegated principal ('delegate:*')").option("--project <id>", "Project scope (defaults to this checkout's project)").option("--repository <owner/repo>", "Optional repository binding").option("--expires-at <iso>", "Explicit expiry instant").option("--ttl-days <days>", "Expiry as days from now (max 366)", "30").option("--capability <capabilities...>", "Explicit capability subset (default: FULL_PROJECT_OWNER vocabulary)").argument("[directory]", "Project directory", ".").action(async (directory: string, options: { grantor: string; confirmGrantor: string; delegate: string; project?: string; repository?: string; expiresAt?: string; ttlDays: string; capability?: string[] }) => {
+  const root = path.resolve(directory); const config = await loadProjectConfig(root);
+  if (options.confirmGrantor !== options.grantor) throw new Error("--confirm-grantor must re-attest the same authenticated human Owner as --grantor; delegation issuance is a deliberate Owner act.");
+  assertCliOwnerIdentity(options.grantor);
+  const ttlDays = Number(options.ttlDays);
+  if (!Number.isFinite(ttlDays) || ttlDays <= 0 || ttlDays > 366) throw new Error("--ttl-days must be within (0, 366].");
+  const expiresAt = options.expiresAt ?? new Date(Date.now() + ttlDays * 24 * 60 * 60_000).toISOString();
+  const capabilities = options.capability?.length ? options.capability as OwnerCapabilityV1[] : undefined;
+  if (capabilities?.some((capability) => !OWNER_CAPABILITIES_V1.includes(capability))) throw new Error(`unknown Owner capability (vocabulary: ${OWNER_CAPABILITIES_V1.join(", ")}).`);
+  const grant = await issueDelegatedOwnerGrantV1(root, {
+    grantorOwnerId: options.grantor, delegatePrincipalId: options.delegate,
+    projectId: options.project ?? config.project.name, ...(options.repository ? { repository: options.repository } : {}),
+    expiresAt, ...(capabilities ? { capabilities } : {})
+  }, { via: "cli-direct" });
+  console.log(`DELEGATED_OWNER granted: ${grant.delegationId} delegate=${grant.delegatePrincipalId} grantor=${grant.grantorOwnerId} project=${grant.projectId} expires=${grant.expiresAt}`);
+  console.log(JSON.stringify(grant, null, 2));
+});
+delegation.command("revoke").requiredOption("--id <delegationId>").requiredOption("--confirm-id <delegationId>", "Deliberate re-attestation of the revoked delegation (must equal --id)").requiredOption("--by <owner>", "Revoking human Owner ('human:*')").option("--reason <reason>").argument("[directory]", "Project directory", ".").action(async (directory: string, options: { id: string; confirmId: string; by: string; reason?: string }) => {
+  const root = path.resolve(directory);
+  if (options.confirmId !== options.id) throw new Error("--confirm-id must re-attest the same delegation as --id; revocation is a deliberate Owner act.");
+  assertCliOwnerIdentity(options.by);
+  await revokeDelegatedOwnerGrantV1(root, options.id, { revokedBy: options.by, ...(options.reason ? { reason: options.reason } : {}) }, { via: "cli-direct" });
+  console.log(`DELEGATED_OWNER revoked: ${options.id} (authority ended immediately)`);
+});
+delegation.command("status").option("--json").argument("[directory]", "Project directory", ".").action(async (directory: string, options: { json?: boolean }) => {
+  assertDirectCliContext();
+  const root = path.resolve(directory);
+  const grants = await listDelegatedOwnerGrantsV1(root);
+  if (options.json) { console.log(JSON.stringify(grants, null, 2)); return; }
+  if (!grants.length) { console.log("No Owner delegations."); return; }
+  // Human-readable status redacts bearer delegation ids (prefix only):
+  // full ids appear only in --json Owner-shell tooling and at grant time.
+  for (const grant of grants) console.log(`${grant.delegationId.slice(0, 18)}… delegate=${grant.delegatePrincipalId} grantor=${grant.grantorOwnerId} profile=${grant.authorityProfile} valid=${grant.validNow} revoked=${grant.revoked} expires=${grant.expiresAt}`);
+});
+
+const charter = program.command("charter").description("Issue isolated self-hosting charters (human Owner or authorized delegate)");
+charter.command("issue").requiredOption("--target-root <path>", "Canonical isolated target control root").requiredOption("--confirm-target-root <path>", "Deliberate re-attestation of the isolated target (must equal --target-root)").requiredOption("--kinds <kinds>", "Comma-separated 'change' and/or 'run'").requiredOption("--expires-at <iso>").requiredOption("--by <principal>", "Authorizing principal ('human:*' or 'delegate:*')").option("--delegation <id>", "Authorizing delegation (required for delegate issuance)").option("--project <id>", "Project scope (defaults to the controller checkout's project)").option("--repository <owner/repo>").argument("[directory]", "Controller checkout directory", ".").action(async (directory: string, options: { targetRoot: string; confirmTargetRoot: string; kinds: string; expiresAt: string; by: string; delegation?: string; project?: string; repository?: string }) => {
+  const root = path.resolve(directory);
+  if (path.resolve(options.confirmTargetRoot) !== path.resolve(options.targetRoot)) throw new Error("--confirm-target-root must re-attest the same isolated target as --target-root; charter issuance is a deliberate Owner act.");
+  if (options.by.startsWith("human:")) assertCliOwnerIdentity(options.by);
+  const kinds = options.kinds.split(",").map((kind) => kind.trim()).filter(Boolean) as Array<"change" | "run">;
+  const issued = await issueSelfHostingCharterV1(root, {
+    targetRoot: options.targetRoot, kinds, expiresAt: options.expiresAt, authorizedBy: options.by,
+    ...(options.delegation ? { delegationId: options.delegation } : {}),
+    ...(options.project ? { projectId: options.project } : {}), ...(options.repository ? { repository: options.repository } : {})
+  }, { via: "cli-direct" });
+  console.log(`CHARTER issued: ${issued.charterDigest.slice(0, 16)}… target=${issued.targetRoot} by=${issued.authorizedBy} provenance=${issued.provenance?.issuedBy}`);
+  console.log(JSON.stringify(issued, null, 2));
+});
 
 async function executeIssueWorkflow(root: string, issueNumber: number, options: { profile?: string; refresh?: boolean; force?: boolean }): Promise<{ result: TaskRunResult; contract: Awaited<ReturnType<typeof loadTaskContract>> }> {
   return executeManagedIssueWorkflow(root, issueNumber, options);

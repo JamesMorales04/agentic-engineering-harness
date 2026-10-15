@@ -14,6 +14,7 @@ import { assertExecutionBindingV3, assertResolvedOperationPolicyV2, type Executi
 import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
 import { currentObjectiveIdentityV1, loadCurrentAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1 } from "../architecture/acceptanceOracle.js";
 import { HumanDecisionLedgerV2, assertContinuationRecordV1, assertDecisionRequestV1, type ContinuationRecordV1, type DecisionRequestV1, type HumanDecisionBindingV2, type HumanDecisionV2, type OperationControlCommandV1 } from "../security/humanDecision.js";
+import { isDelegatedOwnerActor, controlRootRepository, reverifyDelegatedDecisionForOperation, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
 import { assertOwnerHardProtectionExemptionGrant, type OwnerHardProtectionExemptionGrantV1 } from "../security/ownerExemption.js";
 import type { OwnerEconomicBoundaryRequirementV1, OwnerEconomicBoundarySignalV1, ParticipantExecutionLivenessV1, SupervisorRecoveryDecisionV1 } from "./executionLiveness.js";
 import { assertOperationOriginV1, type OperationOriginV1 } from "./operationProvenance.js";
@@ -147,7 +148,7 @@ export function assertOperationPauseRecordV1(value: unknown): OperationPauseReco
   if (typeof record.operationId !== "string" || !record.operationId.trim() || record.candidate.operationId !== record.operationId) throw new Error("OPERATION_PAUSE_RECORD_INVALID: operation identity is incomplete.");
   if (typeof record.resumePhase !== "string" || !record.resumePhase.trim()) throw new Error("OPERATION_PAUSE_RECORD_INVALID: resumePhase is required.");
   if (typeof record.reason !== "string" || !record.reason.trim()) throw new Error("OPERATION_PAUSE_RECORD_INVALID: reason is required.");
-  if (typeof record.requestedBy !== "string" || !record.requestedBy.startsWith("human:")) throw new Error("OPERATION_PAUSE_RECORD_INVALID: requestedBy must be a paired human actor.");
+  if (typeof record.requestedBy !== "string" || (!record.requestedBy.startsWith("human:") && !record.requestedBy.startsWith("delegate:"))) throw new Error("OPERATION_PAUSE_RECORD_INVALID: requestedBy must be a paired human actor or a delegated Owner principal.");
   if (Number.isNaN(Date.parse(record.requestedAt)) || Number.isNaN(Date.parse(record.pausedAt))) throw new Error("OPERATION_PAUSE_RECORD_INVALID: pause instants are invalid.");
   if (!record.drainReceipt || !Array.isArray(record.drainReceipt.activeParticipantIds) || !Array.isArray(record.drainReceipt.activeProviderLeaseIds)
     || Number.isNaN(Date.parse(record.drainReceipt.observedAt))) throw new Error("OPERATION_PAUSE_RECORD_INVALID: drain receipt is incomplete.");
@@ -612,6 +613,20 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
   const purpose = { kind: "OPERATION_CONTROL" as const, command: "CANCEL" as const };
   const ledger = new HumanDecisionLedgerV2(path.resolve(resolveOperationStateRoot(root), ".harness", "security", "human-decisions.json"));
   const now = new Date();
+  // Central Owner authority resolution: delegated cancellation must rest on a
+  // currently-valid grant (`recovery.authorize` covers destructive control).
+  let delegatedFrom: { grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined;
+  if (options.humanActorId && isDelegatedOwnerActor(options.humanActorId)) {
+    const repository = await controlRootRepository(root);
+    const verified = await verifyOwnerActorForCapability(root, {
+      actorId: options.humanActorId,
+      projectId: policy.projectId,
+      ...(repository ? { repository } : {}),
+      requiredCapability: "recovery.authorize",
+    });
+    delegatedFrom = verified.delegatedFrom;
+    if (!delegatedFrom) throw new Error("DELEGATION_DENIED: delegated cancellation produced no provenance.");
+  }
   if (options.humanActorId) {
     const existing = (await ledger.active(binding, now)).some((decision) => decision.actorId === options.humanActorId
       && decision.kind === "CANCEL" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
@@ -620,6 +635,7 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
       purpose,
       kind: "CANCEL",
       actorId: options.humanActorId,
+      ...(delegatedFrom ? { delegatedFrom } : {}),
       reason: "Authenticated Control Center cancellation request.",
       createdAt: now,
       expiresAt: new Date(now.getTime() + 10 * 60_000)
@@ -627,6 +643,16 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
   }
   const decision = await ledger.consume(binding, purpose, options.humanActorId, now);
   if (decision.kind !== "CANCEL") throw new Error("AEH_CANCELLATION_AUTHORITY_REQUIRED: a scoped human CANCEL decision is required.");
+  // USE-time re-verification: a grant revoked or expired after recording fails
+  // closed here, immediately before the deferred effect applies.
+  if (isDelegatedOwnerActor(decision.actorId)) {
+    await reverifyDelegatedDecisionForOperation(root, {
+      actorId: decision.actorId,
+      ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
+      projectId: policy.projectId,
+      requiredCapability: "recovery.authorize",
+    });
+  }
 }
 
 /** Bind detached-process identity without changing the current owner's epoch or token. */
@@ -1332,6 +1358,29 @@ function operationControlLedger(root: string): HumanDecisionLedgerV2 {
   return new HumanDecisionLedgerV2(path.join(resolveOperationStateRoot(root), ".harness", "security", "human-decisions.json"));
 }
 
+/**
+ * Central Owner authority resolution for operation-control requests.
+ * Human actors pass through; delegated actors must present a currently-valid
+ * grant for the required capability. Returns ledger provenance or throws
+ * fail-closed.
+ */
+async function controlActorProvenance(
+  root: string,
+  operation: OperationRecordV2,
+  actorId: string,
+  requiredCapability: "recovery.authorize" | "decision.resolve",
+): Promise<{ grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined> {
+  if (!isDelegatedOwnerActor(actorId)) return undefined;
+  const projectId = operation.candidateRevision?.projectId ?? operation.resolvedOperationPolicy?.projectId;
+  if (!projectId) throw new Error("DELEGATION_DENIED: operation has no project identity for delegation scope checks.");
+  const repository = await controlRootRepository(root);
+  const verified = await verifyOwnerActorForCapability(root, {
+    actorId, projectId, ...(repository ? { repository } : {}), requiredCapability,
+  });
+  if (!verified.delegatedFrom) throw new Error("DELEGATION_DENIED: delegated control produced no provenance.");
+  return verified.delegatedFrom;
+}
+
 function operationControlPurpose(command: OperationControlCommandV1): { kind: "OPERATION_CONTROL"; command: OperationControlCommandV1 } {
   return { kind: "OPERATION_CONTROL", command };
 }
@@ -1343,6 +1392,7 @@ export async function requestOperationPause(root: string, operationId: string, a
   if (current.status !== "RUNNING") throw new Error("OPERATION_CONTROL_STATE_INVALID: only a running operation can be paused.");
   if (current.phase === "PAUSED" || current.pause) throw new Error("OPERATION_CONTROL_STATE_INVALID: the operation is already paused.");
   const binding = currentDecisionBinding(current, "pause request");
+  const delegatedFrom = await controlActorProvenance(root, current, actorId, "recovery.authorize");
   const ledger = operationControlLedger(root);
   const now = new Date();
   const purpose = operationControlPurpose("PAUSE");
@@ -1353,6 +1403,7 @@ export async function requestOperationPause(root: string, operationId: string, a
     purpose,
     kind: "PAUSE",
     actorId,
+    ...(delegatedFrom ? { delegatedFrom } : {}),
     reason: reason?.trim() || "Authenticated Control Center pause request.",
     createdAt: now,
     expiresAt: new Date(now.getTime() + 10 * 60_000)
@@ -1367,6 +1418,7 @@ export async function requestOperationResume(root: string, operationId: string, 
   assertOperationPauseRecordV1(current.pause);
   const binding = currentDecisionBinding(current, "resume request");
   if (!sameHumanDecisionBinding(current.pause, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: the pause record no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
+  const delegatedFrom = await controlActorProvenance(root, current, actorId, "recovery.authorize");
   const ledger = operationControlLedger(root);
   const now = new Date();
   const purpose = operationControlPurpose("RESUME");
@@ -1377,6 +1429,7 @@ export async function requestOperationResume(root: string, operationId: string, 
     purpose,
     kind: "RESUME",
     actorId,
+    ...(delegatedFrom ? { delegatedFrom } : {}),
     reason: reason?.trim() || "Authenticated Control Center resume request.",
     createdAt: now,
     expiresAt: new Date(now.getTime() + 10 * 60_000)
@@ -1412,6 +1465,16 @@ export async function pauseOperationIfRequested(root: string, operationId: strin
     if (current.phase === "PAUSED" || current.pause) return current;
     const binding = currentDecisionBinding(current, "operation pause");
     if (!sameHumanDecisionBinding(decision, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: pause control no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
+    if (isDelegatedOwnerActor(decision.actorId)) {
+      const projectId = current.candidateRevision?.projectId ?? current.resolvedOperationPolicy?.projectId;
+      if (!projectId) throw new Error("DELEGATION_DENIED: paused operation has no project identity for delegation scope checks.");
+      await reverifyDelegatedDecisionForOperation(root, {
+        actorId: decision.actorId,
+        ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
+        projectId,
+        requiredCapability: "recovery.authorize",
+      });
+    }
     await operationControlLedger(root).consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
     const pause: OperationPauseRecordV1 = {
       version: 1,
@@ -1438,6 +1501,16 @@ async function applyOperationResume(root: string, operationId: string, decision:
     const binding = currentDecisionBinding(current, "operation resume");
     if (!sameHumanDecisionBinding(pause, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: pause record no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
     if (!sameHumanDecisionBinding(decision, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: resume control no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
+    if (isDelegatedOwnerActor(decision.actorId)) {
+      const projectId = current.candidateRevision?.projectId ?? current.resolvedOperationPolicy?.projectId;
+      if (!projectId) throw new Error("DELEGATION_DENIED: paused operation has no project identity for delegation scope checks.");
+      await reverifyDelegatedDecisionForOperation(root, {
+        actorId: decision.actorId,
+        ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
+        projectId,
+        requiredCapability: "recovery.authorize",
+      });
+    }
     await operationControlLedger(root).consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
     return { ...current, revision, updatedAt: now, lastProgressAt: now, phase: pause.resumePhase, pause: undefined };
   });

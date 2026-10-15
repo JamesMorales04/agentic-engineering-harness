@@ -95,8 +95,9 @@ import {
 import { candidateRevisionsEqual, createCandidateRevisionV1, type CandidateRevisionV1 } from "./v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { bindBootstrapOperationPolicy } from "./bootstrapPolicy.js";
-import { compileOperationOriginV1, type OperationOwnerResolutionRefV1 } from "./operationProvenance.js";
+import { compileOperationOriginV1, type OperationDelegationProvenanceV1, type OperationOwnerResolutionRefV1 } from "./operationProvenance.js";
 import { resolveRecoveryAuthorityV1 } from "./recoveryAuthority.js";
+import { verifyDelegatedOwnerGrantV1 } from "../security/ownerAuthority.js";
 import { createTrustedOperationToolError } from "./toolDiagnostics.js";
 
 export { bindBootstrapOperationPolicy };
@@ -110,6 +111,8 @@ export interface StartOperationOptions {
   initiator?: { kind: "LEAD" | "CLI"; agentId?: string; userTurnId?: string; requestEventId?: string };
   /** Pending Owner boundaries/task chains this explicit CLI request resolves. */
   ownerResolutionOperationIds?: string[];
+  /** Delegated Owner start: the authorizing grant for this explicit CLI request. */
+  asDelegate?: { delegationId: string };
   /** Test seam for deterministic preflight-ordering regressions; public callers use the semantic resolver. */
   resolveChangePreflight?: typeof resolveChangePreflightV1;
 }
@@ -247,7 +250,7 @@ export async function startDetachedOperation(
   const id = createOperationId(kind, JSON.stringify(payload));
   if (selfHostingCharter) await bindSelfHostingCharterV1(absoluteRoot, id, selfHostingCharter);
   const createAndPersistRecord = async (recoveryParent?: OperationRecordV2): Promise<OperationRecordV2> => {
-    const origin = await createOperationOrigin(absoluteRoot, kind, payload, initiator, now, config, options.ownerResolutionOperationIds, recoveryParent);
+    const origin = await createOperationOrigin(absoluteRoot, kind, payload, initiator, now, config, options.ownerResolutionOperationIds, recoveryParent, options.asDelegate);
     const initial: OperationRecordV2 = {
       version: 2,
       id,
@@ -276,6 +279,7 @@ export async function startDetachedOperation(
   const parentOperationId = suppliedDecision?.continuation?.operationId;
   let record: OperationRecordV2;
   if (parentOperationId) {
+    if (options.asDelegate) throw new Error("OWNER_RESOLUTION_AUTHORITY_DENIED: a linked recovery continuation cannot carry delegated Owner provenance; resolve Owner boundaries with a fresh delegated CLI start instead of silently extending a frozen operation.");
     record = await withOperationRecoveryParentLock(absoluteRoot, parentOperationId, async (parent, existingChildOperationId) => {
       if (parent.status !== "FAILED") throw createTrustedOperationToolError("OPERATION_RECOVERY_PARENT_NOT_FAILED", "Only a terminal failed operation can authorize a recovery continuation.");
       if (existingChildOperationId) throw createTrustedOperationToolError("OPERATION_RECOVERY_PARENT_NOT_LEAF", `Operation ${parent.id} already has child ${existingChildOperationId}; continue only from the current failed leaf.`, undefined, existingChildOperationId);
@@ -1165,7 +1169,7 @@ export function createOperationId(kind: OperationKind, seed: string): string {
   return `${kind.toUpperCase()}-${stamp}-${hash}`;
 }
 
-async function createOperationOrigin(root: string, kind: OperationKind, payload: OperationPayload, initiator: StartOperationOptions["initiator"], createdAt: string, config?: HarnessProjectConfig, ownerResolutionOperationIds?: string[], recoveryParent?: OperationRecordV2) {
+async function createOperationOrigin(root: string, kind: OperationKind, payload: OperationPayload, initiator: StartOperationOptions["initiator"], createdAt: string, config?: HarnessProjectConfig, ownerResolutionOperationIds?: string[], recoveryParent?: OperationRecordV2, asDelegate?: StartOperationOptions["asDelegate"]) {
   const decision = "intentDecision" in payload ? payload.intentDecision : undefined;
   // A Lead's IntentDecision userTurnId is semantic model output, not trusted
   // Owner provenance. Only a controller-supplied initiator identity may bind it.
@@ -1212,6 +1216,29 @@ async function createOperationOrigin(root: string, kind: OperationKind, payload:
     });
   }
   const ownerResolutionRefs = initiator?.kind === "CLI" ? await ownerResolutionRefsForCliStart(root, ownerResolutionOperationIds, config) : undefined;
+  // Delegated Owner start: only an explicit CLI start may carry a delegation,
+  // and the grant must verify here (keyed MAC, project scope, capability,
+  // expiry, revocation) before any durable write. Boundary-resolving starts
+  // require `recovery.authorize`; plain starts require `operation.initiate`.
+  // The verified provenance is frozen into the origin — recorded as delegated,
+  // never attributed to the human grantor.
+  let delegationProvenance: OperationDelegationProvenanceV1 | undefined;
+  if (asDelegate) {
+    if (initiator?.kind !== "CLI") throw new Error("OWNER_RESOLUTION_AUTHORITY_DENIED: only an explicit Owner CLI start may carry delegated Owner provenance.");
+    const projectId = config?.project?.name?.trim();
+    if (!projectId) throw new Error("OWNER_RESOLUTION_AUTHORITY_DENIED: delegated starts require a loaded project configuration for scope checks.");
+    const grant = await verifyDelegatedOwnerGrantV1(root, asDelegate.delegationId, {
+      projectId,
+      ...(config?.delivery?.github?.repository ? { repository: config.delivery.github.repository } : {}),
+      requiredCapability: ownerResolutionOperationIds?.length ? "recovery.authorize" : "operation.initiate",
+    });
+    delegationProvenance = {
+      delegationId: grant.delegationId,
+      grantorOwnerId: grant.grantorOwnerId,
+      delegatePrincipalId: grant.delegatePrincipalId,
+      profile: grant.authorityProfile,
+    };
+  }
   const hardDeadlineMs = configLivenessHardDeadline(config);
   return compileOperationOriginV1({
     kind: initiator?.kind === "CLI" ? "EXPLICIT_CLI" : userTurnId ? "USER_REQUEST" : "LEAD_ACTION",
@@ -1219,6 +1246,7 @@ async function createOperationOrigin(root: string, kind: OperationKind, payload:
     controllerOwnerId,
     ...(initiator?.requestEventId ? { requestEventId: initiator.requestEventId } : {}),
     ...(ownerResolutionRefs?.length ? { ownerResolutionRefs } : {}),
+    ...(delegationProvenance ? { delegationProvenance } : {}),
     authorizationDigest,
     ...(userTurnId ? { userTurnId } : {}),
     triggerEventId: userTurnId ? `user.turn:${userTurnId}` : initiator?.requestEventId ? `aeh-control.request:${initiator.requestEventId}` : `cli.request:${requestDigest}`,

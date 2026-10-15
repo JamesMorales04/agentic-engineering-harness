@@ -8,7 +8,6 @@ import type {
   ControlCenterOperationDetailProjectionV1,
   ControlCenterOperationProjectionV1,
   ControlCenterOverviewV1,
-  ControlCenterPairedSessionV1,
   ControlCenterParticipantProjectionV1,
   ControlCenterProjectProjectionV1,
   ControlCenterServicesProjectionV1,
@@ -23,6 +22,63 @@ export type Knowledge = ControlCenterKnowledgeProjectionV1;
 export type Services = ControlCenterServicesProjectionV1;
 
 export type DecisionRequest = ControlCenterDecisionRequestV1;
+
+export interface DelegationStatus {
+  delegationId: string;
+  grantorOwnerId: string;
+  delegatePrincipalId: string;
+  projectId: string;
+  repository?: string;
+  authorityProfile: string;
+  capabilities: string[];
+  createdAt: string;
+  expiresAt: string;
+  revoked: boolean;
+  revokedAt?: string;
+  revokeReason?: string;
+  validNow: boolean;
+}
+
+export interface DelegationDecision {
+  decisionId: string;
+  operationId: string;
+  kind: string;
+  purpose: unknown;
+  actorId: string;
+  createdAt: string;
+  reason: string;
+}
+
+export interface SessionDelegation {
+  delegationId: string;
+  grantorOwnerId: string;
+  authorityProfile?: string;
+  capabilities?: string[];
+  expiresAt: string;
+}
+
+export interface SessionInfo {
+  csrfToken: string;
+  actorId?: string;
+  delegation?: SessionDelegation;
+}
+
+export interface DelegationSubmissionInputV1 {
+  delegatePrincipalId: string;
+  expiresAt?: string;
+  ttlDays?: number;
+  repository?: string;
+  capabilities?: string[];
+  reason?: string;
+}
+
+export interface DelegationGrantResultV1 {
+  version: 1;
+  delegationId: string;
+  delegatePrincipalId: string;
+  grantorOwnerId: string;
+  expiresAt: string;
+}
 
 export interface DecisionSubmissionInputV1 {
   operationId: string;
@@ -73,6 +129,24 @@ function parseResponse<T>(path: string, value: unknown, required: string[]): T {
 function asStrings(value: unknown, path: string): string[] {
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) throw new Error(`Invalid Control Center response for ${path}: expected an array of strings.`);
   return value as string[];
+}
+
+/** Optional session identity: the contract requires version+csrfToken; actor identity is additive. */
+function withSessionIdentity(body: SessionInfo): SessionInfo {
+  const record = body as unknown as Record<string, unknown>;
+  const actorId = typeof record.actorId === "string" ? record.actorId : undefined;
+  const raw = record.delegation as Record<string, unknown> | undefined;
+  const capabilities = Array.isArray(raw?.capabilities) && raw.capabilities.every((entry): entry is string => typeof entry === "string") ? raw.capabilities : undefined;
+  const delegation = raw && typeof raw.delegationId === "string" && typeof raw.grantorOwnerId === "string" && typeof raw.expiresAt === "string"
+    ? {
+      delegationId: raw.delegationId,
+      grantorOwnerId: raw.grantorOwnerId,
+      ...(typeof raw.authorityProfile === "string" ? { authorityProfile: raw.authorityProfile } : {}),
+      ...(capabilities ? { capabilities } : {}),
+      expiresAt: raw.expiresAt,
+    }
+    : undefined;
+  return { ...body, ...(actorId ? { actorId } : {}), ...(delegation ? { delegation } : {}) };
 }
 
 function asRecords(value: unknown, path: string): Record<string, unknown>[] {
@@ -169,11 +243,11 @@ export class ControlCenterApi {
     return parseResponse<T>(path, body, required);
   }
 
-  pair(nonce: string): Promise<ControlCenterPairedSessionV1> {
-    return this.request("/api/v1/pair", { method: "POST", body: JSON.stringify({ nonce }) }, undefined, ["version", "csrfToken"]);
+  pair(nonce: string): Promise<SessionInfo> {
+    return this.request<SessionInfo>("/api/v1/pair", { method: "POST", body: JSON.stringify({ nonce }) }, undefined, ["version", "csrfToken"]).then(withSessionIdentity);
   }
 
-  session(): Promise<ControlCenterPairedSessionV1> { return this.request("/api/v1/session", undefined, undefined, ["version", "csrfToken"]); }
+  session(): Promise<SessionInfo> { return this.request<SessionInfo>("/api/v1/session", undefined, undefined, ["version", "csrfToken"]).then(withSessionIdentity); }
   async overview(): Promise<Overview> {
     const body = await this.request<Overview>("/api/v1/overview", undefined, undefined, ["version", "generatedAt", "buildIdentity", "projects", "operations", "participants", "candidates", "context", "authority", "evidence", "services", "knowledge", "quality", "certification", "security", "pairing"]);
     return { ...body, operations: body.operations.map((operation) => ({ ...operation, decisionRequest: parseDecisionRequest(operation.decisionRequest, "/api/v1/overview", operation.operationId, operation.candidateDigest) })) };
@@ -216,5 +290,29 @@ export class ControlCenterApi {
     const result = await this.request<ControlCenterActionResultV1>(`/api/v1/operations/${encodeURIComponent(operationId)}/resume`, { method: "POST" }, csrfToken, ["version", "accepted"]);
     if (result.accepted !== true) throw new Error(result.reason ?? "The Control Center did not accept the resume request.");
     return result;
+  }
+
+  async delegations(): Promise<DelegationStatus[]> {
+    const body = await this.request<{ version: 1; items: DelegationStatus[] }>("/api/v1/delegations", undefined, undefined, ["version", "items"]);
+    return body.items;
+  }
+
+  async grantDelegation(csrfToken: string, input: DelegationSubmissionInputV1): Promise<DelegationGrantResultV1> {
+    return this.request<DelegationGrantResultV1>("/api/v1/delegations", { method: "POST", body: JSON.stringify(input) }, csrfToken, ["version", "delegationId", "delegatePrincipalId", "grantorOwnerId", "expiresAt"]);
+  }
+
+  async revokeDelegation(csrfToken: string, delegationId: string, reason?: string): Promise<ControlCenterActionResultV1> {
+    const result = await this.request<ControlCenterActionResultV1>(`/api/v1/delegations/${encodeURIComponent(delegationId)}/revoke`, { method: "POST", body: JSON.stringify(reason ? { reason } : {}) }, csrfToken, ["version", "accepted"]);
+    if (result.accepted !== true) throw new Error(result.reason ?? "The Control Center did not accept the revocation.");
+    return result;
+  }
+
+  async delegationDecisions(delegationId: string): Promise<DelegationDecision[]> {
+    const body = await this.request<{ version: 1; items: DelegationDecision[] }>(`/api/v1/delegations/${encodeURIComponent(delegationId)}/decisions`, undefined, undefined, ["version", "items"]);
+    return body.items;
+  }
+
+  async delegateSession(delegationId: string, delegatePrincipalId: string): Promise<SessionInfo> {
+    return this.request<SessionInfo>("/api/v1/delegate-session", { method: "POST", body: JSON.stringify({ delegationId, delegatePrincipalId }) }, undefined, ["version", "csrfToken"]).then(withSessionIdentity);
   }
 }

@@ -3,6 +3,7 @@ import { assertResolvedOperationPolicyV2 } from "../architecture/executionIdenti
 import { loadOperation, currentControllerEpoch } from "../operations/state.js";
 import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
 import { assertDecisionBindingMatchesRequest, assertDecisionRequestV1, HumanDecisionLedgerV2 } from "../security/humanDecision.js";
+import { isDelegatedOwnerActor, controlRootRepository, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
 import { runtimeProjectId } from "../runtime/index.js";
 
 interface ProductChoiceSubmissionV1 {
@@ -67,12 +68,30 @@ export async function recordControlCenterDecision(root: string, ledger: HumanDec
   }
 
   let decision: Awaited<ReturnType<HumanDecisionLedgerV2["recordProductChoice"]>>;
+  // Central Owner authority resolution: a principal possessing the required
+  // Owner authority must approve this. Human sessions pass through;
+  // delegated sessions must present a currently-valid FULL_PROJECT_OWNER
+  // grant covering `decision.resolve`, verified (MAC/scope/expiry/revocation)
+  // here — never force-approved, and recorded with delegated provenance.
+  let delegatedFrom: { grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined;
+  if (isDelegatedOwnerActor(actorId)) {
+    const repository = await controlRootRepository(root);
+    const verified = await verifyOwnerActorForCapability(root, {
+      actorId,
+      projectId: candidate.projectId ?? runtimeProjectId(root),
+      ...(repository ? { repository } : {}),
+      requiredCapability: "decision.resolve",
+    });
+    delegatedFrom = verified.delegatedFrom;
+    if (!delegatedFrom) throw new ProductChoiceConflictError("DECISION_AUTHORITY_DENIED: delegated verification produced no provenance.");
+  }
   try {
     decision = await ledger.recordProductChoice({
       ...binding,
       kind: "CHOOSE",
       purpose: { kind: "PRODUCT_CHOICE", requestId: request.requestId, choiceId: choice.choiceId },
       actorId,
+      ...(delegatedFrom ? { delegatedFrom } : {}),
       reason: input.reason?.trim() || `Paired Control Center selected '${choice.choiceId}'.`,
       expiresAt: request.expiresAt
     }, request.requestId);
@@ -87,7 +106,8 @@ export async function recordControlCenterDecision(root: string, ledger: HumanDec
     operationId: operation.id,
     requestId: request.requestId,
     choiceId: choice.choiceId,
-    candidateRevision: candidate.revision
+    candidateRevision: candidate.revision,
+    ...(delegatedFrom ? { delegated: true, actingPrincipal: actorId, grantorOwnerId: delegatedFrom.grantorOwnerId, delegationId: delegatedFrom.delegationId } : {})
   };
 }
 

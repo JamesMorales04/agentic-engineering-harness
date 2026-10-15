@@ -9,6 +9,7 @@ import { isCanonicalRole, roleProfile, type CanonicalRole } from "../participant
 import { assertExecutionAuthority, type ExecutionAuthorityV1 } from "./executionLease.js";
 import { TOOL_ACTION_KINDS_V1, type ToolActionKindV1 } from "./actionKinds.js";
 import { HumanDecisionLedgerV2 } from "./humanDecision.js";
+import { reverifyDelegatedDecisionForOperation } from "./ownerAuthority.js";
 
 export { TOOL_ACTION_KINDS_V1 } from "./actionKinds.js";
 export type { ToolActionKindV1 } from "./actionKinds.js";
@@ -398,6 +399,18 @@ async function consumeRequiredHumanDecision(request: ToolActionRequestV1, operat
         controllerEpoch: operationEpoch
       }, { kind: "ACTION_AUTHORIZATION", action: request.action, effectDigest: sha256Canonical(request.payload) }, undefined, request.now ?? new Date());
       if (decision.kind !== "APPROVE") throw new Error("matching HumanDecision rejects this exact action and effect.");
+      // Central Owner authority resolution at USE time: a delegated approval
+      // must rest on a currently-valid grant for this exact effect. The
+      // stored `delegatedFrom` provenance (not a caller claim) selects the
+      // grant, and the check binds delegation id, delegate principal, and
+      // human grantor; expired/revoked/forged/cross-project grants deny
+      // fail-closed here, at consumption — not just at recording.
+      await reverifyDelegatedDecisionForOperation(request.root, {
+        actorId: decision.actorId,
+        ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
+        projectId: policy.projectId,
+        requiredCapability: "delivery.authorize",
+      });
     } catch (error) {
       throw new Error(`TOOL_ACTION_HUMAN_DECISION_REQUIRED: ${error instanceof Error ? error.message : String(error)}`);
     }
