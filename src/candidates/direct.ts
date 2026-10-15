@@ -8,7 +8,7 @@ import { AehError } from "../core/errors.js";
 import { providerGeneratedPathspecExcludes } from "../core/git.js";
 import { runExecutable } from "../utils/process.js";
 import { markOperationResourceReleased, registerOperationResource } from "../runtime/operationResources.js";
-import { existingRepositoryPath, materializeRepairEvidence, repositoryPath } from "../utils/repositoryPath.js";
+import { existingRepositoryPath, materializeRepairEvidence, repositoryPath, verifyRepairEvidenceUntampered } from "../utils/repositoryPath.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import type { ChangeSetV1 } from "./assembler.js";
 import { resolveAbsoluteWithExistingSymlinks, symlinkTargetEscapesRoot } from "./assembler.js";
@@ -217,6 +217,14 @@ export async function executeIsolatedCandidateMutation(input: {
 
     const session = await input.execute(isolatedRoot);
     if (session.exitCode !== 0) return { session };
+    if (input.requireRepairEvidenceFor !== undefined) {
+      // Detection (not prevention): modes cannot stop a shell-capable
+      // participant from re-chmoding an ignored evidence copy, so verify the
+      // copy byte-identical before trusting this turn's ChangeSet.
+      await verifyRepairEvidenceUntampered(
+        input.evidenceRoot ?? input.root, isolatedRoot, input.config, input.requireRepairEvidenceFor,
+      );
+    }
 
     const intent = await runExecutable("git", ["add", "-N", "--all"], { cwd: isolatedRoot, timeoutMs: 30_000 });
     if (intent.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to enumerate DIRECT changes: ${intent.stderr || intent.stdout}`);

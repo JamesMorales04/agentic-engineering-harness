@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { HarnessProjectConfig } from "../src/core/types.js";
-import { ignoreVerdict, assertDigestNeutralReportPersist, materializeRepairEvidence, writeContainedFile } from "../src/utils/repositoryPath.js";
+import { ignoreVerdict, assertDigestNeutralReportPersist, materializeRepairEvidence, verifyRepairEvidenceUntampered, writeContainedFile } from "../src/utils/repositoryPath.js";
 
 const config = { version: 1, project: { name: "repair-evidence-test" } } as HarnessProjectConfig;
 
@@ -142,6 +142,30 @@ describe("materializeRepairEvidence", () => {
       await assertDigestNeutralReportPersist(plain, plain, undefined, "T-1");
     } finally {
       await fs.rm(plain, { recursive: true, force: true });
+    }
+  });
+
+  it("detects post-turn evidence tampering even past read-only modes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-"));
+    const target = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-target-"));
+    try {
+      await fs.mkdir(path.join(root, ".harness", "reports"), { recursive: true });
+      await fs.writeFile(path.join(root, ".harness", "reports", "T-9.json"), '{"ok":true}');
+      expect(await materializeRepairEvidence(root, target, config, "T-9")).toBe(true);
+      await verifyRepairEvidenceUntampered(root, target, config, "T-9");
+      // A shell-capable participant re-chmods and rewrites the ignored copy.
+      const copied = path.join(target, ".harness", "reports", "T-9.json");
+      await fs.chmod(copied, 0o644);
+      await fs.writeFile(copied, '{"ok":false}');
+      await expect(verifyRepairEvidenceUntampered(root, target, config, "T-9"))
+        .rejects.toThrow(/REPAIR_EVIDENCE_TAMPERED/);
+      // Deletion is tampering too.
+      await fs.unlink(copied);
+      await expect(verifyRepairEvidenceUntampered(root, target, config, "T-9"))
+        .rejects.toThrow(/REPAIR_EVIDENCE_TAMPERED/);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(target, { recursive: true, force: true });
     }
   });
 });

@@ -113,15 +113,43 @@ export async function materializeRepairEvidence(
   // as output. A read-only copy turns an evidence-tampering write into a
   // loud filesystem error instead of silent corruption that git-based scope
   // enforcement cannot see (ignored artifacts never enter the ChangeSet).
-  // Replace any pre-existing copy first: a previous read-only copy would
-  // otherwise make the refresh fail instead of converging.
+  // Replace any pre-existing copy first (chmod first so a previous read-only
+  // copy does not block its own refresh on platforms where deleting a
+  // read-only file requires clearing that state): a previous read-only copy
+  // would otherwise make the refresh fail instead of converging.
   const stale = repositoryPath(absoluteTarget, relative);
+  await fs.chmod(stale, 0o600).catch(() => undefined);
   await fs.unlink(stale).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   });
   const destination = await writeContainedFile(absoluteTarget, relative, await fs.readFile(source));
   await fs.chmod(destination, 0o444);
   return true;
+}
+
+/**
+ * Post-turn evidence tamper check (DETERMINISTIC detection, not prevention):
+ * filesystem modes cannot stop a shell-capable participant from re-chmoding
+ * or recreating an ignored evidence copy (git never sees it either), so
+ * after a successful repair turn the isolated copy is byte-compared against
+ * its source. Any divergence — modification or deletion — fails the turn
+ * closed with REPAIR_EVIDENCE_TAMPERED instead of trusting its ChangeSet.
+ * Failed turns skip the check (their evidence refreshes next attempt).
+ */
+export async function verifyRepairEvidenceUntampered(
+  evidenceRoot: string,
+  isolatedRoot: string,
+  config: HarnessProjectConfig,
+  taskId: string,
+): Promise<void> {
+  const relative = `${config.sdd?.reportsDir ?? ".harness/reports"}/${taskId}.json`;
+  const [expected, observed] = await Promise.all([
+    fs.readFile(repositoryPath(path.resolve(evidenceRoot), relative)).catch(() => undefined),
+    fs.readFile(repositoryPath(path.resolve(isolatedRoot), relative)).catch(() => undefined),
+  ]);
+  if (!expected || !observed || !expected.equals(observed)) {
+    throw new Error("REPAIR_EVIDENCE_TAMPERED: the isolated repair evidence diverged from its source during the turn; the ChangeSet is untrusted.");
+  }
 }
 
 /**
