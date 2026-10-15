@@ -1456,14 +1456,13 @@ export async function pendingOperationControl(root: string, operationId: string,
   // decisions always qualify; revoked/expired delegated grants do not), so
   // a stale decision from a dead grant neither blocks nor gets applied.
   // Multiple LIVE decisions for the same purpose stay ambiguous fail-closed.
-  const projectId = current.candidateRevision?.projectId ?? current.resolvedOperationPolicy?.projectId;
   const live: HumanDecisionV2[] = [];
   for (const decision of matches) {
     if (!isDelegatedOwnerActor(decision.actorId)) { live.push(decision); continue; }
-    if (!projectId || !decision.delegatedFrom) continue;
+    if (!decision.delegatedFrom) continue;
     try {
       await reverifyDelegatedDecisionForOperation(root, {
-        actorId: decision.actorId, delegatedFrom: decision.delegatedFrom, projectId, requiredCapability: "recovery.authorize",
+        actorId: decision.actorId, delegatedFrom: decision.delegatedFrom, requiredCapability: "recovery.authorize",
       });
       live.push(decision);
     } catch { /* dead grant: skipped, never applied */ }
@@ -1488,12 +1487,9 @@ export async function pauseOperationIfRequested(root: string, operationId: strin
     const binding = currentDecisionBinding(current, "operation pause");
     if (!sameHumanDecisionBinding(decision, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: pause control no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
     if (isDelegatedOwnerActor(decision.actorId)) {
-      const projectId = current.candidateRevision?.projectId ?? current.resolvedOperationPolicy?.projectId;
-      if (!projectId) throw new Error("DELEGATION_DENIED: paused operation has no project identity for delegation scope checks.");
       await reverifyDelegatedDecisionForOperation(root, {
         actorId: decision.actorId,
         ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
-        projectId,
         requiredCapability: "recovery.authorize",
       });
     }
@@ -1524,12 +1520,9 @@ async function applyOperationResume(root: string, operationId: string, decision:
     if (!sameHumanDecisionBinding(pause, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: pause record no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
     if (!sameHumanDecisionBinding(decision, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: resume control no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
     if (isDelegatedOwnerActor(decision.actorId)) {
-      const projectId = current.candidateRevision?.projectId ?? current.resolvedOperationPolicy?.projectId;
-      if (!projectId) throw new Error("DELEGATION_DENIED: paused operation has no project identity for delegation scope checks.");
       await reverifyDelegatedDecisionForOperation(root, {
         actorId: decision.actorId,
         ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
-        projectId,
         requiredCapability: "recovery.authorize",
       });
     }

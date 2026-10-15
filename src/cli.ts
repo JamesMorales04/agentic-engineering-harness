@@ -138,9 +138,14 @@ delegation.command("grant").requiredOption("--grantor <owner>", "Authenticated h
   const expiresAt = options.expiresAt ?? new Date(Date.now() + ttlDays * 24 * 60 * 60_000).toISOString();
   const capabilities = options.capability?.length ? options.capability as OwnerCapabilityV1[] : undefined;
   if (capabilities?.some((capability) => !OWNER_CAPABILITIES_V1.includes(capability))) throw new Error(`unknown Owner capability (vocabulary: ${OWNER_CAPABILITIES_V1.join(", ")}).`);
+  // Repository scope binds by construction: explicit --repository wins,
+  // otherwise the checkout configuration supplies it (unless --project
+  // overrides the project scope, in which case no repository is implied).
+  const repository = options.repository ?? (options.project ? undefined : config.delivery?.github?.repository);
   const grant = await issueDelegatedOwnerGrantV1(root, {
     grantorOwnerId: options.grantor, delegatePrincipalId: options.delegate,
-    projectId: options.project ?? config.project.name, ...(options.repository ? { repository: options.repository } : {}),
+    projectId: options.project ?? config.project.name,
+    ...(repository ? { repository } : {}),
     expiresAt, ...(capabilities ? { capabilities } : {})
   }, { via: "cli-direct" });
   console.log(`DELEGATED_OWNER granted: ${grant.delegationId} delegate=${grant.delegatePrincipalId} grantor=${grant.grantorOwnerId} project=${grant.projectId} expires=${grant.expiresAt}`);
