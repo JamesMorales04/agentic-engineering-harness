@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveCommit } from "../src/core/git.js";
+import { resolveCommit, resolveWorkspaceBase } from "../src/core/git.js";
 import { buildBranchOffWorkspaceCommand } from "../src/operations/controller.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
@@ -47,8 +47,7 @@ describe("workspace base commit resolution (DETERMINISTIC)", () => {
     expect(await resolveCommit(root, "main")).toBe(after);
   });
 
-  it("builds workspace create commands with a SHA-pinned base", async () => {
-    const root = await gitRepo();
+  it("builds workspace create commands with a SHA-pinned base", async () => {    const root = await gitRepo();
     const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
     const config = { version: 1, project: { name: "base-ref-test" }, validation: { baseRef: "main" } } as HarnessProjectConfig;
     const record = { id: "OP-BASE-REF", kind: "change" } as never;
@@ -66,5 +65,12 @@ describe("workspace base commit resolution (DETERMINISTIC)", () => {
     expect(fallback.pinned).toBe(false);
     expect(fallback.base).toBe("no-such-ref");
     expect(traced).toContain("workspace.base.unresolved");
+  });
+
+  it("shares one pinning helper across controller and handoff callers", async () => {
+    const root = await gitRepo();
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    expect(await resolveWorkspaceBase(root, "main")).toEqual({ base: head, pinned: true });
+    expect(await resolveWorkspaceBase(root, "no-such-ref")).toEqual({ base: "no-such-ref", pinned: false });
   });
 });

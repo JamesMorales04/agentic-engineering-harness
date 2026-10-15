@@ -399,9 +399,30 @@ export async function getDiffStats(cwd: string, baseRef: string, options: GitCha
  * creation must pin the SHA observed at start so isolated worktrees never
  * branch off a moved or stale ref. Returns undefined when unresolvable.
  */
-export async function resolveCommit(cwd: string, ref: string): Promise<string | undefined> {  const result = await runExecutable("git", ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], { cwd, timeoutMs: 15_000 });
+export async function resolveCommit(cwd: string, ref: string): Promise<string | undefined> {
+  const result = await runExecutable("git", ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], { cwd, timeoutMs: 15_000 });
   const commit = result.stdout.trim();
   return result.exitCode === 0 && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commit) ? commit : undefined;
+}
+
+export interface ResolvedWorkspaceBase {
+  /** Exact commit SHA when pinned, otherwise the configured name. */
+  base: string;
+  pinned: boolean;
+}
+
+/**
+ * Resolve an isolated-workspace base to the exact commit SHA observed now
+ * (DETERMINISTIC): branch names resolve differently across checkouts (a
+ * stale local `main` in a detached clone/checkout), forking isolated
+ * worktrees off an unintended base. Falls back to the configured name
+ * (previous behavior) only when unresolvable. Shared by the operation
+ * controller and delivery handoff so authorization payloads and the actual
+ * workspace creation bind the SAME resolved base.
+ */
+export async function resolveWorkspaceBase(cwd: string, configuredBase: string): Promise<ResolvedWorkspaceBase> {
+  const baseCommit = await resolveCommit(cwd, configuredBase).catch(() => undefined);
+  return baseCommit ? { base: baseCommit, pinned: true } : { base: configuredBase, pinned: false };
 }
 
 /** Provider-owned outputs must not become product-scope changes during validation. */

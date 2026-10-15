@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
-import { getOriginRemote, resolveCommit } from "../core/git.js";
+import { getOriginRemote, resolveWorkspaceBase } from "../core/git.js";
 import { loadTaskContract } from "../core/config.js";
 import { validateSddChange } from "../core/sdd.js";
 import { verifyTaskSeal } from "../core/seal.js";
@@ -95,7 +95,12 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
       const issue = record.github?.issueNumber; const slug = renderPattern(paseo.worktreeSlugPattern ?? "gh-{issue}-{slug}", contract, issue);
       const remoteBranch = record.github?.branch;
       const localIssueBranch = issue ? renderPattern(github?.branchPattern ?? "feature/gh-{issue}-{slug}", contract, issue) : renderPattern("aeh-{task}-{slug}", contract, issue);
-      const workspacePayload = { path: root, isolation: "worktree", mode: remoteBranch ? "checkout-branch" : "branch-off", branch: remoteBranch ?? localIssueBranch, base: remoteBranch ? undefined : originatingBranch, slug, title: taskId };
+      // The authorization payload and the actual workspace creation bind the
+      // SAME resolved base: branch names are pinned to the exact commit SHA
+      // observed now so a stale local branch cannot fork the workspace off an
+      // unintended base behind the authorization's back.
+      const workspaceBase = remoteBranch ? undefined : (await resolveWorkspaceBase(root, originatingBranch)).base;
+      const workspacePayload = { path: root, isolation: "worktree", mode: remoteBranch ? "checkout-branch" : "branch-off", branch: remoteBranch ?? localIssueBranch, base: workspaceBase, slug, title: taskId };
       let workspace: { workspaceId?: string; worktreePath?: string } | undefined;
       const gate = await executeGatedAction({
         root,
@@ -103,7 +108,7 @@ export async function handoffTask(root: string, config: HarnessProjectConfig, ta
         execute: async () => {
           workspace = remoteBranch
             ? await createCheckoutWorkspace(root, remoteBranch, slug, taskId, handoffAuthority!, record.github?.branchSha)
-            : await createBranchOffWorkspace(root, originatingBranch, localIssueBranch, slug, taskId, handoffAuthority!.operationId);
+            : await createBranchOffWorkspace(root, workspaceBase ?? originatingBranch, localIssueBranch, slug, taskId, handoffAuthority!.operationId);
           return { outcome: "SUCCEEDED" as const, evidence: { workspaceId: workspace.workspaceId, worktreePath: workspace.worktreePath, branch: workspacePayload.branch } };
         },
         reconcile: (intent) => reconcileToolAction(root, intent, { ...workspacePayload, ...(record.paseo?.workspaceId ? { workspaceId: record.paseo.workspaceId } : {}) })
@@ -208,14 +213,12 @@ async function createCheckoutWorkspace(root: string, branch: string, slug: strin
   }
   return runPaseoWorkspace(root, ["--mode", "checkout-branch", "--branch", branch], slug, title, branch, authority.operationId);
 }
-async function createBranchOffWorkspace(root: string, base: string, branch: string, slug: string, title: string, operationId: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
+async function createBranchOffWorkspace(root: string, resolvedBase: string, branch: string, slug: string, title: string, operationId: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
   assertGitBranchName(branch);
-  assertGitBranchName(base);
-  // Pin to the exact commit SHA observed now: branch names can resolve
-  // differently across checkouts (stale local branches in detached clones).
-  // Falls back to the configured name (current behavior) when unresolvable.
-  const baseCommit = await resolveCommit(root, base).catch(() => undefined);
-  return runPaseoWorkspace(root, ["--mode", "branch-off", "--new-branch", branch, "--base", baseCommit ?? base], slug, title, branch, operationId);
+  assertGitBranchName(resolvedBase);
+  // Takes the already-resolved base (pinned by the caller to the exact
+  // commit SHA): resolving twice could observe two different commits.
+  return runPaseoWorkspace(root, ["--mode", "branch-off", "--new-branch", branch, "--base", resolvedBase], slug, title, branch, operationId);
 }
 
 interface HandoffAuthority {

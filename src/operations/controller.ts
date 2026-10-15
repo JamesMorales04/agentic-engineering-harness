@@ -47,7 +47,7 @@ import { delegatedCapsuleObjectiveV1, prepareChangeOperation, resolveChangePrefl
 import { prepareGithubIssueTask, type IssuePreparationResult } from "../issues/intake.js";
 import { createSemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
 import type { ChangePreflightV1 } from "../core/triage.js";
-import { computeWorktreeDigest, resolveBaseRef, resolveCommit } from "../core/git.js";
+import { computeWorktreeDigest, resolveBaseRef, resolveWorkspaceBase } from "../core/git.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
 import { assertIsolatedSelfHostingCharterV1, assertSelfHostingExecutionV1, bindSelfHostingCharterV1 } from "./selfHostingCharter.js";
@@ -1789,9 +1789,9 @@ export async function buildBranchOffWorkspaceCommand(
   trace?: (event: string, detail?: Record<string, unknown>) => Promise<unknown> | unknown,
 ): Promise<BranchOffWorkspaceCommand> {
   const configuredBase = config.validation?.baseRef ?? "HEAD";
-  const baseCommit = await resolveCommit(root, configuredBase).catch(() => undefined);
-  const base = baseCommit ?? configuredBase;
-  if (!baseCommit) await trace?.("workspace.base.unresolved", { operationId: record.id, configuredBase, reason: "base ref did not resolve to a commit; passing the configured name through" });
+  const resolved = await resolveWorkspaceBase(root, configuredBase);
+  const base = resolved.base;
+  if (!resolved.pinned) await trace?.("workspace.base.unresolved", { operationId: record.id, configuredBase, reason: "base ref did not resolve to a commit; passing the configured name through" });
   const command = [
     "paseo workspace create",
     "--isolation worktree",
@@ -1803,7 +1803,7 @@ export async function buildBranchOffWorkspaceCommand(
     `--title ${quote(naming.title)}`,
     "--json"
   ].join(" ");
-  return { command, branch: naming.branch, slug: naming.slug, base, pinned: baseCommit !== undefined };
+  return { command, branch: naming.branch, slug: naming.slug, base, pinned: resolved.pinned };
 }
 
 export async function ensureOperationWorkspace(
