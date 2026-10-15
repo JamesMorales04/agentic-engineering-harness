@@ -16,7 +16,27 @@ describe("materializeRepairEvidence", () => {
       const content = JSON.stringify({ taskId: "T-9", status: "FAIL", checks: [] });
       await fs.writeFile(path.join(root, ".harness", "reports", "T-9.json"), content);
       expect(await materializeRepairEvidence(root, target, config, "T-9")).toBe(true);
-      expect(await fs.readFile(path.join(target, ".harness", "reports", "T-9.json"), "utf8")).toBe(content);
+      const copied = path.join(target, ".harness", "reports", "T-9.json");
+      expect(await fs.readFile(copied, "utf8")).toBe(content);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(target, { recursive: true, force: true });
+    }
+  });
+
+  it("materializes evidence read-only so tampering fails loudly", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-"));
+    const target = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-target-"));
+    try {
+      await fs.mkdir(path.join(root, ".harness", "reports"), { recursive: true });
+      await fs.writeFile(path.join(root, ".harness", "reports", "T-9.json"), "{}");
+      expect(await materializeRepairEvidence(root, target, config, "T-9")).toBe(true);
+      const copied = path.join(target, ".harness", "reports", "T-9.json");
+      const mode = (await fs.stat(copied)).mode & 0o777;
+      expect(mode & 0o222).toBe(0);
+      // Refreshing over a previous read-only copy converges instead of failing.
+      expect(await materializeRepairEvidence(root, target, config, "T-9")).toBe(true);
+      expect(await fs.readFile(copied, "utf8")).toBe("{}");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
       await fs.rm(target, { recursive: true, force: true });

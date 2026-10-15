@@ -109,7 +109,18 @@ export async function materializeRepairEvidence(
   });
   if (!source) return false;
   const absoluteTarget = path.resolve(target);
-  await writeContainedFile(absoluteTarget, relative, await fs.readFile(source));
+  // Read-only evidence copy: the repairer needs the report as input, never
+  // as output. A read-only copy turns an evidence-tampering write into a
+  // loud filesystem error instead of silent corruption that git-based scope
+  // enforcement cannot see (ignored artifacts never enter the ChangeSet).
+  // Replace any pre-existing copy first: a previous read-only copy would
+  // otherwise make the refresh fail instead of converging.
+  const stale = repositoryPath(absoluteTarget, relative);
+  await fs.unlink(stale).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  });
+  const destination = await writeContainedFile(absoluteTarget, relative, await fs.readFile(source));
+  await fs.chmod(destination, 0o444);
   return true;
 }
 
