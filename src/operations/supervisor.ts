@@ -54,7 +54,12 @@ export function supervisorGenerationCandidateCurrentV1(
   if (!binding) return true;
   if (binding.operationExecutionRevision !== operation.operationExecutionRevision) return false;
   if (binding.candidateDigest !== operation.candidateRevision.identityDigest) return false;
-  if (operation.resolvedOperationPolicy && binding.operationPolicyDigest !== operation.resolvedOperationPolicy.digest) return false;
+  // A bound channel without a current policy digest cannot satisfy the
+  // lease and result gates (both require policy-digest agreement), so it
+  // is stale by definition — even though rotation itself defers until a
+  // policy exists. Never treat absent policy as agreement.
+  if (!operation.resolvedOperationPolicy) return false;
+  if (binding.operationPolicyDigest !== operation.resolvedOperationPolicy.digest) return false;
   // Same tolerant default as currentControllerEpoch (absent controller reads as epoch 0).
   if (binding.controllerEpoch !== (operation.controller?.epoch ?? 0)) return false;
   return true;
