@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { loadProjectConfig } from "../core/config.js";
 import { sha256Canonical } from "../core/digest.js";
 import { isAehSourceCheckout } from "../core/sourceCheckout.js";
+import { assertDelegationIssuanceContext, verifyDelegatedOwnerGrantV1 } from "../security/ownerAuthority.js";
 import { VERSION } from "../version.js";
 import { operationArtifactDir } from "./state.js";
 
@@ -43,6 +45,17 @@ import { operationArtifactDir } from "./state.js";
 export const SELF_HOSTING_CHARTERS_DIR = ".harness/self-hosting-charters";
 export const SELF_HOSTING_BINDING_FILE = "charter.json";
 
+export type SelfHostingCharterIssuerV1 = "HUMAN_OWNER" | "DELEGATED_OWNER";
+
+export interface SelfHostingCharterProvenanceV1 {
+  /** HUMAN_OWNER: issued directly by the human Owner. DELEGATED_OWNER: issued by an authorized delegate. */
+  issuedBy: SelfHostingCharterIssuerV1;
+  /** Present only for DELEGATED_OWNER: the authenticating human grantor. */
+  grantorOwnerId?: string;
+  /** Present only for DELEGATED_OWNER: the grant authorizing issuance. */
+  delegationId?: string;
+}
+
 export interface SelfHostingCharterV1 {
   version: 1;
   /** Canonical realpath of the isolated target control root this charter covers. */
@@ -52,6 +65,13 @@ export interface SelfHostingCharterV1 {
   authorizedAt: string;
   expiresAt: string;
   scope: { kinds: string[] };
+  /**
+   * Charter provenance. Absent means a legacy human-Owner charter. Delegated
+   * charters carry the issuing delegate, grantor, and delegation id; the
+   * delegation itself is re-verified (MAC/scope/expiry/revocation) at every
+   * gate, so revocation or expiry strands delegated charters fail-closed.
+   */
+  provenance?: SelfHostingCharterProvenanceV1;
   charterDigest: string;
 }
 
@@ -221,7 +241,7 @@ export async function assertIsolatedSelfHostingCharterV1(
     }
     if (candidateReal !== rootReal) continue;
     targetSeen = true;
-    const failure = charterRejection(parsed, file, kind, nowMs);
+    const failure = await charterRejection(parsed, file, kind, nowMs, authority.controllerRoot);
     if (!failure) return parsed as unknown as SelfHostingCharterV1;
   }
   if (targetSeen) {
@@ -234,12 +254,13 @@ export async function assertIsolatedSelfHostingCharterV1(
   );
 }
 
-function charterRejection(
+async function charterRejection(
   parsed: Record<string, unknown>,
   file: string,
   kind: string,
   nowMs: number,
-): string | undefined {
+  controllerRoot: string,
+): Promise<string | undefined> {
   if (parsed.version !== 1) return `${file}: unsupported charter version`;
   if (typeof parsed.charterDigest !== "string" || !/^[0-9a-f]{64}$/.test(parsed.charterDigest)) {
     return `${file}: missing or malformed charterDigest`;
@@ -258,7 +279,130 @@ function charterRejection(
   if (!isRecord(scope) || !Array.isArray(scope.kinds) || !scope.kinds.includes(kind)) {
     return `${file}: scope does not cover ${JSON.stringify(kind)}`;
   }
+  // Delegated charter provenance: a DELEGATED_OWNER charter is honored only
+  // while its authorizing delegation verifies (keyed MAC, project scope,
+  // `charter.authorize` capability, expiry, revocation). Revocation or expiry
+  // strands the charter fail-closed at every gate, including execution
+  // re-validation after a controller version change forces re-issuance.
+  const provenance = parsed.provenance;
+  if (provenance !== undefined) {
+    if (!isRecord(provenance) || (provenance.issuedBy !== "HUMAN_OWNER" && provenance.issuedBy !== "DELEGATED_OWNER")) {
+      return `${file}: charter provenance is malformed`;
+    }
+    if (provenance.issuedBy === "DELEGATED_OWNER") {
+      const delegationId = provenance.delegationId;
+      const grantorOwnerId = provenance.grantorOwnerId;
+      if (typeof delegationId !== "string" || typeof grantorOwnerId !== "string" || !grantorOwnerId.startsWith("human:")) {
+        return `${file}: delegated charter provenance must name the delegation and human grantor`;
+      }
+      if (typeof parsed.authorizedBy !== "string" || !parsed.authorizedBy.startsWith("delegate:")) {
+        return `${file}: delegated charter authorizedBy must be the issuing delegate principal`;
+      }
+      try {
+        const projectId = await controllerProjectId(controllerRoot);
+        const grant = await verifyDelegatedOwnerGrantV1(controllerRoot, delegationId, {
+          projectId,
+          requiredCapability: "charter.authorize",
+          nowMs,
+        });
+        if (grant.grantorOwnerId !== grantorOwnerId) return `${file}: delegated charter grantor does not match the authorizing grant`;
+        if (grant.delegatePrincipalId !== parsed.authorizedBy) return `${file}: delegated charter issuer does not match the authorizing grant`;
+      } catch (error) {
+        return `${file}: delegated charter authorization invalid (${error instanceof Error ? error.message : String(error)})`;
+      }
+    }
+  }
   return undefined;
+}
+
+/** Controller project identity for delegation scope checks (config name; absent config denies delegated charters only). */
+async function controllerProjectId(controllerRoot: string): Promise<string> {
+  try { await fs.access(path.resolve(controllerRoot, ".harness", "project.yaml")); }
+  catch { throw new Error("DELEGATION_PROJECT_MISMATCH: controller has no project identity for delegation scope checks."); }
+  const config = await loadProjectConfig(controllerRoot);
+  const projectId = config?.project?.name?.trim();
+  if (!projectId) throw new Error("DELEGATION_PROJECT_MISMATCH: controller has no project identity for delegation scope checks.");
+  return projectId;
+}
+
+export type CharterIssuanceContextV1 =
+  | { via: "cli-direct" }
+  | { via: "control-center-paired"; pairedActorId: string }
+  | { via: "test"; allowManagedContext?: boolean };
+
+export interface IssueSelfHostingCharterInputV1 {
+  /** Canonical realpath of the isolated target this charter covers. */
+  targetRoot: string;
+  kinds: Array<"change" | "run">;
+  expiresAt: string;
+  /** `human:*` for direct Owner issuance, `delegate:*` for delegated issuance. */
+  authorizedBy: string;
+  /** Required for delegated issuance: the authorizing grant. */
+  delegationId?: string;
+  projectId?: string;
+  repository?: string;
+}
+
+/**
+ * Issue (mint + persist) an isolated self-hosting charter in the controller
+ * checkout. Human Owners issue directly. A FULL_PROJECT_OWNER delegate whose
+ * grant covers `charter.authorize` may issue (and renew after a controller
+ * version change, by re-issuing with the running VERSION) without involving
+ * the human again — provenance records the delegate, grantor, and grant, and
+ * every gate re-verifies the grant. No worker may self-mint: issuance refuses
+ * managed contexts fail-closed, and arbitrary workers lack a valid grant.
+ */
+export async function issueSelfHostingCharterV1(
+  controllerRoot: string,
+  input: IssueSelfHostingCharterInputV1,
+  context: CharterIssuanceContextV1,
+): Promise<SelfHostingCharterV1> {
+  assertDelegationIssuanceContext(context.via === "test" ? { via: "test", allowManagedContext: context.allowManagedContext } : context);
+  const absoluteController = path.resolve(controllerRoot);
+  const targetRoot = await realpathOrResolve(path.resolve(input.targetRoot));
+  if (!Array.isArray(input.kinds) || input.kinds.length < 1 || input.kinds.some((kind) => kind !== "change" && kind !== "run")) {
+    throw new Error("CHARTER_ISSUANCE_DENIED: kinds must list 'change' and/or 'run'.");
+  }
+  const expiresAt = input.expiresAt;
+  if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) throw new Error("CHARTER_ISSUANCE_DENIED: expiresAt must be a future instant.");
+  const authorizedBy = input.authorizedBy.trim();
+  const projectId = input.projectId?.trim() || await controllerProjectId(absoluteController).catch(() => undefined);
+  if (!projectId) throw new Error("CHARTER_ISSUANCE_DENIED: controller project identity is required for charter scope.");
+  let provenance: SelfHostingCharterProvenanceV1;
+  if (authorizedBy.startsWith("human:")) {
+    if (input.delegationId) throw new Error("CHARTER_ISSUANCE_DENIED: human issuance takes no delegationId.");
+    if (context.via === "control-center-paired" && context.pairedActorId !== authorizedBy) {
+      throw new Error("CHARTER_ISSUANCE_DENIED: paired issuance author must equal the paired human session actor.");
+    }
+    provenance = { issuedBy: "HUMAN_OWNER" };
+  } else if (authorizedBy.startsWith("delegate:")) {
+    if (!input.delegationId?.trim()) throw new Error("CHARTER_ISSUANCE_DENIED: delegated issuance requires the authorizing delegationId.");
+    const grant = await verifyDelegatedOwnerGrantV1(absoluteController, input.delegationId.trim(), {
+      projectId,
+      ...(input.repository ? { repository: input.repository } : {}),
+      requiredCapability: "charter.authorize",
+    });
+    if (grant.delegatePrincipalId !== authorizedBy) throw new Error("CHARTER_ISSUANCE_DENIED: delegation is bound to another delegated principal.");
+    provenance = { issuedBy: "DELEGATED_OWNER", grantorOwnerId: grant.grantorOwnerId, delegationId: grant.delegationId };
+  } else {
+    throw new Error("CHARTER_ISSUANCE_DENIED: authorizedBy must be a human Owner ('human:*') or delegated principal ('delegate:*').");
+  }
+  const body = {
+    version: 1 as const,
+    targetRoot,
+    controller: { aehVersion: VERSION },
+    authorizedBy,
+    authorizedAt: new Date().toISOString(),
+    expiresAt,
+    scope: { kinds: [...new Set(input.kinds)].sort() },
+    provenance,
+  };
+  const charter: SelfHostingCharterV1 = { ...body, charterDigest: canonicalCharterDigest(body) };
+  const dir = path.join(absoluteController, SELF_HOSTING_CHARTERS_DIR);
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, `${charter.charterDigest.slice(0, 16)}.json`);
+  await fs.writeFile(file, `${JSON.stringify(charter, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  return charter;
 }
 
 /** Binding sidecar persisted at start; re-verified on every execution. */

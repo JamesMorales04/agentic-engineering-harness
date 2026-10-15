@@ -15,6 +15,14 @@ export type HumanDecisionPurposeV2 =
   | { kind: "ACTION_AUTHORIZATION"; action: ToolActionKindV1; effectDigest: string }
   | { kind: "OPERATION_CONTROL"; command: OperationControlCommandV1 };
 
+export interface DelegatedDecisionProvenanceV1 {
+  /** Authenticated human grantor (`human:*`). */
+  grantorOwnerId: string;
+  /** Grant the decision acts under (`delegation:<uuid>`). */
+  delegationId: string;
+  profile: "FULL_PROJECT_OWNER";
+}
+
 export interface HumanDecisionV2 {
   version: 2;
   decisionId: string;
@@ -26,6 +34,14 @@ export interface HumanDecisionV2 {
   purpose: HumanDecisionPurposeV2;
   kind: HumanDecisionKindV2;
   actorId: string;
+  /**
+   * Authority provenance. Human Owner decisions carry none. Delegated Owner
+   * decisions (`delegate:*` actorId) MUST carry the grantor, delegation id,
+   * and profile — recorded as a delegated decision, never attributed to a
+   * human. Full grant validity (MAC/scope/expiry/revocation) is verified by
+   * the central Owner authority resolver at every consumer.
+   */
+  delegatedFrom?: DelegatedDecisionProvenanceV1;
   reason: string;
   createdAt: string;
   expiresAt?: string;
@@ -219,8 +235,29 @@ function assertExactObject<T>(value: unknown, allowedKeys: string[], name: strin
 
 function externalHumanActor(value: string): string {
   const actorId = required(value, "actorId");
-  if (!actorId.startsWith("human:")) throw new HumanDecisionError("only a paired or direct human authority may record this decision.");
+  if (!actorId.startsWith("human:") && !actorId.startsWith("delegate:")) throw new HumanDecisionError("only a paired/direct human authority or a delegated Owner principal may record this decision.");
   return actorId;
+}
+
+function assertDelegatedProvenance(actorId: string, delegatedFrom: unknown): void {
+  const isDelegate = actorId.startsWith("delegate:");
+  if (!isDelegate && delegatedFrom !== undefined) throw new HumanDecisionError("human Owner decisions must not carry delegated provenance.");
+  if (!isDelegate) return;
+  if (!delegatedFrom || typeof delegatedFrom !== "object" || Array.isArray(delegatedFrom)) {
+    throw new HumanDecisionError("delegated Owner decisions must carry delegatedFrom provenance (grantor, delegation id, profile).");
+  }
+  const provenance = delegatedFrom as Record<string, unknown>;
+  const allowed = ["grantorOwnerId", "delegationId", "profile"];
+  const extra = Object.keys(provenance).filter((key) => !allowed.includes(key));
+  if (extra.length) throw new HumanDecisionError(`delegatedFrom provenance contains unsupported fields: ${extra.join(", ")}.`);
+  const grantor = provenance.grantorOwnerId;
+  if (typeof grantor !== "string" || !grantor.startsWith("human:") || !grantor.slice("human:".length).trim()) {
+    throw new HumanDecisionError("delegatedFrom.grantorOwnerId must be the authenticated human grantor ('human:*').");
+  }
+  if (typeof provenance.delegationId !== "string" || !/^delegation:[0-9a-f-]{36}$/i.test(provenance.delegationId)) {
+    throw new HumanDecisionError("delegatedFrom.delegationId must be 'delegation:<uuid>'.");
+  }
+  if (provenance.profile !== "FULL_PROJECT_OWNER") throw new HumanDecisionError("delegatedFrom.profile must be FULL_PROJECT_OWNER.");
 }
 
 function instant(value: string, name: string): string {
@@ -332,10 +369,12 @@ export class HumanDecisionLedgerV2 {
     const binding = assertBinding(input);
     if (!humanDecisionKindValues.includes(input.kind)) throw new HumanDecisionError(`unsupported human decision kind '${String(input.kind)}'.`);
     const actorId = externalHumanActor(input.actorId);
+    assertDelegatedProvenance(actorId, (input as { delegatedFrom?: unknown }).delegatedFrom);
     const purpose = validatePurpose(input.kind, input.purpose);
     const createdAt = instant(input.createdAt instanceof Date ? input.createdAt.toISOString() : input.createdAt ?? new Date().toISOString(), "createdAt");
     const expiresAt = input.expiresAt === undefined ? undefined : instant(input.expiresAt instanceof Date ? input.expiresAt.toISOString() : input.expiresAt, "expiresAt");
     if (expiresAt && new Date(expiresAt).getTime() <= new Date(createdAt).getTime()) throw new HumanDecisionError("expiresAt must be after createdAt.");
+    const delegatedFrom = (input as { delegatedFrom?: DelegatedDecisionProvenanceV1 }).delegatedFrom;
     return {
       version: 2,
       decisionId: `decision:${crypto.randomUUID()}`,
@@ -343,6 +382,7 @@ export class HumanDecisionLedgerV2 {
       purpose,
       kind: input.kind,
       actorId,
+      ...(delegatedFrom ? { delegatedFrom: { grantorOwnerId: delegatedFrom.grantorOwnerId, delegationId: delegatedFrom.delegationId, profile: delegatedFrom.profile } } : {}),
       reason: required(input.reason, "reason"),
       createdAt,
       ...(expiresAt ? { expiresAt } : {})
@@ -505,10 +545,10 @@ export class HumanDecisionLedgerV2 {
 
 export function assertDecisionV2(value: unknown): HumanDecisionV2 {
   if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 2) throw new HumanDecisionError("UNSUPPORTED_HUMAN_DECISION_VERSION: expected version 2; migrate and re-record this decision.");
-  const allowed = ["version", "decisionId", "operationId", "candidate", "operationExecutionRevision", "policyDigest", "controllerEpoch", "purpose", "kind", "actorId", "reason", "createdAt", "expiresAt"];
+  const allowed = ["version", "decisionId", "operationId", "candidate", "operationExecutionRevision", "policyDigest", "controllerEpoch", "purpose", "kind", "actorId", "delegatedFrom", "reason", "createdAt", "expiresAt"];
   const record = value as Record<string, unknown>;
   const extra = Object.keys(record).filter((key) => !allowed.includes(key));
-  const requiredKeys = allowed.filter((key) => key !== "expiresAt");
+  const requiredKeys = allowed.filter((key) => key !== "expiresAt" && key !== "delegatedFrom");
   const missing = requiredKeys.filter((key) => !(key in record));
   if (extra.length || missing.length) throw new HumanDecisionError(`HumanDecision fields are malformed (extra: ${extra.join(", ") || "none"}; missing: ${missing.join(", ") || "none"}).`);
   const decision = value as HumanDecisionV2;
@@ -518,6 +558,7 @@ export function assertDecisionV2(value: unknown): HumanDecisionV2 {
   const normalizedPurpose = validatePurpose(decision.kind, decision.purpose);
   if (canonicalSerialize(normalizedPurpose) !== canonicalSerialize(decision.purpose)) throw new HumanDecisionError("HumanDecision purpose is not in canonical typed form.");
   externalHumanActor(decision.actorId);
+  assertDelegatedProvenance(decision.actorId, decision.delegatedFrom);
   required(decision.reason, "reason");
   instant(decision.createdAt, "createdAt");
   if (decision.expiresAt) {

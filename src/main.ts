@@ -124,6 +124,7 @@ async function runOperationStart(argv: string[]): Promise<void> {
         : ["file", "domain", "risk", "accept", "profile", "priority", "title", "task"]
   );
   valueFlags.add("resolve-operation");
+  valueFlags.add("as-delegate");
   const parsed = parseFlags(argv.slice(1), valueFlags, new Set());
   const subject = parsed.positional[0];
   if (!subject) throw new Error(`aeh operation start ${kind} requires ${kind === "run" ? "<taskId>" : "<request>"}.`);
@@ -210,7 +211,8 @@ async function runOperationStart(argv: string[]): Promise<void> {
     nodeExecutable: process.execPath,
     entryFile: path.resolve(process.argv[1]),
     initiator: { kind: "CLI" },
-    ...(parsed.values("resolve-operation").length ? { ownerResolutionOperationIds: parsed.values("resolve-operation") } : {})
+    ...(parsed.values("resolve-operation").length ? { ownerResolutionOperationIds: parsed.values("resolve-operation") } : {}),
+    ...(parsed.value("as-delegate") ? { asDelegate: { delegationId: parsed.value("as-delegate")!.trim() } } : {})
   });
   await spawnOperationMonitor(root, record, {
     nodeExecutable: process.execPath,
@@ -348,7 +350,7 @@ function printControlPlaneMetaHelp(argv: string[]): boolean {
     return true;
   }
   if (command === "operation") {
-  console.log("Usage: aeh operation start audit|run|change ... [--resolve-operation <operationId>] | status|portfolio|wait|cancel ...");
+  console.log("Usage: aeh operation start audit|run|change ... [--resolve-operation <operationId>] [--as-delegate <delegationId>] | status|portfolio|wait|cancel ...");
     console.log("Detached operation control. Internal execute/monitor processes own workflow execution and durable liveness.");
     return true;
   }
@@ -367,7 +369,7 @@ function printControlPlaneHelp(): void {
   console.log("  context retrieve <operationId> --ref <id> --participant <id> Retrieve a controller-authorized current-session context ref");
   console.log("  intent <request> [directory]                  Classify INFORMATIONAL/AUDIT/CHANGE intent");
   console.log("  audit <request> [directory]                   Synchronous audit compatibility entrypoint");
-  console.log("  operation start audit|run|change ...          Start a detached supervised operation; --resolve-operation <id> explicitly resolves one pending failed chain or Owner boundary");
+  console.log("  operation start audit|run|change ...          Start a detached supervised operation; --resolve-operation <id> explicitly resolves one pending failed chain or Owner boundary; --as-delegate <delegationId> starts under a verified FULL_PROJECT_OWNER delegation");
   console.log("  operation portfolio [directory]               Inspect the lead's operation portfolio");
   console.log("  operation status|wait|cancel <operationId>    Observe/control a detached operation");
   console.log("  paseo agents [directory]                      Inspect AEH-managed Paseo agents");

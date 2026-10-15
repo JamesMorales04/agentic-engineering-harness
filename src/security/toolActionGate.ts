@@ -9,6 +9,7 @@ import { isCanonicalRole, roleProfile, type CanonicalRole } from "../participant
 import { assertExecutionAuthority, type ExecutionAuthorityV1 } from "./executionLease.js";
 import { TOOL_ACTION_KINDS_V1, type ToolActionKindV1 } from "./actionKinds.js";
 import { HumanDecisionLedgerV2 } from "./humanDecision.js";
+import { isDelegatedOwnerActor, verifyDelegatedOwnerGrantV1 } from "./ownerAuthority.js";
 
 export { TOOL_ACTION_KINDS_V1 } from "./actionKinds.js";
 export type { ToolActionKindV1 } from "./actionKinds.js";
@@ -398,6 +399,18 @@ async function consumeRequiredHumanDecision(request: ToolActionRequestV1, operat
         controllerEpoch: operationEpoch
       }, { kind: "ACTION_AUTHORIZATION", action: request.action, effectDigest: sha256Canonical(request.payload) }, undefined, request.now ?? new Date());
       if (decision.kind !== "APPROVE") throw new Error("matching HumanDecision rejects this exact action and effect.");
+      // Central Owner authority resolution: a delegated approval must rest on
+      // a currently-valid grant for this exact effect. The stored
+      // `delegatedFrom` provenance (not a caller claim) selects the grant;
+      // expired/revoked/forged/cross-project grants deny fail-closed here.
+      if (isDelegatedOwnerActor(decision.actorId)) {
+        if (!decision.delegatedFrom) throw new Error("DELEGATION_INVALID: delegated approval lacks provenance.");
+        await verifyDelegatedOwnerGrantV1(request.root, decision.delegatedFrom.delegationId, {
+          projectId: policy.projectId,
+          requiredCapability: "delivery.authorize",
+        });
+        if (decision.delegatedFrom.grantorOwnerId === decision.actorId) throw new Error("DELEGATION_INVALID: grantor and delegate must differ.");
+      }
     } catch (error) {
       throw new Error(`TOOL_ACTION_HUMAN_DECISION_REQUIRED: ${error instanceof Error ? error.message : String(error)}`);
     }

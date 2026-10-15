@@ -208,7 +208,11 @@ function checkResourceKinds(checks, root) {
     "/api/v1/paseo/participants/{id}/timeline",
     "/api/v1/paseo/lead/messages",
     "/api/v1/projects/{id}/select",
-    "/api/v1/decisions"
+    "/api/v1/decisions",
+    "/api/v1/delegations",
+    "/api/v1/delegations/{id}/revoke",
+    "/api/v1/delegations/{id}/decisions",
+    "/api/v1/delegate-session"
   ];
   const observedUiRoutes = [...new Set(
     [...api.matchAll(/["`]\/api\/v1\/[^"`]*["`]/g)]
@@ -292,7 +296,9 @@ function checkServerRoutes(checks, root) {
     "/api/v1/services",
     "/api/v1/knowledge",
     "/api/v1/paseo",
-    "/api/v1/decisions"
+    "/api/v1/decisions",
+    "/api/v1/delegations",
+    "/api/v1/delegate-session"
   ];
   const missing = expected.filter((route) => !source.includes(route));
   const actionRoutes = ["/cancel", "/pause", "/resume", "/select"];

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ControlCenterApi, ControlCenterApiError, type Candidate, type DecisionRequest, type Knowledge, type Operation, type Overview, type Participant } from "./api";
+import { ControlCenterApi, ControlCenterApiError, type Candidate, type DecisionRequest, type DelegationDecision, type DelegationStatus, type Knowledge, type Operation, type Overview, type Participant, type SessionInfo } from "./api";
 
 const api = new ControlCenterApi();
 type Mode = "home" | "project";
@@ -171,20 +171,75 @@ function Operations({ operations, csrfToken }: { operations: Operation[]; csrfTo
   </Card>;
 }
 
-function Home({ overview, csrfToken }: { overview: Overview; csrfToken: string }) {
-  const active = overview.operations.filter((operation) => operation.status === "RUNNING" || operation.status === "QUEUED").length;
-  return <><div className="hero"><div><span className="kicker">AEH / HOME</span><h1>Engineering signal, at a glance.</h1><p>One read-only projection of projects, operations, participants, assurance, and current authority.</p></div><StatusPill value="CONNECTED" /></div><div className="metrics"><Metric name="Projects" value={overview.projects.length} /><Metric name="Active operations" value={active} detail={`${overview.operations.length} total`} /><Metric name="Participants" value={overview.participants.length} /><Metric name="Candidate" value={overview.candidates.length ? `r${overview.candidates.at(-1)?.revision ?? "—"}` : "—"} /></div><ProductChoices operations={overview.operations} csrfToken={csrfToken} /><div className="grid two"><KnowledgeCard knowledge={overview.knowledge} /><AssuranceCard overview={overview} /><PaseoCard connected /><LeadConversation csrfToken={csrfToken} /></div><Operations operations={overview.operations} csrfToken={csrfToken} /></>;
+function ActingPrincipalBanner({ session }: { session: SessionInfo | undefined }) {
+  if (!session?.actorId) return null;
+  const isDelegate = session.actorId.startsWith("delegate:");
+  return <div className={isDelegate ? "notice banner" : "muted banner"} role="status">
+    {isDelegate
+      ? <>Acting as AI delegate <code>{session.actorId}</code> on behalf of Owner <code>{session.delegation?.grantorOwnerId ?? "unknown grantor"}</code> · FULL_PROJECT_OWNER · grant <code>{session.delegation ? short(session.delegation.delegationId) : "—"}</code>. Every decision is recorded as a delegated decision.</>
+      : <>Acting as human Owner <code>{session.actorId}</code>. Delegated decisions by AI agents appear under their own <code>delegate:*</code> identity.</>}
+  </div>;
 }
 
-function ProjectCenter({ overview, csrfToken, onSelect }: { overview: Overview; csrfToken: string; onSelect: (id: string) => void }) {
+function DelegationsCard({ csrfToken, session }: { csrfToken: string; session: SessionInfo | undefined }) {
+  const queryClient = useQueryClient();
+  const [delegatePrincipalId, setDelegatePrincipalId] = useState("");
+  const [ttlDays, setTtlDays] = useState("30");
+  const [reviewing, setReviewing] = useState<string>();
+  const list = useQuery({ queryKey: ["delegations"], queryFn: () => api.delegations(), enabled: Boolean(csrfToken) });
+  const decisions = useQuery({
+    queryKey: ["delegation-decisions", reviewing],
+    queryFn: () => api.delegationDecisions(reviewing!),
+    enabled: Boolean(csrfToken) && Boolean(reviewing),
+  });
+  const grant = useMutation({
+    mutationFn: () => api.grantDelegation(csrfToken, { delegatePrincipalId: delegatePrincipalId.trim(), ttlDays: Number(ttlDays) || 30 }),
+    onSuccess: () => { setDelegatePrincipalId(""); void queryClient.invalidateQueries({ queryKey: ["delegations"] }); },
+  });
+  const revoke = useMutation({
+    mutationFn: (delegationId: string) => api.revokeDelegation(csrfToken, delegationId),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["delegations"] }); },
+  });
+  const isHuman = session?.actorId?.startsWith("human:") ?? false;
+  const items: DelegationStatus[] = list.data ?? [];
+  return <Card title="Owner delegation" aside={<StatusPill value={items.some((item) => item.validNow) ? "DELEGATED" : "HUMAN_ONLY"} />}>
+    <p className="muted">Grant FULL_PROJECT_OWNER to an AI delegate for unattended operation. Delegated decisions are recorded under the delegate identity with the human grantor attached — never as human decisions.</p>
+    {isHuman && <form className="decision-form" onSubmit={(event) => { event.preventDefault(); if (delegatePrincipalId.trim() && !grant.isPending) grant.mutate(); }}>
+      <label htmlFor="delegate-principal">Delegate principal</label>
+      <input id="delegate-principal" value={delegatePrincipalId} onChange={(event) => setDelegatePrincipalId(event.target.value)} placeholder="delegate:agent-id" maxLength={200} disabled={grant.isPending} />
+      <label htmlFor="delegate-ttl">Unattended expiry (days, max 366)</label>
+      <input id="delegate-ttl" value={ttlDays} onChange={(event) => setTtlDays(event.target.value)} inputMode="numeric" maxLength={3} disabled={grant.isPending} />
+      <div className="form-footer"><span className="muted">Issued by {session?.actorId ?? "this session"}</span><button type="submit" disabled={!delegatePrincipalId.trim() || grant.isPending}>{grant.isPending ? "Granting…" : "Grant FULL_PROJECT_OWNER"}</button></div>
+    </form>}
+    {grant.error && <p className="error" role="alert">{grant.error instanceof Error ? grant.error.message : "Delegation grant failed."}</p>}
+    {!items.length
+      ? <p className="muted">{list.isFetching ? "Loading delegations…" : "No delegations. Owner authority is human-only."}</p>
+      : <div className="stack">{items.map((item) => <div className="row" key={item.delegationId}>
+        <span>AI delegate <code>{item.delegatePrincipalId}</code><small>grantor {item.grantorOwnerId} · {item.authorityProfile} · expires {new Date(item.expiresAt).toLocaleString()} · {item.revoked ? `revoked ${item.revokedAt ?? ""}` : item.validNow ? "valid now" : "not valid"}</small></span>
+        <span className="row-actions"><button type="button" className="secondary" onClick={() => setReviewing(reviewing === item.delegationId ? undefined : item.delegationId)}>{reviewing === item.delegationId ? "Hide decisions" : "Review decisions"}</button>{isHuman && !item.revoked && <button type="button" className="secondary" disabled={revoke.isPending} onClick={() => revoke.mutate(item.delegationId)}>Revoke now</button>}</span>
+      </div>)}</div>}
+    {revoke.error && <p className="error" role="alert">{revoke.error instanceof Error ? revoke.error.message : "Revocation failed."}</p>}
+    {reviewing && <div className="stack"><span className="eyebrow">Decisions by {short(reviewing)}</span>
+      {decisions.isFetching ? <p className="muted">Loading decisions…</p> : (decisions.data ?? []).length ? (decisions.data as DelegationDecision[]).map((decision) => <div className="row" key={decision.decisionId}><span><code>{short(decision.decisionId)}</code> {decision.kind} · {short(decision.operationId)}<small>{decision.actorId} · {new Date(decision.createdAt).toLocaleString()} · {decision.reason}</small></span></div>) : <p className="muted">No delegated decisions recorded for this grant.</p>}
+    </div>}
+  </Card>;
+}
+
+function Home({ overview, csrfToken, session }: { overview: Overview; csrfToken: string; session: SessionInfo | undefined }) {
+  const active = overview.operations.filter((operation) => operation.status === "RUNNING" || operation.status === "QUEUED").length;
+  return <><div className="hero"><div><span className="kicker">AEH / HOME</span><h1>Engineering signal, at a glance.</h1><p>One read-only projection of projects, operations, participants, assurance, and current authority.</p></div><StatusPill value="CONNECTED" /></div><ActingPrincipalBanner session={session} /><div className="metrics"><Metric name="Projects" value={overview.projects.length} /><Metric name="Active operations" value={active} detail={`${overview.operations.length} total`} /><Metric name="Participants" value={overview.participants.length} /><Metric name="Candidate" value={overview.candidates.length ? `r${overview.candidates.at(-1)?.revision ?? "—"}` : "—"} /></div><ProductChoices operations={overview.operations} csrfToken={csrfToken} /><DelegationsCard csrfToken={csrfToken} session={session} /><div className="grid two"><KnowledgeCard knowledge={overview.knowledge} /><AssuranceCard overview={overview} /><PaseoCard connected /><LeadConversation csrfToken={csrfToken} /></div><Operations operations={overview.operations} csrfToken={csrfToken} /></>;
+}
+
+function ProjectCenter({ overview, csrfToken, session, onSelect }: { overview: Overview; csrfToken: string; session: SessionInfo | undefined; onSelect: (id: string) => void }) {
   const project = overview.project ?? overview.projects[0];
   const context = overview.context;
   const budget = context.budgetTokens ? `${context.consumedTokens ?? 0}/${context.budgetTokens}` : "not projected";
-  return <><div className="hero"><div><span className="kicker">PROJECT CONTROL CENTER</span><h1>{project?.displayName ?? "Select a project"}</h1><p>{project ? `${project.repositoryIdentity} · ${short(project.configDigest)}` : "Choose a registered project to inspect its current projection."}</p></div>{project && <StatusPill value={project.availability} />}</div><div className="project-picker"><label htmlFor="project">Project</label><select id="project" value={overview.projectSelection?.projectId ?? project?.projectId ?? ""} onChange={(event) => onSelect(event.target.value)}><option value="">Select project</option>{overview.projects.map((item) => <option value={item.projectId} key={item.projectId}>{item.displayName}</option>)}</select><span className="muted">Health: {overview.projectHealth?.runtime.status ?? "not checked"}</span></div><div className="metrics"><Metric name="Token budget" value={budget} detail={`${context.continuationCount} continuations`} /><Metric name="Authorized refs" value={context.authorizedReferenceCount} /><Metric name="Capability leases" value={overview.authority.leases.length} /><Metric name="Evidence" value={overview.evidence.length} /></div><ProductChoices operations={overview.operations} csrfToken={csrfToken} /><div className="grid two"><KnowledgeCard knowledge={overview.knowledge} /><AssuranceCard overview={overview} /><Card title="Candidate"><p className="digest">{overview.candidates.length ? overview.candidates.map((candidate) => <span key={candidate.controlCenterId}><code>r{candidate.revision}</code> {short(candidate.identityDigest)}</span>) : <span className="muted">No candidate projection.</span>}</p></Card><RuntimeCard services={overview.services} /></div><Card title="Compiled participants"><ParticipantTable participants={overview.participants} /></Card><LeadConversation csrfToken={csrfToken} operationId={overview.operations.find((item) => item.status === "RUNNING")?.operationId} /><Operations operations={overview.operations} csrfToken={csrfToken} /></>;
+  return <><div className="hero"><div><span className="kicker">PROJECT CONTROL CENTER</span><h1>{project?.displayName ?? "Select a project"}</h1><p>{project ? `${project.repositoryIdentity} · ${short(project.configDigest)}` : "Choose a registered project to inspect its current projection."}</p></div>{project && <StatusPill value={project.availability} />}</div><div className="project-picker"><label htmlFor="project">Project</label><select id="project" value={overview.projectSelection?.projectId ?? project?.projectId ?? ""} onChange={(event) => onSelect(event.target.value)}><option value="">Select project</option>{overview.projects.map((item) => <option value={item.projectId} key={item.projectId}>{item.displayName}</option>)}</select><span className="muted">Health: {overview.projectHealth?.runtime.status ?? "not checked"}</span></div><ActingPrincipalBanner session={session} /><div className="metrics"><Metric name="Token budget" value={budget} detail={`${context.continuationCount} continuations`} /><Metric name="Authorized refs" value={context.authorizedReferenceCount} /><Metric name="Capability leases" value={overview.authority.leases.length} /><Metric name="Evidence" value={overview.evidence.length} /></div><ProductChoices operations={overview.operations} csrfToken={csrfToken} /><DelegationsCard csrfToken={csrfToken} session={session} /><div className="grid two"><KnowledgeCard knowledge={overview.knowledge} /><AssuranceCard overview={overview} /><Card title="Candidate"><p className="digest">{overview.candidates.length ? overview.candidates.map((candidate) => <span key={candidate.controlCenterId}><code>r{candidate.revision}</code> {short(candidate.identityDigest)}</span>) : <span className="muted">No candidate projection.</span>}</p></Card><RuntimeCard services={overview.services} /></div><Card title="Compiled participants"><ParticipantTable participants={overview.participants} /></Card><LeadConversation csrfToken={csrfToken} operationId={overview.operations.find((item) => item.status === "RUNNING")?.operationId} /><Operations operations={overview.operations} csrfToken={csrfToken} /></>;
 }
 
 export function App({ mode, onModeChange }: { mode: Mode; onModeChange: (mode: Mode) => void }) {
   const [csrfToken, setCsrfToken] = useState("");
+  const [session, setSession] = useState<SessionInfo | undefined>(undefined);
   const [pairingError, setPairingError] = useState<string>();
   const [selectedError, setSelectedError] = useState<string>();
   const queryClient = useQueryClient();
@@ -195,8 +250,8 @@ export function App({ mode, onModeChange }: { mode: Mode; onModeChange: (mode: M
     const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const nonce = fragment.get("pair");
     if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-    const session = nonce ? api.pair(nonce) : api.session();
-    void session.then((value) => setCsrfToken(value.csrfToken)).catch((error: unknown) => {
+    const pending = nonce ? api.pair(nonce) : api.session();
+    void pending.then((value) => { setCsrfToken(value.csrfToken); setSession(value); }).catch((error: unknown) => {
       setPairingError(error instanceof ControlCenterApiError && error.status === 401
         ? "No paired session is available. Open a fresh Control Center pairing link from AEH."
         : error instanceof Error ? error.message : "Control Center pairing failed.");
@@ -207,5 +262,5 @@ export function App({ mode, onModeChange }: { mode: Mode; onModeChange: (mode: M
   const connectionError = query.error instanceof ControlCenterApiError && query.error.status === 401 ? "The paired session expired. Open a fresh Control Center pairing link from AEH." : query.error?.message;
   const projectMutation = useMutation({ mutationFn: (id: string) => api.selectProject(csrfToken, id), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["overview"] }), onError: (error) => setSelectedError(error instanceof Error ? error.message : "Project selection failed.") });
   const status = !csrfToken ? "PAIRING REQUIRED" : query.isFetching ? "SYNCING" : query.isError ? "DEGRADED" : "CONNECTED";
-  return <div className="app-shell"><header className="topbar"><a className="brand" href="/" aria-label="AEH Control Center home"><span className="brand-mark">A</span><span>AEH <small>CONTROL CENTER</small></span></a><nav aria-label="View mode"><button className={mode === "home" ? "nav-active" : ""} onClick={() => onModeChange("home")}>Home</button><button className={mode === "project" ? "nav-active" : ""} onClick={() => onModeChange("project")}>Project Control Center</button></nav><StatusPill value={status} /></header><main><section className="connection"><strong>{csrfToken ? "Paired private session" : "Single-use pairing"}</strong><span className="muted">{csrfToken ? "Session is held in an HttpOnly cookie · no provider credentials are requested" : "Open the pairing link printed by aeh start or aeh home"}</span></section>{pairingError && <div className="error banner" role="alert">{pairingError}</div>}{connectionError && <div className="error banner" role="alert">{connectionError}</div>}{selectedError && <div className="error banner" role="alert">{selectedError}</div>}{!overview && !query.isError && <div className="empty"><h1>{csrfToken ? "Loading the current projection." : "Pair this browser with AEH."}</h1><p>{csrfToken ? "The authenticated Control Center session is ready." : "Use the single-use pairing link from aeh start. Pairing happens in this browser and the URL fragment is cleared immediately."}</p></div>}{overview && (mode === "home" ? <Home overview={overview} csrfToken={csrfToken} /> : <ProjectCenter overview={overview} csrfToken={csrfToken} onSelect={(id) => projectMutation.mutate(id)} />)}</main><footer><span>{overview ? `AEH ${overview.buildIdentity.packageVersion} · ${overview.buildIdentity.releaseId} · ${new Date(overview.generatedAt).toLocaleTimeString()}` : "AEH · offline"}</span><span>Bounded projections · local authenticated surface</span></footer></div>;
+  return <div className="app-shell"><header className="topbar"><a className="brand" href="/" aria-label="AEH Control Center home"><span className="brand-mark">A</span><span>AEH <small>CONTROL CENTER</small></span></a><nav aria-label="View mode"><button className={mode === "home" ? "nav-active" : ""} onClick={() => onModeChange("home")}>Home</button><button className={mode === "project" ? "nav-active" : ""} onClick={() => onModeChange("project")}>Project Control Center</button></nav><StatusPill value={status} /></header><main><section className="connection"><strong>{csrfToken ? "Paired private session" : "Single-use pairing"}</strong><span className="muted">{csrfToken ? "Session is held in an HttpOnly cookie · no provider credentials are requested" : "Open the pairing link printed by aeh start or aeh home"}</span></section>{pairingError && <div className="error banner" role="alert">{pairingError}</div>}{connectionError && <div className="error banner" role="alert">{connectionError}</div>}{selectedError && <div className="error banner" role="alert">{selectedError}</div>}{!overview && !query.isError && <div className="empty"><h1>{csrfToken ? "Loading the current projection." : "Pair this browser with AEH."}</h1><p>{csrfToken ? "The authenticated Control Center session is ready." : "Use the single-use pairing link from aeh start. Pairing happens in this browser and the URL fragment is cleared immediately."}</p></div>}{overview && (mode === "home" ? <Home overview={overview} csrfToken={csrfToken} session={session} /> : <ProjectCenter overview={overview} csrfToken={csrfToken} session={session} onSelect={(id) => projectMutation.mutate(id)} />)}</main><footer><span>{overview ? `AEH ${overview.buildIdentity.packageVersion} · ${overview.buildIdentity.releaseId} · ${new Date(overview.generatedAt).toLocaleTimeString()}` : "AEH · offline"}</span><span>Bounded projections · local authenticated surface</span></footer></div>;
 }

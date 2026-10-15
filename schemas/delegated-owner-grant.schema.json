@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://agentic-engineering-harness/schemas/delegated-owner-grant.schema.json",
+  "title": "Delegated Owner grant",
+  "description": "Keyed FULL_PROJECT_OWNER delegation artifact. The mac is HMAC-SHA256(projectDelegationKey, canonical(body)); a self-reported authorizedBy string or unkeyed digest alone is never proof.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "kind", "mechanism", "delegationId", "grantorOwnerId", "delegatePrincipalId", "projectId", "authorityProfile", "capabilities", "createdAt", "expiresAt", "mac"],
+  "properties": {
+    "version": { "const": 1 },
+    "kind": { "const": "DELEGATED_OWNER_GRANT" },
+    "mechanism": { "const": "DETERMINISTIC" },
+    "delegationId": { "type": "string", "pattern": "^delegation:[0-9a-f-]{36}$" },
+    "grantorOwnerId": { "type": "string", "pattern": "^human:.+" },
+    "delegatePrincipalId": { "type": "string", "pattern": "^delegate:.+" },
+    "projectId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "repository": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "authorityProfile": { "const": "FULL_PROJECT_OWNER" },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["operation.initiate", "scope.amend", "decision.resolve", "charter.authorize", "test.acceptance-modify", "policy.change", "continuation.economic", "recovery.authorize", "result.accept", "delivery.authorize", "pr.create", "merge.automatic", "experiment.restart", "repair.continue"] }
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "mac": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

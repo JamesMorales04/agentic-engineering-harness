@@ -283,6 +283,61 @@ export interface ControlCenterDecisionInputV1 {
   reason?: string;
 }
 
+export interface ControlCenterDelegationStatusV1 {
+  delegationId: string;
+  grantorOwnerId: string;
+  delegatePrincipalId: string;
+  projectId: string;
+  repository?: string;
+  authorityProfile: "FULL_PROJECT_OWNER";
+  capabilities: string[];
+  createdAt: string;
+  expiresAt: string;
+  revoked: boolean;
+  revokedAt?: string;
+  revokeReason?: string;
+  validNow: boolean;
+}
+
+export interface ControlCenterDelegationGrantInputV1 {
+  delegatePrincipalId: string;
+  expiresAt?: string;
+  ttlDays?: number;
+  repository?: string;
+  capabilities?: string[];
+  reason?: string;
+}
+
+export interface ControlCenterDelegationGrantResultV1 {
+  version: typeof CONTROL_CENTER_CONTRACT_VERSION;
+  delegationId: string;
+  delegatePrincipalId: string;
+  grantorOwnerId: string;
+  expiresAt: string;
+}
+
+export interface ControlCenterDelegateSessionInputV1 {
+  delegationId: string;
+  delegatePrincipalId: string;
+}
+
+export interface ControlCenterDelegateSessionResultV1 {
+  version: typeof CONTROL_CENTER_CONTRACT_VERSION;
+  csrfToken: string;
+  actorId: string;
+  delegation: { delegationId: string; grantorOwnerId: string; expiresAt: string };
+}
+
+export interface ControlCenterDelegationDecisionV1 {
+  decisionId: string;
+  operationId: string;
+  kind: string;
+  purpose: unknown;
+  actorId: string;
+  createdAt: string;
+  reason: string;
+}
+
 export interface ControlCenterSnapshotV1 {
   projects: ControlCenterProjectProjectionV1[];
   operations: ControlCenterOperationDetailProjectionV1[];
