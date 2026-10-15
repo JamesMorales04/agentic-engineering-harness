@@ -644,7 +644,7 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
       expiresAt: new Date(now.getTime() + 10 * 60_000)
     });
   }
-  const decision = await ledger.consume(binding, purpose, options.humanActorId, now);
+  const decision = await ledger.consume(binding, purpose, options.humanActorId, now, delegatedFrom?.delegationId);
   if (decision.kind !== "CANCEL") throw new Error("AEH_CANCELLATION_AUTHORITY_REQUIRED: a scoped human CANCEL decision is required.");
   // USE-time re-verification: a grant revoked or expired after recording fails
   // closed here, immediately before the deferred effect applies.
@@ -1401,7 +1401,7 @@ export async function requestOperationPause(root: string, operationId: string, a
   const ledger = operationControlLedger(root);
   const now = new Date();
   const purpose = operationControlPurpose("PAUSE");
-  const existing = (await ledger.active(binding, now)).find((decision) => decision.actorId === actorId && decision.kind === "PAUSE" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
+  const existing = (await ledger.active(binding, now)).find((decision) => decision.actorId === actorId && decision.kind === "PAUSE" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose) && (!delegatedFrom || decision.delegatedFrom?.delegationId === delegatedFrom.delegationId));
   if (existing) return existing;
   return ledger.record({
     ...binding,
@@ -1427,7 +1427,7 @@ export async function requestOperationResume(root: string, operationId: string, 
   const ledger = operationControlLedger(root);
   const now = new Date();
   const purpose = operationControlPurpose("RESUME");
-  const existing = (await ledger.active(binding, now)).find((decision) => decision.actorId === actorId && decision.kind === "RESUME" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
+  const existing = (await ledger.active(binding, now)).find((decision) => decision.actorId === actorId && decision.kind === "RESUME" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose) && (!delegatedFrom || decision.delegatedFrom?.delegationId === delegatedFrom.delegationId));
   if (existing) return existing;
   return ledger.record({
     ...binding,
@@ -1451,8 +1451,26 @@ export async function pendingOperationControl(root: string, operationId: string,
   const ledger = operationControlLedger(root);
   const purpose = operationControlPurpose(command);
   const matches = (await ledger.active(binding, new Date())).filter((decision) => decision.kind === command && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
-  if (matches.length > 1) throw new Error(`OPERATION_CONTROL_AMBIGUOUS: multiple current ${command} controls are pending for this operation identity.`);
-  return matches[0];
+  if (matches.length <= 1) return matches[0];
+  // Per-grant decision slots: multiple grants may each hold a pending
+  // decision. Prefer decisions whose authority still verifies (human
+  // decisions always qualify; revoked/expired delegated grants do not), so
+  // a stale decision from a dead grant neither blocks nor gets applied.
+  // Multiple LIVE decisions for the same purpose stay ambiguous fail-closed.
+  const projectId = current.candidateRevision?.projectId ?? current.resolvedOperationPolicy?.projectId;
+  const live: HumanDecisionV2[] = [];
+  for (const decision of matches) {
+    if (!isDelegatedOwnerActor(decision.actorId)) { live.push(decision); continue; }
+    if (!projectId || !decision.delegatedFrom) continue;
+    try {
+      await reverifyDelegatedDecisionForOperation(root, {
+        actorId: decision.actorId, delegatedFrom: decision.delegatedFrom, projectId, requiredCapability: "recovery.authorize",
+      });
+      live.push(decision);
+    } catch { /* dead grant: skipped, never applied */ }
+  }
+  if (live.length > 1) throw new Error(`OPERATION_CONTROL_AMBIGUOUS: multiple current ${command} controls are pending for this operation identity.`);
+  return live[0];
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   claimControllerEpoch,
   loadOperation,
   pauseOperationIfRequested,
+  pendingOperationControl,
   requestOperationPause,
   requestOperationResume,
   saveOperation,
@@ -261,5 +262,31 @@ describe("delegated Owner decisions through the real Control Center path", () =>
     }, { via: "test", allowManagedContext: true });
     await expect(recordControlCenterDecision(root, ledger, input, DELEGATE, foreign.delegationId))
       .rejects.toThrow(/DELEGATION_UNKNOWN/);
+  });
+
+  it("prefers live-grant pending controls over revoked-grant ones without ambiguity", async () => {
+    const root = await tempRoot();
+    const waiting = await suspendedFixture(root, "OP-DELEGATED-STALE-CONTROL");
+    const projectId = waiting.candidateRevision!.projectId!;
+    const ctx = { via: "test", allowManagedContext: true } as const;
+    const grantA = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, ctx);
+    const pauseA = await requestOperationPause(root, waiting.id, DELEGATE, undefined, grantA.delegationId);
+    await revokeDelegatedOwnerGrantV1(root, grantA.delegationId, { revokedBy: GRANTOR }, ctx);
+    const grantB = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, ctx);
+    const pauseB = await requestOperationPause(root, waiting.id, DELEGATE, undefined, grantB.delegationId);
+    expect(pauseB.decisionId).not.toBe(pauseA.decisionId);
+    // Observation selects the live grant's decision instead of throwing
+    // ambiguous or applying the dead one.
+    const pending = await pendingOperationControl(root, waiting.id, "PAUSE");
+    expect(pending?.decisionId).toBe(pauseB.decisionId);
+    const paused = await pauseOperationIfRequested(root, waiting.id, { activeParticipantIds: [], activeProviderLeaseIds: [], observedAt: new Date().toISOString() });
+    expect(paused.phase).toBe("PAUSED");
+    expect(paused.pause?.requestedBy).toBe(DELEGATE);
   });
 });

@@ -489,13 +489,19 @@ export class HumanDecisionLedgerV2 {
     return decision;
   }
 
-  async consume(bindingInput: HumanDecisionBindingV2, purposeInput: HumanDecisionPurposeV2, actorIdInput?: string, now = new Date()): Promise<HumanDecisionV2> {
+  async consume(bindingInput: HumanDecisionBindingV2, purposeInput: HumanDecisionPurposeV2, actorIdInput?: string, now = new Date(), delegationIdInput?: string): Promise<HumanDecisionV2> {
     const binding = assertBinding(bindingInput);
     const actorId = actorIdInput === undefined ? undefined : required(actorIdInput, "actorId");
+    const delegationId = delegationIdInput === undefined ? undefined : required(delegationIdInput, "delegationId");
     const purpose = normalizePurpose(purposeInput);
     const all = await this.list();
+    // Grant-scoped matching: a delegation id constrains delegated decisions
+    // to the exact grant slot, so a stale decision from a revoked grant can
+    // neither block nor be consumed as another grant's decision. Human
+    // decisions (no provenance) match as before.
     const exact = all.filter((decision) => sameBinding(decision, binding)
       && (actorId === undefined || decision.actorId === actorId)
+      && (delegationId === undefined || decision.delegatedFrom?.delegationId === delegationId)
       && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
     const at = now.getTime();
     const unexpired = exact.filter((decision) => !decision.expiresAt || new Date(decision.expiresAt).getTime() > at);
