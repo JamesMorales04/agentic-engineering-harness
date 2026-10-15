@@ -2,9 +2,31 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveCommit, resolveWorkspaceBase } from "../src/core/git.js";
-import { buildHandoffWorkspaceEvidence, buildHandoffWorkspacePayload, resolveHandoffWorkspaceBase } from "../src/delivery/handoff.js";
+import {
+  buildHandoffWorkspaceEvidence,
+  buildHandoffWorkspacePayload,
+  createBranchOffWorkspace,
+  resolveHandoffWorkspaceBase,
+} from "../src/delivery/handoff.js";
+import { buildBranchOffWorkspaceCommand } from "../src/operations/controller.js";
+
+vi.mock("../src/utils/process.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/utils/process.js")>();
+  return {
+    ...actual,
+    runExecutable: vi.fn(async (command: string, args: readonly string[], options?: unknown) => {
+      if (command !== "paseo") return actual.runExecutable(command, args as string[], options as never);
+      const log = process.env.AEH_TEST_PASEO_ARGV_LOG;
+      if (log) await fs.appendFile(log, `${JSON.stringify(args)}\n`);
+      if (args[0] === "workspace" && args[1] === "create") {
+        return { exitCode: 0, stdout: JSON.stringify({ workspaceId: "wks_test", worktreePath: "/tmp/fake-ws" }), stderr: "", durationMs: 1 };
+      }
+      return { exitCode: 1, stdout: "", stderr: "unexpected command", durationMs: 1 };
+    }),
+  };
+});
 import { buildBranchOffWorkspaceCommand } from "../src/operations/controller.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
@@ -107,5 +129,30 @@ describe("workspace base commit resolution (DETERMINISTIC)", () => {
       workspaceId: "wks_1", worktreePath: "/w", branch: "feature/T-1",
       base: "a".repeat(40), basePinned: true,
     });
+  });
+
+  it("passes the authorized resolved base to the executor", async () => {
+    const root = await gitRepo();
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    const argvLog = path.join(root, "paseo-argv.log");
+    process.env.AEH_TEST_PASEO_ARGV_LOG = argvLog;
+    try {
+      const resolved = await resolveHandoffWorkspaceBase(root, undefined, "main");
+      expect(resolved).toEqual({ mode: "branch-off", branch: "", base: head, basePinned: true });
+      const payload = buildHandoffWorkspacePayload({
+        root, slug: "slug", taskId: "T-1", mode: "branch-off", branch: "feature/T-1",
+        base: resolved.base, basePinned: resolved.basePinned,
+      });
+      const created = await createBranchOffWorkspace(root, resolved.base!, "feature/T-1", "slug", "T-1", "OP-TEST-1");
+      expect(created).toMatchObject({ workspaceId: "wks_test" });
+      const lines = (await fs.readFile(argvLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
+      const create = lines.find((args) => args[0] === "workspace" && args[1] === "create");
+      expect(create).toBeDefined();
+      // The executor's --base is exactly the authorized payload's base.
+      expect(create![create!.indexOf("--base") + 1]).toBe(payload.base);
+      expect(payload.base).toBe(head);
+    } finally {
+      delete process.env.AEH_TEST_PASEO_ARGV_LOG;
+    }
   });
 });

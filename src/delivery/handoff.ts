@@ -271,8 +271,7 @@ export async function githubRequest<T = unknown>(base: string, token: string | u
   const text = await response.text(); if (!response.ok) throw new Error(`GitHub API ${init.method ?? "GET"} ${endpoint} failed (${response.status}): ${text.slice(0, 1000)}`); return text ? JSON.parse(text) as T : undefined as T;
 }
 export async function githubRequestMaybe<T>(base: string, token: string | undefined, endpoint: string): Promise<T | undefined> { try { return await githubRequest<T>(base, token, endpoint); } catch (error) { if (/failed \(404\)/.test(String(error))) return undefined; throw error; } }
-async function createCheckoutWorkspace(root: string, branch: string, slug: string, title: string, authority: HandoffAuthority, expectedCommit?: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
-  assertGitBranchName(branch);
+async function createCheckoutWorkspace(root: string, branch: string, slug: string, title: string, authority: HandoffAuthority, expectedCommit?: string): Promise<{ workspaceId?: string; worktreePath?: string }> {  assertGitBranchName(branch);
   if (!expectedCommit || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(expectedCommit)) throw new Error(`HANDOFF_CANDIDATE_REQUIRED: GitHub branch ${branch} is missing an exact observed commit SHA.`);
   const local = await runExecutable("git", ["show-ref", "--verify", "--hash", `refs/heads/${branch}`], { cwd: root });
   if (local.exitCode === 0) {
@@ -301,7 +300,7 @@ async function createCheckoutWorkspace(root: string, branch: string, slug: strin
   }
   return runPaseoWorkspace(root, ["--mode", "checkout-branch", "--branch", branch], slug, title, branch, authority.operationId);
 }
-async function createBranchOffWorkspace(root: string, resolvedBase: string, branch: string, slug: string, title: string, operationId: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
+export async function createBranchOffWorkspace(root: string, resolvedBase: string, branch: string, slug: string, title: string, operationId: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
   assertGitBranchName(branch);
   assertGitBranchName(resolvedBase);
   // Takes the already-resolved base (pinned by the caller to the exact
