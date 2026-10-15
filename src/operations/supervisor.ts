@@ -18,18 +18,46 @@ import { activeOperationSupervisor, currentOperationContext, loadOperation, patc
 import { STALL_RETRY_MAX_ATTEMPTS_PER_PHASE, claimStallRetryAttempt, clearStallRetryClaim, isCleanSuccessfulProviderTurn, isStallKilledProviderTurn, loadStallRetryStalls, recordStallRetryStall, stallRetryEffectiveDeadlineMs } from "./stallRetryBudget.js";
 
 /**
- * A supervisor generation's structured-result channel is bound to the candidate digest it was
- * materialized under. The generation is only reusable while that binding matches the operation's
- * current candidate; otherwise a consolidation continuation fails closed with
- * `AEH_RESULT_STALE_CANDIDATE` and the generation must be rotated (AEH-V2-0120).
+ * A supervisor generation's structured-result channel is bound to the
+ * execution identity it was materialized under. The generation is only
+ * reusable while that binding matches the operation's current candidate
+ * AND the lease-checked execution envelope (execution revision, policy,
+ * epoch); otherwise a consolidation continuation fails closed with
+ * `AEH_RESULT_STALE_CANDIDATE` and the generation must be rotated
+ * (AEH-V2-0120, extended beyond candidate-only currency: repair and
+ * policy advancements that keep the candidate otherwise strand the
+ * generation at the provider-lease gate with zero live resources but no
+ * recovery path — observed stranding a post-review consolidation at
+ * execRev 2 against execRev 3 with an identical candidate).
+ * Channels without an execution binding keep the previous
+ * candidate-only behavior.
  */
 export function supervisorGenerationCandidateCurrentV1(
-  provenance: { status: string; candidate?: { identityDigest: string } } | undefined,
-  operation: Pick<OperationRecordV2, "candidateRevision">
+  provenance:
+    | {
+        status: string;
+        candidate?: { identityDigest: string };
+        executionBinding?: {
+          operationExecutionRevision?: unknown;
+          candidateDigest?: unknown;
+          operationPolicyDigest?: unknown;
+          controllerEpoch?: unknown;
+        };
+      }
+    | undefined,
+  operation: Pick<OperationRecordV2, "candidateRevision" | "operationExecutionRevision" | "resolvedOperationPolicy" | "controller">
 ): boolean {
   if (!provenance || provenance.status !== "BOUND" || !provenance.candidate) return true;
   if (!operation.candidateRevision) return false;
-  return provenance.candidate.identityDigest === operation.candidateRevision.identityDigest;
+  if (provenance.candidate.identityDigest !== operation.candidateRevision.identityDigest) return false;
+  const binding = provenance.executionBinding;
+  if (!binding) return true;
+  if (binding.operationExecutionRevision !== operation.operationExecutionRevision) return false;
+  if (binding.candidateDigest !== operation.candidateRevision.identityDigest) return false;
+  if (operation.resolvedOperationPolicy && binding.operationPolicyDigest !== operation.resolvedOperationPolicy.digest) return false;
+  // Same tolerant default as currentControllerEpoch (absent controller reads as epoch 0).
+  if (binding.controllerEpoch !== (operation.controller?.epoch ?? 0)) return false;
+  return true;
 }
 
 export function supervisorSourceFindingIdsMatchV1(expected: readonly string[], received: readonly string[]): boolean {
@@ -323,8 +351,11 @@ export async function consolidateWithOperationSupervisor(root: string, config: H
     let operation = await loadOperation(stateRoot, supervisor.operationId);
     let provenance = await structuredResultProvenanceForAgent(stateRoot, supervisor.agentId).catch(() => undefined);
     // Safety net: the active generation's structured-result binding must belong to the current
-    // candidate. If a rotation call site was missed, force one here instead of failing the
-    // operation on a stale continuation (AEH-V2-0120).
+    // candidate AND the current execution envelope (revision, policy, epoch). If a rotation
+    // call site was missed, force one here instead of failing the operation on a stale
+    // continuation (AEH-V2-0120, extended beyond candidate-only currency: repair and policy
+    // advancements that keep the candidate otherwise strand the generation at the
+    // provider-lease gate with no recovery path).
     if (!supervisorGenerationCandidateCurrentV1(provenance, operation)) {
       const rotated = await maybeRotateOperationSupervisor(root, config, contract, supervisorSelection);
       if (!rotated?.agentId) throw new Error("AEH_OPERATION_SUPERVISOR_UNAVAILABLE: candidate-advanced supervisor generation could not be replaced for consolidation.");
