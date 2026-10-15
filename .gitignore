@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.aeh-build-*/
 !ui/control-center/dist/
 !ui/control-center/dist/**
 coverage/

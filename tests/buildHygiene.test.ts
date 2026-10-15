@@ -204,6 +204,10 @@ describe("repository build hygiene", () => {
     expect(gitignore).toContain("!.harness/agents.source.jsonc");
     expect(gitignore).toContain("!.harness/otel-collector.yaml");
     expect(gitignore).not.toContain(".harness/runs/");
+    // Build staging lives inside the tree during `npm run build`; if it is not
+    // ignored, the build's own dirty probe self-reports dirty and the L1
+    // dist-binding gate fails closed with STALE_DIST on every local build.
+    expect(gitignore).toContain(".aeh-build-");
   });
 });
 
