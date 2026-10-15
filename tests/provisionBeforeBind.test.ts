@@ -106,6 +106,44 @@ describe("provision-before-bind workspace candidate", () => {
     await fs.rm(executionRoot, { recursive: true, force: true });
   });
 
+  it("discards an absolute-path machine-local lock before provisioning", async () => {
+    const { root, operationId } = await controlWithCandidate();
+    const executionRoot = await tempRoot("aeh-provision-exec-");
+    await fs.writeFile(path.join(executionRoot, "source.txt"), "original\n");
+    await fs.mkdir(path.join(executionRoot, ".harness"), { recursive: true });
+    await fs.writeFile(
+      path.join(executionRoot, ".harness", "toolchain.yaml"),
+      "version: 1\nmanager:\n  provider: mise\ntools: {}\n"
+    );
+    const absoluteLock = path.join(executionRoot, "abs-lock", "toolchain.lock.json");
+    await fs.mkdir(path.dirname(absoluteLock), { recursive: true });
+    await fs.writeFile(absoluteLock, JSON.stringify({ version: 1, tools: {} }));
+    const base = await loadProjectConfig(process.cwd()).catch(() => ({ version: 1, project: { name: "fixture-project" } }) as never);
+    const config = { ...base, toolchain: { configPath: ".harness/toolchain.yaml", lockPath: absoluteLock } };
+    const prior = (await loadOperation(root, operationId)).candidateRevision!;
+    let lockPresentAtSetup = true;
+    const setup = vi.fn(async (setupRoot: string) => {
+      lockPresentAtSetup = await fs.access(absoluteLock).then(() => true).catch(() => false);
+      expect(setupRoot).toBe(executionRoot);
+      return {};
+    });
+    await bindProvisionedWorkspaceCandidate({
+      root,
+      operationId,
+      priorCandidate: prior,
+      workspaceId: "wks_fixture",
+      executionRoot,
+      kind: "change",
+      config: config as never,
+      trace: async () => undefined,
+      setup: setup as never,
+    });
+    expect(setup).toHaveBeenCalledTimes(1);
+    expect(lockPresentAtSetup).toBe(false);
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(executionRoot, { recursive: true, force: true });
+  });
+
   it("never provisions audits or control-root execution", async () => {    const { root, operationId } = await controlWithCandidate();
     const executionRoot = await tempRoot("aeh-provision-exec-");
     await fs.writeFile(path.join(executionRoot, "source.txt"), "original\n");

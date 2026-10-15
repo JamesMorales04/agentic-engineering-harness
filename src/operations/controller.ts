@@ -1762,7 +1762,9 @@ export async function bindProvisionedWorkspaceCandidate(input: ProvisionedWorksp
     // declaration; absent lock is the normal fresh-tree case.
     try {
       const workspaceToolchain = await loadToolchainConfig(executionRoot, config);
-      await fs.rm(path.join(executionRoot, toolchainLockPath(config, workspaceToolchain)), { force: true });
+      // path.resolve (not join): an absolute configured lockPath must pass
+      // through, exactly matching the setup lock loader's resolution.
+      await fs.rm(path.resolve(executionRoot, toolchainLockPath(config, workspaceToolchain)), { force: true });
     } catch {
       // Unresolvable toolchain declaration: leave the tree untouched and
       // let setup report the underlying problem.
