@@ -44,7 +44,9 @@ describe("compiled participant runtime binding", () => {
     expect(selection.permissions.write).toBe("deny");
     expect(selection.permissions.shell).toBe("deny");
     expect(selection.permissions.gitWrite).toBe("deny");
-    expect(selection.mcps).toEqual(["context-read", "repository-read"]);
+    // MCP/toolPack namespace separation: tool identifiers never enter the MCP
+    // namespace; the reviewed topology selection is preserved.
+    expect(selection.mcps).toEqual(["stale-topology-tool"]);
     expect(selection).toMatchObject({ runtimeName: "direct", runtimeAdapter: "direct", modelAlias: "workhorse", modelId: "test/model", modelName: "model", runtimeCapabilities: { modelSelection: true, structuredOutput: true } });
   });
 
