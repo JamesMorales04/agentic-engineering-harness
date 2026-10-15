@@ -66,9 +66,10 @@ export async function bindAssembledCandidate(input: {
  *
  * This is the single choke point every in-repo assembly path must use
  * (repair apply/reject, wave integration, DIRECT assembly). The lock also
- * narrows the workspace check-vs-apply TOCTOU between concurrent assemblies
- * to worker filesystem writes, which remain out of scope (off-patch worker
- * writes are only observed through the captured diff, never live-gated).
+  * narrows the workspace check-vs-apply TOCTOU between concurrent assemblies
+  * to worker filesystem writes, which are live-gated per-unit in waveExecutor
+  * (OFF_PATCH_WRITE_DENIED snapshot gate); assembly re-validates the captured
+  * diff as defense-in-depth.
  */
 export async function assembleAndBindCandidateChangeSet(
   input: Omit<CandidateAssemblyInputV1, "currentCandidate"> & { stateRoot: string; baseCandidate: CandidateRevisionV1 }

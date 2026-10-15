@@ -191,6 +191,152 @@ export function classifyWaveCorrectionDeclarationV1(input: {
   return { blocked: true, blocker, strippedCount: partitioned.stripped.length };
 }
 
+/**
+ * FAM-WAVE live off-patch gate (DETERMINISTIC, fail-closed, hardcoded-deny).
+ *
+ * Residual closed: per-unit worker filesystem writes used to be observed only
+ * through the captured `git diff` (assembler defense-in-depth). The live gate
+ * below snapshots the per-unit worktree file set at unit launch (after
+ * `materializeCandidateState` + baseline commit) and scope-checks the live
+ * worktree filesystem state immediately after each worker turn, BEFORE the
+ * diff is captured. Any new/modified/deleted file outside the unit's claimed
+ * pathspec is DENIED live with an OFF_PATCH_WRITE_DENIED receipt (terminal
+ * FAIL, no correction turn). The assembler diff gate stays as defense-in-depth.
+ *
+ * MECHANISM: DETERMINISTIC (filesystem snapshot + minimatch pathspec; no model).
+ */
+export const WAVE_OFF_PATCH_DENIED_EVENT_V1 = "harness.wave.off-patch-denied";
+
+export interface WaveWorktreeSnapshotEntryV1 {
+  hash: string;
+  mtimeMs: number;
+  size: number;
+  symlink: boolean;
+}
+
+export interface WaveOffPatchDenialV1 {
+  version: 1;
+  operationId: string;
+  taskId: string;
+  workUnitId: string;
+  participantId?: string;
+  files: string[];
+  fileCount: number;
+  digest: string;
+}
+
+export function createWaveOffPatchDenialV1(input: {
+  operationId: string;
+  taskId: string;
+  workUnitId: string;
+  participantId?: string;
+  files: readonly string[];
+}): WaveOffPatchDenialV1 {
+  const files = [...new Set(input.files.map((f) => f.replaceAll("\\", "/").replace(/^\.\//, "")))].sort();
+  const digest = sha256Canonical({
+    version: 1,
+    operationId: input.operationId,
+    taskId: input.taskId,
+    workUnitId: input.workUnitId,
+    ...(input.participantId ? { participantId: input.participantId } : {}),
+    files,
+  });
+  return {
+    version: 1,
+    operationId: input.operationId,
+    taskId: input.taskId,
+    workUnitId: input.workUnitId,
+    ...(input.participantId ? { participantId: input.participantId } : {}),
+    files,
+    fileCount: files.length,
+    digest,
+  };
+}
+
+/** Pure set-difference core: touched files (new/changed/deleted vs snapshot) outside scope. */
+export function findOffPatchWritesV1(input: {
+  snapshot: ReadonlyMap<string, WaveWorktreeSnapshotEntryV1> | readonly string[];
+  current: ReadonlyMap<string, WaveWorktreeSnapshotEntryV1> | readonly string[];
+  allowedScope: readonly string[];
+}): string[] {
+  const snapMap = Array.isArray(input.snapshot)
+    ? new Map(input.snapshot.map((f) => [f, undefined] as const))
+    : input.snapshot;
+  const curMap = Array.isArray(input.current)
+    ? new Map(input.current.map((f) => [f, undefined] as const))
+    : input.current;
+  const touched: string[] = [];
+  for (const [file, cur] of curMap as Map<string, WaveWorktreeSnapshotEntryV1 | undefined>) {
+    const prev = (snapMap as Map<string, WaveWorktreeSnapshotEntryV1 | undefined>).get(file);
+    if (prev === undefined && cur === undefined) {
+      // String-set mode: every current file counts as touched (caller passes
+      // post-turn listing); scope filter below decides.
+      touched.push(file);
+      continue;
+    }
+    if (prev === undefined) {
+      touched.push(file); // new file
+      continue;
+    }
+    if (cur === undefined) {
+      touched.push(file); // deleted (present in snapshot, absent now)
+      continue;
+    }
+    const p = prev as WaveWorktreeSnapshotEntryV1;
+    const c = cur as WaveWorktreeSnapshotEntryV1;
+    if (p.hash !== c.hash || p.mtimeMs !== c.mtimeMs || p.size !== c.size || p.symlink !== c.symlink) {
+      touched.push(file);
+    }
+  }
+  // Deletions: snapshot files absent from current.
+  for (const file of (snapMap as Map<string, unknown>).keys()) {
+    if (!(curMap as Map<string, unknown>).has(file)) touched.push(file);
+  }
+  const unique = [...new Set(touched)].sort();
+  return unique.filter((file) => !matchesAny(file, [...input.allowedScope]));
+}
+
+async function walkWaveWorktreeFiles(worktree: string, dir = "", out: string[] = []): Promise<string[]> {
+  const entries = await fs.readdir(path.join(worktree, dir), { withFileTypes: true });
+  for (const entry of entries) {
+    if (!dir && entry.name === ".git") continue;
+    const rel = dir ? `${dir}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) await walkWaveWorktreeFiles(worktree, rel, out);
+    else out.push(rel);
+  }
+  return out;
+}
+
+/** Snapshot the live per-unit worktree file set (after materialize + baseline). Fail-closed: throws on I/O. */
+export async function snapshotWaveWorktreeV1(worktree: string): Promise<Map<string, WaveWorktreeSnapshotEntryV1>> {
+  const files = (await walkWaveWorktreeFiles(worktree)).sort();
+  const snapshot = new Map<string, WaveWorktreeSnapshotEntryV1>();
+  for (const file of files) {
+    const absolute = path.join(worktree, ...file.split("/"));
+    const stat = await fs.lstat(absolute);
+    if (stat.isSymbolicLink()) {
+      const target = await fs.readlink(absolute).catch(() => "");
+      snapshot.set(file, { hash: sha256Utf8(`link:${target}`), mtimeMs: Math.floor(stat.mtimeMs), size: target.length, symlink: true });
+    } else if (stat.isFile()) {
+      const bytes = await fs.readFile(absolute).catch(() => undefined);
+      if (bytes === undefined) continue;
+      snapshot.set(file, { hash: sha256Utf8(bytes.toString("utf8")), mtimeMs: Math.floor(stat.mtimeMs), size: bytes.length, symlink: false });
+    }
+  }
+  return snapshot;
+}
+
+/** List + hash the current per-unit worktree state for the live gate. */
+export async function currentWaveWorktreeStateV1(worktree: string): Promise<Map<string, WaveWorktreeSnapshotEntryV1>> {
+  return snapshotWaveWorktreeV1(worktree);
+}
+
+/** Live gate check: touched-off-scope files vs the launch snapshot. */
+export async function checkWaveWorktreeOffPatchV1(worktree: string, snapshot: ReadonlyMap<string, WaveWorktreeSnapshotEntryV1>, allowedScope: readonly string[]): Promise<string[]> {
+  const current = await currentWaveWorktreeStateV1(worktree);
+  return findOffPatchWritesV1({ snapshot, current, allowedScope });
+}
+
 export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; capabilityRegistry: CapabilityRegistryV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; plannerPromptContext?: { operationId?: string; request?: string; explorerContext?: string; inputsPrompt?: string; readRoots?: readonly string[] }; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void }): Promise<PlannerWaveResult> {
   const planning = input.config.workflow?.planning;
   // AEH-V2-0128 residual (single source `directRouteMultiUnitBlockedV1`): a
@@ -829,11 +975,37 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
     if (baselineAdd.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineAdd.stderr || baselineAdd.stdout}`);
     const baselineCommit = await runExecutable("git", ["-c", "user.name=aeh", "-c", "user.email=aeh@localhost", "commit", "--no-gpg-sign", "-m", "aeh wave baseline", "--allow-empty"], { cwd: worktree, timeoutMs: 60_000 });
     if (baselineCommit.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineCommit.stderr || baselineCommit.stdout}`);
+    // FAM-WAVE live gate: snapshot the per-unit worktree file set at unit
+    // launch (after materialize + baseline). Fail-closed: an unsnapshotable
+    // worktree cannot prove containment, so the unit FAILs before dispatch.
+    let launchSnapshot: Map<string, WaveWorktreeSnapshotEntryV1>;
+    try {
+      launchSnapshot = await snapshotWaveWorktreeV1(worktree);
+    } catch (error) {
+      return { task: input.task, session: { provider: selection.runtimeAdapter, model: selection.modelName, logicalAgent: selection.logicalAgent, runtime: selection.runtimeName, profile: selection.profile, exitCode: 1, stdout: "", stderr: `OFF_PATCH_WRITE_DENIED: unable to snapshot per-unit worktree for live scope gate: ${String(error).slice(0, 300)}` }, changedFiles: [], patch: "", status: "FAIL", message: `OFF_PATCH_WRITE_DENIED: unable to snapshot per-unit worktree for live scope gate.` };
+    }
     // The frozen role invocation policy's output contract is the durable structured result for this
     // work unit. It must be propagated on dispatch (provider turn activation) and finalization
     // (acceptance), or the Implementer's result channel is never activated and the participant can
     // only fall back to unstructured text (AEH-V2-0118).
     const session = await executeAgentPrompt(worktree, input.config, input.contract, selection, prompt, { outputContract: input.participantAssignment.roleInvocationPolicy?.outputContract ?? selection.outputContract ?? "implementer", participantId, phase: "implementation", operationKind: currentOperationContext().kind, requireExecutionAuthority: true, executionBlueprint: input.executionBlueprint, executionBlueprintDigest: input.executionBlueprint.digest, roleInvocationPolicy: input.participantAssignment.roleInvocationPolicy, skillManifest: input.participantAssignment.skillManifest }); if (session.exitCode !== 0) return { task: input.task, session, changedFiles: [], patch: "", status: "FAIL", message: `Agent exited with ${session.exitCode}.` };
+    // FAM-WAVE live gate (per-unit worktree, hardcoded-deny): scope-check the
+    // LIVE filesystem state before capturing the diff. Catches off-patch
+    // writes the diff gate would miss (ignored files, reverted touches via
+    // mtime, deletions). Terminal FAIL with OFF_PATCH_WRITE_DENIED receipt —
+    // no correction turn for a live denial. Assembler diff gate stays below
+    // as defense-in-depth.
+    try {
+      const offPatch = await checkWaveWorktreeOffPatchV1(worktree, launchSnapshot, input.task.scope);
+      if (offPatch.length) {
+        const denial = createWaveOffPatchDenialV1({ operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId, files: offPatch });
+        await recordEvent(input.stateRoot, input.config, WAVE_OFF_PATCH_DENIED_EVENT_V1, { operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId, files: denial.files, fileCount: denial.fileCount, denialDigest: denial.digest, status: "FAIL" }).catch(() => undefined);
+        return { task: input.task, session, changedFiles: offPatch, patch: "", status: "FAIL", message: `OFF_PATCH_WRITE_DENIED: worker wrote outside its claimed scope live: ${offPatch.slice(0, 8).join(", ")} (denial ${denial.digest.slice(0, 16)}). Writes outside the unit pathspec are denied; declare via filesNeededOutsideScope.` };
+      }
+    } catch (error) {
+      await recordEvent(input.stateRoot, input.config, WAVE_OFF_PATCH_DENIED_EVENT_V1, { operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId, files: [], fileCount: 0, status: "FAIL", error: `live-gate unverifiable: ${String(error).slice(0, 200)}` }).catch(() => undefined);
+      return { task: input.task, session, changedFiles: [], patch: "", status: "FAIL", message: `OFF_PATCH_WRITE_DENIED: per-unit live scope gate unverifiable (fail-closed).` };
+    }
     const status = await runExecutable("git", ["status", "--porcelain"], { cwd: worktree, timeoutMs: 30_000 }); const untracked = status.stdout.split(/\r?\n/).filter((line) => line.startsWith("?? ")).map((line) => line.slice(3).trim()).filter(Boolean); if (untracked.length) await runExecutable("git", ["add", "-N", "--", ...untracked], { cwd: worktree, timeoutMs: 30_000 });
     const names = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 }); const changedFiles = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const violations = changedFiles.filter((file) => !matchesAny(file, input.task.scope));
     if (violations.length) {
@@ -929,6 +1101,36 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
           patch: "",
           status: "FAIL",
           message: originalMessage,
+          escapeCorrectionUsed: true,
+          escapeCorrectionSessions: [correctionSession],
+        };
+      }
+      // FAM-WAVE live gate on the correction turn: same hardcoded-deny check
+      // against the launch snapshot before accepting the corrected diff.
+      try {
+        const offPatchCorrection = await checkWaveWorktreeOffPatchV1(worktree, launchSnapshot, input.task.scope);
+        if (offPatchCorrection.length) {
+          const denial = createWaveOffPatchDenialV1({ operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId, files: offPatchCorrection });
+          await recordEvent(input.stateRoot, input.config, WAVE_OFF_PATCH_DENIED_EVENT_V1, { operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId, files: denial.files, fileCount: denial.fileCount, denialDigest: denial.digest, status: "FAIL", correction: true }).catch(() => undefined);
+          return {
+            task: input.task,
+            session,
+            changedFiles,
+            patch: "",
+            status: "FAIL",
+            message: `OFF_PATCH_WRITE_DENIED: correction turn wrote outside its claimed scope live: ${offPatchCorrection.slice(0, 8).join(", ")} (denial ${denial.digest.slice(0, 16)}).`,
+            escapeCorrectionUsed: true,
+            escapeCorrectionSessions: [correctionSession],
+          };
+        }
+      } catch {
+        return {
+          task: input.task,
+          session,
+          changedFiles,
+          patch: "",
+          status: "FAIL",
+          message: `OFF_PATCH_WRITE_DENIED: per-unit live scope gate unverifiable on correction turn (fail-closed).`,
           escapeCorrectionUsed: true,
           escapeCorrectionSessions: [correctionSession],
         };
