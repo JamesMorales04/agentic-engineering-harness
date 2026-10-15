@@ -960,7 +960,15 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     const failureType = failureDecision.classification;
     const recovery = executionBoundary.recovery ? resolveRecoveryStep(executionBoundary.recovery, failureType, attempts) : { action: "same-agent" as const };
     const recoveryAction = formatRecoveryAction(recovery, selection?.logicalAgent ?? "legacy-worker");
-    const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction, reportArtifact: `${effectiveConfig.sdd?.reportsDir ?? ".harness/reports"}/${effectiveContract.task.id}.json` });
+    // Persist the augmented report BEFORE building the packet: worker-execution
+    // and assurance checks merged above postdate the verify-time artifact, and
+    // the packet's report pointer must resolve to evidence covering exactly
+    // the failures it names (a stale artifact would omit them).
+    const repairReportArtifact = `${effectiveConfig.sdd?.reportsDir ?? ".harness/reports"}/${effectiveContract.task.id}.json`;
+    const repairReportFile = path.resolve(controlRoot, repairReportArtifact);
+    await fs.mkdir(path.dirname(repairReportFile), { recursive: true });
+    await fs.writeFile(repairReportFile, `${JSON.stringify(report, null, 2)}\n`);
+    const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction, reportArtifact: repairReportArtifact });
     if (!packet.failures.length) break;
     await writeRepairPacket(controlRoot, effectiveConfig, packet);
     await recordEvent(controlRoot, effectiveConfig, "harness.repair.start", { taskId: effectiveContract.task.id, attempt: attempts, failureType, failureMechanism: failureDecision.mechanism, failureAssessmentDigest: failureDecision.assessmentDigest, failureUnknowns: failureDecision.unknowns, recoveryAction, failures: packet.failures.length });

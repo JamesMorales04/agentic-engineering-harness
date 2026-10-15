@@ -8,7 +8,7 @@ import { AehError } from "../core/errors.js";
 import { providerGeneratedPathspecExcludes } from "../core/git.js";
 import { runExecutable } from "../utils/process.js";
 import { markOperationResourceReleased, registerOperationResource } from "../runtime/operationResources.js";
-import { existingRepositoryPath, repositoryPath } from "../utils/repositoryPath.js";
+import { existingRepositoryPath, materializeRepairEvidence, repositoryPath } from "../utils/repositoryPath.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import type { ChangeSetV1 } from "./assembler.js";
 import { resolveAbsoluteWithExistingSymlinks, symlinkTargetEscapesRoot } from "./assembler.js";
@@ -173,6 +173,9 @@ export async function executeIsolatedCandidateMutation(input: {
     // so post-baseline refreshes can never pollute the ChangeSet.
     await writeDirectStagingHeartbeat(isolatedRoot, { operationId: input.operationId, taskId: input.taskId, candidateDigest: input.candidate.identityDigest }).catch(() => undefined);
     await copyTaskContext(input.root, isolatedRoot, input.config, input.contract);
+    // Repair evidence travels with task context: the repair prompt's report
+    // pointer must resolve in the isolated mutation root.
+    await materializeRepairEvidence(input.root, isolatedRoot, input.config, input.contract.task.id);
     await input.prepareWorkspace?.(isolatedRoot);
     await assertContainedSourceSymlinks(isolatedRoot);
 

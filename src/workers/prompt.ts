@@ -10,16 +10,32 @@ export function buildWorkerPrompt(contract: TaskContract, selection?: AgentExecu
  * context gateway fails closed with CONTEXT_BUDGET_EXCEEDED on required
  * fragments that do not fit). Full evidence stays in the durable validation
  * report artifact, which the repairer reads in-workspace — the excerpt is a
- * locator, never a substitute.
+ * locator, never a substitute. Slicing is code-point safe (astral Unicode
+ * characters are never split).
  */
 const REPAIR_EVIDENCE_BUDGET_CHARS = 1_500;
 const REPAIR_EVIDENCE_HEAD_CHARS = 800;
 const REPAIR_EVIDENCE_TAIL_CHARS = 600;
+const REPAIR_MAX_LISTED_FAILURES = 10;
+const REPAIR_MAX_MESSAGE_CHARS = 500;
+function sliceCodePoints(value: string, start: number, end?: number): string {
+  return Array.from(value).slice(start, end).join("");
+}
+function truncateMessage(message: string): string {
+  if (Array.from(message).length <= REPAIR_MAX_MESSAGE_CHARS) return message;
+  return `${sliceCodePoints(message, 0, REPAIR_MAX_MESSAGE_CHARS)}\n  [… message truncated; see the validation report artifact …]`;
+}
 export function projectRepairFailureEvidence(details: unknown): string {
   const rendered = JSON.stringify(details);
-  if (rendered.length <= REPAIR_EVIDENCE_BUDGET_CHARS) return rendered;
-  const head = rendered.slice(0, REPAIR_EVIDENCE_HEAD_CHARS);
-  const tail = rendered.slice(-REPAIR_EVIDENCE_TAIL_CHARS);
-  return `${head}\n  [… ${(rendered.length - REPAIR_EVIDENCE_HEAD_CHARS - REPAIR_EVIDENCE_TAIL_CHARS).toLocaleString("en-US")} characters of evidence omitted; read the full validation report artifact …]\n${tail}`;
+  if (Array.from(rendered).length <= REPAIR_EVIDENCE_BUDGET_CHARS) return rendered;
+  const head = sliceCodePoints(rendered, 0, REPAIR_EVIDENCE_HEAD_CHARS);
+  const tail = sliceCodePoints(rendered, -REPAIR_EVIDENCE_TAIL_CHARS);
+  return `${head}\n  [… ${(Array.from(rendered).length - REPAIR_EVIDENCE_HEAD_CHARS - REPAIR_EVIDENCE_TAIL_CHARS).toLocaleString("en-US")} characters of evidence omitted; read the full validation report artifact …]\n${tail}`;
 }
-export function buildRepairPrompt(packet: RepairPacket): string { const failures = packet.failures.map((failure) => `- ${failure.id} [${failure.category}]: ${failure.message}${failure.details ? `\n  evidence: ${projectRepairFailureEvidence(failure.details)}` : ""}`).join("\n"); const evidencePointer = packet.reportArtifact ? `\nFull failure evidence: read ${packet.reportArtifact} in the workspace (validation report for ${packet.taskId}, attempt ${packet.attempt}); the excerpts above locate failures, they do not replace the report.` : ""; return `Repair attempt ${packet.attempt} for ${packet.taskId}.\nFailure type: ${packet.failureType ?? "unspecified"}\nRecovery action: ${packet.recoveryAction ?? "same-agent"}${evidencePointer}\n\nThe deterministic harness rejected the implementation for these reasons:\n${failures}\n\nMake the smallest targeted changes needed to satisfy these failures. Do not modify frozen contracts/specs/acceptance artifacts and do not broaden scope. Re-run the focused failing checks before reporting completion.\n\nOut-of-scope blocker path (report, don't expand): if the required fix needs files outside the frozen scope (including lockfiles such as package-lock.json, acceptance, validators, or policy), do NOT edit them. Return no file changes and declare the needed files via AEH_RESULT_JSON with filesNeededOutsideScope[{path, reason}] (one reason per file). Silent scope expansion is rejected; only a lead-approved scope amendment with reseal can authorize the retry.`; }
+export function buildRepairPrompt(packet: RepairPacket): string {
+  const listed = packet.failures.slice(0, REPAIR_MAX_LISTED_FAILURES);
+  const omitted = packet.failures.length - listed.length;
+  const failures = listed.map((failure) => `- ${failure.id} [${failure.category}]: ${truncateMessage(failure.message)}${failure.details ? `\n  evidence: ${projectRepairFailureEvidence(failure.details)}` : ""}`).join("\n");
+  const evidencePointer = packet.reportArtifact ? `\nFull failure evidence: read ${packet.reportArtifact} in the workspace (validation report for ${packet.taskId}, attempt ${packet.attempt}); the excerpts above locate failures, they do not replace the report.` : "";
+  const omissionNote = omitted > 0 ? `\n… and ${omitted} more failure(s) not listed here; see ${packet.reportArtifact ?? "the validation report artifact"}.` : "";
+  return `Repair attempt ${packet.attempt} for ${packet.taskId}.\nFailure type: ${packet.failureType ?? "unspecified"}\nRecovery action: ${packet.recoveryAction ?? "same-agent"}${evidencePointer}\n\nThe deterministic harness rejected the implementation for these reasons:\n${failures}${omissionNote}\n\nMake the smallest targeted changes needed to satisfy these failures. Do not modify frozen contracts/specs/acceptance artifacts and do not broaden scope. Re-run the focused failing checks before reporting completion.\n\nOut-of-scope blocker path (report, don't expand): if the required fix needs files outside the frozen scope (including lockfiles such as package-lock.json, acceptance, validators, or policy), do NOT edit them. Return no file changes and declare the needed files via AEH_RESULT_JSON with filesNeededOutsideScope[{path, reason}] (one reason per file). Silent scope expansion is rejected; only a lead-approved scope amendment with reseal can authorize the retry.`; }

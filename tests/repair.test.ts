@@ -47,4 +47,34 @@ describe("repair packets", () => {
   it("renders small failure details whole", () => {
     expect(projectRepairFailureEvidence({ scenario: "A" })).toBe(JSON.stringify({ scenario: "A" }));
   });
+
+  it("bounds the whole prompt across many failures and long messages", () => {
+    const checks = Array.from({ length: 25 }, (_, index) => ({
+      id: `check-${index}`, category: "build", status: "FAIL" as const,
+      message: `failure ${index} ` + "m".repeat(2_000),
+      details: { out: "y".repeat(5_000) },
+    }));
+    const packet = createRepairPacket({
+      version: 1, taskId: "T-3", status: "FAIL",
+      startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z",
+      changedFiles: [], metadata: {}, checks,
+    }, 1, { reportArtifact: ".harness/reports/T-3.json" });
+    const prompt = buildRepairPrompt(packet);
+    expect(prompt.length).toBeLessThan(30_000);
+    expect(prompt).toContain("check-0");
+    expect(prompt).toContain("check-9");
+    expect(prompt).not.toContain("check-10");
+    expect(prompt).toContain("15 more failure(s)");
+    expect(prompt).toContain(".harness/reports/T-3.json");
+  });
+
+  it("never splits astral Unicode characters in excerpts", () => {
+    const emoji = "🚀";
+    const details = { out: `HEAD-${emoji}` + "z".repeat(5_000) + `${emoji}-TAIL` };
+    const excerpt = projectRepairFailureEvidence(details);
+    expect(excerpt).toContain(`HEAD-${emoji}`);
+    expect(excerpt).toContain(`${emoji}-TAIL`);
+    expect(() => encodeURIComponent(excerpt)).not.toThrow();
+    expect(Array.from(excerpt).join("")).toBe(excerpt);
+  });
 });
