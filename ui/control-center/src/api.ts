@@ -49,10 +49,18 @@ export interface DelegationDecision {
   reason: string;
 }
 
+export interface SessionDelegation {
+  delegationId: string;
+  grantorOwnerId: string;
+  authorityProfile?: string;
+  capabilities?: string[];
+  expiresAt: string;
+}
+
 export interface SessionInfo {
   csrfToken: string;
   actorId?: string;
-  delegation?: { delegationId: string; grantorOwnerId: string; expiresAt: string };
+  delegation?: SessionDelegation;
 }
 
 export interface DelegationSubmissionInputV1 {
@@ -128,8 +136,15 @@ function withSessionIdentity(body: SessionInfo): SessionInfo {
   const record = body as unknown as Record<string, unknown>;
   const actorId = typeof record.actorId === "string" ? record.actorId : undefined;
   const raw = record.delegation as Record<string, unknown> | undefined;
+  const capabilities = Array.isArray(raw?.capabilities) && raw.capabilities.every((entry): entry is string => typeof entry === "string") ? raw.capabilities : undefined;
   const delegation = raw && typeof raw.delegationId === "string" && typeof raw.grantorOwnerId === "string" && typeof raw.expiresAt === "string"
-    ? { delegationId: raw.delegationId, grantorOwnerId: raw.grantorOwnerId, expiresAt: raw.expiresAt }
+    ? {
+      delegationId: raw.delegationId,
+      grantorOwnerId: raw.grantorOwnerId,
+      ...(typeof raw.authorityProfile === "string" ? { authorityProfile: raw.authorityProfile } : {}),
+      ...(capabilities ? { capabilities } : {}),
+      expiresAt: raw.expiresAt,
+    }
     : undefined;
   return { ...body, ...(actorId ? { actorId } : {}), ...(delegation ? { delegation } : {}) };
 }

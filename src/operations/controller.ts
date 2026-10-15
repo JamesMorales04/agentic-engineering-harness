@@ -1229,6 +1229,7 @@ async function createOperationOrigin(root: string, kind: OperationKind, payload:
     if (!projectId) throw new Error("OWNER_RESOLUTION_AUTHORITY_DENIED: delegated starts require a loaded project configuration for scope checks.");
     const grant = await verifyDelegatedOwnerGrantV1(root, asDelegate.delegationId, {
       projectId,
+      ...(config?.delivery?.github?.repository ? { repository: config.delivery.github.repository } : {}),
       requiredCapability: ownerResolutionOperationIds?.length ? "recovery.authorize" : "operation.initiate",
     });
     delegationProvenance = {

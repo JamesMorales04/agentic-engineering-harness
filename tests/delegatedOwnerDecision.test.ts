@@ -24,7 +24,7 @@ import {
 } from "../src/operations/state.js";
 import { cancelOperation } from "../src/operations/controller.js";
 import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
-import { issueDelegatedOwnerGrantV1 } from "../src/security/ownerAuthority.js";
+import { issueDelegatedOwnerGrantV1, revokeDelegatedOwnerGrantV1 } from "../src/security/ownerAuthority.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -123,6 +123,21 @@ describe("delegated Owner decisions through the real Control Center path", () =>
     expect(cancelled.status).toBe("CANCELLED");
   });
 
+  it("fails closed when a grant is revoked between recording and applying a deferred control", async () => {
+    const root = await tempRoot();
+    const waiting = await suspendedFixture(root, "OP-DELEGATED-REVOKE-RACE");
+    const projectId = waiting.candidateRevision!.projectId!;
+    const grant = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, { via: "test", allowManagedContext: true });
+    await requestOperationPause(root, waiting.id, DELEGATE);
+    await revokeDelegatedOwnerGrantV1(root, grant.delegationId, { revokedBy: GRANTOR }, { via: "test", allowManagedContext: true });
+    await expect(pauseOperationIfRequested(root, waiting.id, { activeParticipantIds: [], activeProviderLeaseIds: [], observedAt: new Date().toISOString() }))
+      .rejects.toThrow(/DELEGATION_REVOKED/);
+    expect((await loadOperation(root, waiting.id)).phase).toBe("HUMAN_REQUIRED");
+  });
+
   it("serves the full delegation lifecycle over real HTTP: grant, delegate session, decision, review, revoke", async () => {
     const root = await tempRoot();
     const waiting = await suspendedFixture(root, "OP-DELEGATED-HTTP");
@@ -180,6 +195,14 @@ describe("delegated Owner decisions through the real Control Center path", () =>
       expect(delegateSession.actorId).toBe(DELEGATE);
       const delegateCookie = (delegatePair.headers.get("set-cookie") ?? "").split(";")[0]!;
       const delegateHeaders = { Cookie: delegateCookie, Origin: origin, "X-AEH-CSRF": delegateSession.csrfToken, "Content-Type": "application/json" };
+
+      // Delegates must never enumerate or manage grants: bearer ids stay secret.
+      const enumerated = await fetch(`${origin}/api/v1/delegations`, { headers: { Cookie: delegateCookie } });
+      expect(enumerated.status).toBe(403);
+      const selfGranted = await fetch(`${origin}/api/v1/delegations`, {
+        method: "POST", headers: delegateHeaders, body: JSON.stringify({ delegatePrincipalId: "delegate:other" }),
+      });
+      expect(selfGranted.status).toBe(403);
 
       // The delegate resolves the HUMAN_REQUIRED decision autonomously.
       const decided = await fetch(`${origin}/api/v1/decisions`, {

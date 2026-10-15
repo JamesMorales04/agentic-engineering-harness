@@ -41,9 +41,13 @@ worker can mint or widen delegations, and prompt injection, tool output, or
 repository text can never create them.
 
 Every use verifies the MAC, project/repository scope, capability, expiry, and
-revocation. Revocation (`aeh delegation revoke`, or Revoke now in the UI)
+revocation — at recording AND again immediately before the deferred effect
+applies (product-choice consume, pause/resume apply, cancellation consume,
+action consume). A grant revoked or expired while a decision was pending
+fails closed. Revocation (`aeh delegation revoke`, or Revoke now in the UI)
 ends authority immediately: live delegate sessions are dropped and every
-privileged use re-verifies.
+privileged use re-verifies. Concurrent revocations are serialized under an
+atomic lock so none are lost.
 
 ## What the delegate can do
 
@@ -73,6 +77,27 @@ Within the delegated project, `FULL_PROJECT_OWNER` covers `decision.resolve`,
   eligibility still requires a separate Reviewer identity, role, read-only
   authority, and exact head/base binding. A delegate cannot review its own
   work by holding Owner authority.
+
+## Trust boundaries (explicit)
+
+## Trust boundaries (explicit)
+
+- The paired Control Center session is the strongly authenticated issuance
+  path (single-use pairing nonce). Direct CLI issuance (`--grantor`,
+  `--confirm-grantor`) trusts the local Owner shell — the same trust position
+  as the existing Owner-authorized `aeh operation start --resolve-operation`
+  entry — plus a deliberate re-attestation flag and a deterministic refusal
+  inside managed worker contexts. It does not resist a worker that can spawn
+  clean-environment children with its own filesystem access; like charters
+  and ledger files, it converts compliant leads into governed behavior
+  rather than stopping a Byzantine shell.
+- A `delegationId` is a bearer credential for the bound agent only.
+  Delegation enumeration, issuance, revocation, and decision review are
+  human-session-only; delegate sessions resolve Owner decisions through the
+  standard decision workflow and re-verify on every use.
+- `HUMAN_REQUIRED` is never force-resolved: the delegate approves or rejects
+  through the supported owner-decision workflow, and every decision retains
+  its original authority provenance.
 
 ## Operating it
 

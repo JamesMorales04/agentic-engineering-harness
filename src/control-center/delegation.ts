@@ -55,7 +55,11 @@ export async function grantDelegationForSession(
   return { delegationId: grant.delegationId, delegatePrincipalId: grant.delegatePrincipalId, grantorOwnerId: grant.grantorOwnerId, expiresAt: grant.expiresAt };
 }
 
-export async function listDelegationsForSession(root: string, _sessionActorId: string): Promise<DelegationStatusV1[]> {
+export async function listDelegationsForSession(root: string, sessionActorId: string): Promise<DelegationStatusV1[]> {
+  // Human-Owner-only: delegation ids are bearer credentials for delegate
+  // sessions, so delegates must never enumerate them (the server enforces
+  // this too; this is defense in depth).
+  if (!isHumanOwnerActor(sessionActorId)) throw new Error("DELEGATION_LIST_DENIED: Owner delegation inspection requires an authenticated human session.");
   return listDelegatedOwnerGrantsV1(root);
 }
 
@@ -75,6 +79,8 @@ export interface DelegateSessionGrantV1 {
   actorId: string;
   delegationId: string;
   grantorOwnerId: string;
+  authorityProfile: "FULL_PROJECT_OWNER";
+  capabilities: string[];
   expiresAt: string;
 }
 
@@ -91,12 +97,23 @@ export async function verifyDelegateSessionGrant(
   projectId: string,
   delegationId: string,
   delegatePrincipalId: string,
+  repository?: string,
 ): Promise<DelegateSessionGrantV1> {
-  const grant = await verifyDelegatedOwnerGrantV1(root, delegationId.trim(), { projectId });
+  const grant = await verifyDelegatedOwnerGrantV1(root, delegationId.trim(), {
+    projectId,
+    ...(repository ? { repository } : {}),
+  });
   if (grant.delegatePrincipalId !== delegatePrincipalId.trim()) {
     throw new Error("DELEGATION_PRINCIPAL_MISMATCH: delegation is bound to another delegated principal.");
   }
-  return { actorId: grant.delegatePrincipalId, delegationId: grant.delegationId, grantorOwnerId: grant.grantorOwnerId, expiresAt: grant.expiresAt };
+  return {
+    actorId: grant.delegatePrincipalId,
+    delegationId: grant.delegationId,
+    grantorOwnerId: grant.grantorOwnerId,
+    authorityProfile: grant.authorityProfile,
+    capabilities: grant.capabilities,
+    expiresAt: grant.expiresAt,
+  };
 }
 
 /** Recent decisions attributable to a delegation, for Owner review. Delegated decisions stay attributable. */

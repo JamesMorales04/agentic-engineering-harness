@@ -62,7 +62,7 @@ export interface LocalControlCenterOptionsV1 {
   onGrantDelegation?: (body: Record<string, unknown>, actorId: string) => Promise<Record<string, unknown>> | Record<string, unknown>;
   onRevokeDelegation?: (delegationId: string, actorId: string, reason: string | undefined) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
   onDelegationDecisions?: (delegationId: string, actorId: string) => Promise<readonly unknown[]> | readonly unknown[];
-  onDelegateSession?: (delegationId: string, delegatePrincipalId: string) => Promise<{ actorId: string; delegationId: string; grantorOwnerId: string; expiresAt: string }> | { actorId: string; delegationId: string; grantorOwnerId: string; expiresAt: string };
+  onDelegateSession?: (delegationId: string, delegatePrincipalId: string) => Promise<{ actorId: string; delegationId: string; grantorOwnerId: string; authorityProfile: string; capabilities: string[]; expiresAt: string }> | { actorId: string; delegationId: string; grantorOwnerId: string; authorityProfile: string; capabilities: string[]; expiresAt: string };
   healthProbeTimeoutMs?: number;
   paseoGateway?: PaseoGatewayV1;
   paseo?: { root: string; leadId?: string; resolveLeadId?: () => Promise<string | undefined>; participantLabels?: Record<string, string>; provider?: string; model?: string };
@@ -102,7 +102,7 @@ interface ControlSessionV1 {
   actorId: string;
   expiresAt: number;
   /** Present for delegate sessions: the verified grant behind the actor. Every privileged use re-verifies it. */
-  delegation?: { delegationId: string; grantorOwnerId: string; expiresAt: string };
+  delegation?: { delegationId: string; grantorOwnerId: string; authorityProfile: string; capabilities: string[]; expiresAt: string };
 }
 
 interface ProjectHomeBindingV1 {
@@ -295,17 +295,19 @@ export class LocalControlCenterV1 {
       if (request.method === "GET" && url.pathname === "/api/v1/delegations") {
         if (!this.onListDelegations) return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, items: [] });
         const session = this.sessionFor(request);
-        return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, items: await this.onListDelegations(session!.actorId) });
+        if (!session) return this.json(response, 401, { error: "Control Center session authentication required." });
+        if (!session.actorId.startsWith("human:")) return this.json(response, 403, { error: "Owner delegation inspection requires an authenticated human session." });
+        return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, items: await this.onListDelegations(session.actorId) });
       }
       if (request.method === "POST" && url.pathname === "/api/v1/delegations") {
-        const session = this.assertCsrf(request);
+        const session = this.requireHumanSession(request);
         if (!this.onGrantDelegation) return this.json(response, 400, { error: "delegation issuance is not configured for this Control Center." });
         const result = await this.onGrantDelegation(await this.body(request) as unknown as Record<string, unknown>, session.actorId);
         return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
       }
       const delegationRevoke = /^\/api\/v1\/delegations\/([^/]+)\/revoke$/.exec(url.pathname);
       if (request.method === "POST" && delegationRevoke) {
-        const session = this.assertCsrf(request);
+        const session = this.requireHumanSession(request);
         if (!this.onRevokeDelegation) return this.json(response, 400, { error: "delegation revocation is not configured for this Control Center." });
         const body = await this.body(request) as unknown as Record<string, unknown>;
         const reason = typeof body.reason === "string" ? body.reason : undefined;
@@ -321,7 +323,9 @@ export class LocalControlCenterV1 {
       if (request.method === "GET" && delegationDecisions) {
         if (!this.onDelegationDecisions) return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, items: [] });
         const session = this.sessionFor(request);
-        return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, items: await this.onDelegationDecisions(decodeURIComponent(delegationDecisions[1]), session!.actorId) });
+        if (!session) return this.json(response, 401, { error: "Control Center session authentication required." });
+        if (!session.actorId.startsWith("human:")) return this.json(response, 403, { error: "Owner delegation review requires an authenticated human session." });
+        return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, items: await this.onDelegationDecisions(decodeURIComponent(delegationDecisions[1]), session.actorId) });
       }
       const cancel = /^\/api\/v1\/operations\/([^/]+)\/cancel$/.exec(url.pathname);
       if (request.method === "POST" && cancel) {
@@ -594,6 +598,21 @@ export class LocalControlCenterV1 {
     return session;
   }
 
+  /**
+   * Delegation management (grant/list/revoke/review) is human-Owner-only.
+   * Delegate sessions resolve Owner decisions through the standard decision
+   * workflow — they must never enumerate grants (delegation ids are bearer
+   * credentials) nor manage them. Prefix classification only routes; grant
+   * validity is still verified per use.
+   */
+  private requireHumanSession(request: IncomingMessage): ControlSessionV1 {
+    const session = this.assertCsrf(request);
+    if (!session.actorId.startsWith("human:")) {
+      throw new ControlCenterSecurityError("Owner delegation management requires an authenticated human session.");
+    }
+    return session;
+  }
+
   private async pair(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (!this.pairingNonce) return this.json(response, 403, { error: "Control Center pairing nonce is unavailable or has already been used." });
     const body = await this.body(request) as PairBodyV1;
@@ -627,7 +646,7 @@ export class LocalControlCenterV1 {
     const delegationId = typeof body.delegationId === "string" ? body.delegationId : "";
     const delegatePrincipalId = typeof body.delegatePrincipalId === "string" ? body.delegatePrincipalId : "";
     if (!delegationId || !delegatePrincipalId) return this.json(response, 400, { error: "delegate sessions require delegationId and delegatePrincipalId." });
-    let verified: { actorId: string; delegationId: string; grantorOwnerId: string; expiresAt: string };
+    let verified: { actorId: string; delegationId: string; grantorOwnerId: string; authorityProfile: string; capabilities: string[]; expiresAt: string };
     try {
       verified = await this.onDelegateSession(delegationId, delegatePrincipalId);
     } catch (error) {
@@ -642,7 +661,7 @@ export class LocalControlCenterV1 {
       csrfToken,
       actorId: verified.actorId,
       expiresAt: Date.now() + ttlSeconds * 1000,
-      delegation: { delegationId: verified.delegationId, grantorOwnerId: verified.grantorOwnerId, expiresAt: verified.expiresAt },
+      delegation: { delegationId: verified.delegationId, grantorOwnerId: verified.grantorOwnerId, authorityProfile: verified.authorityProfile, capabilities: verified.capabilities, expiresAt: verified.expiresAt },
     });
     const secure = this.isRemoteEnabled() ? "; Secure" : "";
     response.setHeader("Set-Cookie", `${CONTROL_SESSION_COOKIE}=${sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${ttlSeconds}${secure}`);
@@ -650,7 +669,7 @@ export class LocalControlCenterV1 {
       version: CONTROL_CENTER_CONTRACT_VERSION,
       csrfToken,
       actorId: verified.actorId,
-      delegation: { delegationId: verified.delegationId, grantorOwnerId: verified.grantorOwnerId, expiresAt: verified.expiresAt },
+      delegation: { delegationId: verified.delegationId, grantorOwnerId: verified.grantorOwnerId, authorityProfile: verified.authorityProfile, capabilities: verified.capabilities, expiresAt: verified.expiresAt },
     });
   }
 

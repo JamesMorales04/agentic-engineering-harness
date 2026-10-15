@@ -202,11 +202,11 @@ async function runControlCenter(argv: string[]): Promise<void> {
       const current = await loadOperation(root, operationId);
       return { accepted: true, operationId: current.id, decisionId: decision.decisionId, status: current.status, phase: current.phase, revision: current.revision };
     } : undefined,
-    onListDelegations: root ? async () => listDelegationsForSession(root, "") : undefined,
+    onListDelegations: root ? async (actorId) => listDelegationsForSession(root, actorId) : undefined,
     onGrantDelegation: root && config ? async (body, actorId) => grantDelegationForSession(root, config.project.name, actorId, body as unknown as DelegationGrantRequestV1) : undefined,
     onRevokeDelegation: root ? async (delegationId, actorId, reason) => revokeDelegationForSession(root, actorId, delegationId, reason) : undefined,
     onDelegationDecisions: root && decisionLedger ? async (delegationId) => recentDecisionsForDelegation(root, decisionLedger, delegationId) : undefined,
-    onDelegateSession: root && config ? async (delegationId, delegatePrincipalId) => verifyDelegateSessionGrant(root, config.project.name, delegationId, delegatePrincipalId) : undefined,
+    onDelegateSession: root && config ? async (delegationId, delegatePrincipalId) => verifyDelegateSessionGrant(root, config.project.name, delegationId, delegatePrincipalId, config.delivery?.github?.repository) : undefined,
   });
   const started = await center.start();
   const serviceId = runtime ? `control-center:${runtime.projectId}` : undefined;

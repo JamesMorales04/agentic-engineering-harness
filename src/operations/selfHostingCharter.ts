@@ -299,9 +299,10 @@ async function charterRejection(
         return `${file}: delegated charter authorizedBy must be the issuing delegate principal`;
       }
       try {
-        const projectId = await controllerProjectId(controllerRoot);
+        const scope = await controllerProjectScope(controllerRoot);
         const grant = await verifyDelegatedOwnerGrantV1(controllerRoot, delegationId, {
-          projectId,
+          projectId: scope.projectId,
+          ...(scope.repository ? { repository: scope.repository } : {}),
           requiredCapability: "charter.authorize",
           nowMs,
         });
@@ -315,14 +316,15 @@ async function charterRejection(
   return undefined;
 }
 
-/** Controller project identity for delegation scope checks (config name; absent config denies delegated charters only). */
-async function controllerProjectId(controllerRoot: string): Promise<string> {
+/** Controller project scope for delegation checks (config name + repository; absent config denies delegated charters only). */
+async function controllerProjectScope(controllerRoot: string): Promise<{ projectId: string; repository?: string }> {
   try { await fs.access(path.resolve(controllerRoot, ".harness", "project.yaml")); }
   catch { throw new Error("DELEGATION_PROJECT_MISMATCH: controller has no project identity for delegation scope checks."); }
   const config = await loadProjectConfig(controllerRoot);
   const projectId = config?.project?.name?.trim();
   if (!projectId) throw new Error("DELEGATION_PROJECT_MISMATCH: controller has no project identity for delegation scope checks.");
-  return projectId;
+  const repository = config?.delivery?.github?.repository?.trim() || undefined;
+  return repository ? { projectId, repository } : { projectId };
 }
 
 export type CharterIssuanceContextV1 =
@@ -366,8 +368,11 @@ export async function issueSelfHostingCharterV1(
   const expiresAt = input.expiresAt;
   if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) throw new Error("CHARTER_ISSUANCE_DENIED: expiresAt must be a future instant.");
   const authorizedBy = input.authorizedBy.trim();
-  const projectId = input.projectId?.trim() || await controllerProjectId(absoluteController).catch(() => undefined);
-  if (!projectId) throw new Error("CHARTER_ISSUANCE_DENIED: controller project identity is required for charter scope.");
+  const scope = input.projectId?.trim()
+    ? { projectId: input.projectId.trim(), ...(input.repository ? { repository: input.repository } : {}) }
+    : await controllerProjectScope(absoluteController).catch(() => undefined);
+  if (!scope?.projectId) throw new Error("CHARTER_ISSUANCE_DENIED: controller project identity is required for charter scope.");
+  const projectId = scope.projectId;
   let provenance: SelfHostingCharterProvenanceV1;
   if (authorizedBy.startsWith("human:")) {
     if (input.delegationId) throw new Error("CHARTER_ISSUANCE_DENIED: human issuance takes no delegationId.");
@@ -379,7 +384,7 @@ export async function issueSelfHostingCharterV1(
     if (!input.delegationId?.trim()) throw new Error("CHARTER_ISSUANCE_DENIED: delegated issuance requires the authorizing delegationId.");
     const grant = await verifyDelegatedOwnerGrantV1(absoluteController, input.delegationId.trim(), {
       projectId,
-      ...(input.repository ? { repository: input.repository } : {}),
+      ...(scope.repository || input.repository ? { repository: (input.repository ?? scope.repository)! } : {}),
       requiredCapability: "charter.authorize",
     });
     if (grant.delegatePrincipalId !== authorizedBy) throw new Error("CHARTER_ISSUANCE_DENIED: delegation is bound to another delegated principal.");

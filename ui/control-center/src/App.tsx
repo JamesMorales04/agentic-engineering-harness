@@ -174,9 +174,11 @@ function Operations({ operations, csrfToken }: { operations: Operation[]; csrfTo
 function ActingPrincipalBanner({ session }: { session: SessionInfo | undefined }) {
   if (!session?.actorId) return null;
   const isDelegate = session.actorId.startsWith("delegate:");
+  const profile = session.delegation?.authorityProfile ?? "FULL_PROJECT_OWNER";
+  const capabilityCount = session.delegation?.capabilities?.length;
   return <div className={isDelegate ? "notice banner" : "muted banner"} role="status">
     {isDelegate
-      ? <>Acting as AI delegate <code>{session.actorId}</code> on behalf of Owner <code>{session.delegation?.grantorOwnerId ?? "unknown grantor"}</code> · FULL_PROJECT_OWNER · grant <code>{session.delegation ? short(session.delegation.delegationId) : "—"}</code>. Every decision is recorded as a delegated decision.</>
+      ? <>Acting as AI delegate <code>{session.actorId}</code> on behalf of Owner <code>{session.delegation?.grantorOwnerId ?? "unknown grantor"}</code> · {profile}{capabilityCount !== undefined ? ` · ${capabilityCount} capabilities` : ""} · grant <code>{session.delegation ? short(session.delegation.delegationId) : "—"}</code>. Every decision is recorded as a delegated decision.</>
       : <>Acting as human Owner <code>{session.actorId}</code>. Delegated decisions by AI agents appear under their own <code>delegate:*</code> identity.</>}
   </div>;
 }

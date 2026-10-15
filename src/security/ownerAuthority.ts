@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { lock } from "proper-lockfile";
 import { canonicalSerialize, sha256Canonical } from "../core/digest.js";
 
 /**
@@ -404,24 +405,36 @@ export async function revokeDelegatedOwnerGrantV1(
     throw new Error("DELEGATION_REVOKE_DENIED: paired revocation revoker must equal the paired human session actor.");
   }
   await loadGrantById(root, delegationId.trim());
-  const file = delegationRevocationsFile(root);
-  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  // Single-writer Owner operation: read-modify-write converges (a concurrent
-  // revoke of the same id returns early on re-read below).
-  const current = await readRevocations(root);
-  if (current.revoked[delegationId.trim()]) return;
-  const next: DelegationRevocationsV1 = {
-    version: 1,
-    revoked: {
-      ...current.revoked,
-      [delegationId.trim()]: {
-        revokedAt: new Date().toISOString(),
-        reason: input.reason?.trim() ? input.reason.trim().slice(0, 500) : "Owner revocation.",
-        revokedBy,
+  const dir = path.dirname(delegationRevocationsFile(root));
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  // Locked read-modify-write: concurrent revocations of different grants must
+  // never lose one another (proper-lockfile atomic lock directory).
+  let release: (() => Promise<void>) | undefined;
+  try {
+    release = await lock(dir, {
+      realpath: false,
+      lockfilePath: path.join(dir, ".revocations-lock"),
+      stale: 30_000,
+      update: 10_000,
+      retries: { retries: 100, factor: 1, minTimeout: 10, maxTimeout: 50, randomize: true },
+    });
+    const current = await readRevocations(root);
+    if (current.revoked[delegationId.trim()]) return;
+    const next: DelegationRevocationsV1 = {
+      version: 1,
+      revoked: {
+        ...current.revoked,
+        [delegationId.trim()]: {
+          revokedAt: new Date().toISOString(),
+          reason: input.reason?.trim() ? input.reason.trim().slice(0, 500) : "Owner revocation.",
+          revokedBy,
+        },
       },
-    },
-  };
-  await fs.writeFile(file, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    };
+    await fs.writeFile(delegationRevocationsFile(root), `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  } finally {
+    await release?.();
+  }
 }
 
 async function loadGrantById(root: string, delegationId: string): Promise<DelegatedOwnerGrantV1> {
@@ -610,4 +623,40 @@ export async function verifyOwnerActorForCapability(
     },
     principal: verdict.principal,
   };
+}
+
+export interface DelegatedUseVerificationV1 {
+  actorId: string;
+  delegatedFrom?: { grantorOwnerId: string; delegationId: string; profile: OwnerAuthorityProfileV1 };
+  projectId: string;
+  repository?: string;
+  requiredCapability: OwnerCapabilityV1;
+}
+
+/**
+ * Re-verification at USE time (MECHANISM: DETERMINISTIC). Recording a
+ * decision only reserves it; the grant must verify again immediately before
+ * the deferred effect applies (product-choice consume, pause/resume apply,
+ * cancellation consume, action consume), so a grant revoked or expired while
+ * the decision was pending fails closed instead of authorizing. Binds the
+ * stored provenance to the verified grant three ways: delegation id, delegate
+ * principal, and human grantor. Human actors pass through. Throws fail-closed.
+ */
+export async function reverifyDelegatedDecisionForUse(
+  root: string,
+  input: DelegatedUseVerificationV1,
+): Promise<void> {
+  if (!isDelegatedOwnerActor(input.actorId)) return;
+  if (!input.delegatedFrom) throw new Error("DELEGATION_INVALID: delegated use lacks stored provenance.");
+  const grant = await verifyDelegatedOwnerGrantV1(root, input.delegatedFrom.delegationId, {
+    projectId: input.projectId,
+    ...(input.repository ? { repository: input.repository } : {}),
+    requiredCapability: input.requiredCapability,
+  });
+  if (grant.delegatePrincipalId !== input.actorId) {
+    throw new Error("DELEGATION_PRINCIPAL_MISMATCH: stored provenance names a grant bound to another delegated principal.");
+  }
+  if (grant.grantorOwnerId !== input.delegatedFrom.grantorOwnerId) {
+    throw new Error("DELEGATION_GRANTOR_MISMATCH: stored provenance grantor does not match the authorizing grant.");
+  }
 }

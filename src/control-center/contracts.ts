@@ -321,11 +321,19 @@ export interface ControlCenterDelegateSessionInputV1 {
   delegatePrincipalId: string;
 }
 
+export interface ControlCenterSessionDelegationV1 {
+  delegationId: string;
+  grantorOwnerId: string;
+  authorityProfile: string;
+  capabilities: string[];
+  expiresAt: string;
+}
+
 export interface ControlCenterDelegateSessionResultV1 {
   version: typeof CONTROL_CENTER_CONTRACT_VERSION;
   csrfToken: string;
   actorId: string;
-  delegation: { delegationId: string; grantorOwnerId: string; expiresAt: string };
+  delegation: ControlCenterSessionDelegationV1;
 }
 
 export interface ControlCenterDelegationDecisionV1 {

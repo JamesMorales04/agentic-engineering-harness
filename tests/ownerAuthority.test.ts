@@ -203,6 +203,20 @@ describe("canonical Delegated Owner authority (DETERMINISTIC)", () => {
     expect(status[0]).toMatchObject({ delegationId: grant.delegationId, revoked: true, validNow: false });
   });
 
+  it("revokes concurrently without losing revocations", async () => {
+    const root = await tempRoot();
+    const first = await issueGrant(root);
+    const second = await issueGrant(root);
+    await Promise.all([
+      revokeDelegatedOwnerGrantV1(root, first.delegationId, { revokedBy: GRANTOR }, TEST_CTX),
+      revokeDelegatedOwnerGrantV1(root, second.delegationId, { revokedBy: GRANTOR }, TEST_CTX),
+    ]);
+    for (const grant of [first, second]) {
+      const verdict = await resolveOwnerAuthorityV1(root, { actorId: DELEGATE, delegationId: grant.delegationId, projectId: PROJECT });
+      expect(verdict.authorized).toBe(false);
+      expect(verdict.denialCode).toBe("DELEGATION_REVOKED");
+    }
+  });
   it("enforces capability subsets and rejects unknown capabilities", async () => {
     const root = await tempRoot();
     const narrow = await issueGrant(root, { capabilities: ["decision.resolve"] });
