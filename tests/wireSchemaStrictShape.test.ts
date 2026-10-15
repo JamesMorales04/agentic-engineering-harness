@@ -176,6 +176,29 @@ describe("wire schema strict-shape (every shipped contract)", () => {
     });
   });
 
+  it("reviewer verdict carries explicit type:string alongside the enum (L1-E reviewer-coherence)", () => {
+    // L1-E reviewer-coherence requires top-level properties.verdict to carry
+    // type:string (bare enum without a scalar type fails the gate). Wire-only
+    // annotation: enum membership is unchanged, so no payload narrowing.
+    const schema = schemaFor("reviewer") as {
+      properties: Record<string, unknown>;
+      anyOf: Array<{ properties: Record<string, unknown> }>;
+    };
+    expect(schema.properties["verdict"]).toMatchObject({
+      type: "string",
+      enum: ["PASS", "FAIL", "PASS_WITH_WARNINGS"],
+    });
+    expect(schema.anyOf.length).toBe(2);
+    expect(schema.anyOf[0]!.properties["verdict"]).toMatchObject({
+      type: "string",
+      enum: ["PASS", "PASS_WITH_WARNINGS"],
+    });
+    expect(schema.anyOf[1]!.properties["verdict"]).toMatchObject({
+      type: "string",
+      enum: ["FAIL"],
+    });
+  });
+
   it("documented root-anyOf deviation surface is exactly as recorded (STRICT_DEVIATION)", () => {
     // Pins src/agents/outputContracts.ts STRICT_DEVIATION: root-level `anyOf`
     // on exactly the 6 cross-field-gate contracts is the SOLE deviation from
