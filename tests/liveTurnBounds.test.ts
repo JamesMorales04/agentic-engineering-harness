@@ -8,8 +8,9 @@ import {
   reviewerTurnDeadlineMs,
   workerTurnTerminalDetail,
 } from "../src/workers/agentPrompt.js";
-import { classifyReviewerTurnOutcome, reviewerPermissionWaitEvidence, reviewerPermissionWaitMs, awaitReviewerRunWithPermissionWatch } from "../src/agents/reviewLifecycle.js";
-import { __testResetSdkPendingStart, __testSeedSdkPendingStart, earliestTrackedPendingStartMs, hasTrackedPendingPrompt, runPaseoSdkAgentWithClient } from "../src/paseo/sdk.js";
+import { awaitReviewerRunWithPermissionWatch, classifyReviewerTurnOutcome, reviewerPermissionWaitEvidence, reviewerPermissionWaitMs } from "../src/agents/reviewLifecycle.js";
+import { earliestTrackedPendingStartMs, hasTrackedPendingPrompt, runPaseoSdkAgentWithClient } from "../src/paseo/sdk.js";
+import * as paseoSdk from "../src/paseo/sdk.js";
 import { effectivePaseoTurnTimeoutMs } from "../src/paseo/launchSpec.js";
 import { classifyParticipantStall, evaluateOperationWake, operationLivenessPolicy } from "../src/operations/livenessV2.js";
 import type { OperationRecordV2 } from "../src/operations/state.js";
@@ -327,16 +328,14 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
       },
     };
     const client = { agents: { ref: () => handle } };
-    try {
-      const result = await runPaseoSdkAgentWithClient(client as never, "agent-sdk-run-pending", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 10 });
-      const marker = result.permission?.waitStartedAt;
-      expect(marker).toBeDefined();
-      const ageMs = Date.now() - Date.parse(marker!);
-      // First-seen at run start (~150ms before conversion), not ~0ms.
-      expect(ageMs).toBeGreaterThanOrEqual(100);
-    } finally {
-      __testResetSdkPendingStart(handle);
-    }
+    const result = await runPaseoSdkAgentWithClient(client as never, "agent-sdk-run-pending", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 10 });
+    const marker = result.permission?.waitStartedAt;
+    expect(marker).toBeDefined();
+    const ageMs = Date.now() - Date.parse(marker!);
+    // First-seen at run start (~150ms before conversion), not ~0ms.
+    expect(ageMs).toBeGreaterThanOrEqual(100);
+    // Terminal settlement clears the handle marker (clear-on-settle).
+    expect(hasTrackedPendingPrompt()).toBe(false);
   });
 
   it("(R4-ii) REGRESSION: prompt appearing AFTER first activity is still captured on the waitForFinish path", async () => {
@@ -363,33 +362,46 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
     };
     const client = { agents: { ref: () => handle } };
     setTimeout(() => { handle.pendingPermissions = pending as unknown[]; }, 60);
-    try {
-      const result = await runPaseoSdkAgentWithClient(client as never, "agent-sdk-late-pending", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 10 });
-      const marker = result.permission?.waitStartedAt;
-      expect(marker).toBeDefined();
-      const ageMs = Date.now() - Date.parse(marker!);
-      // First-seen at the ~60ms flip, well before the ~250ms conversion.
-      expect(ageMs).toBeGreaterThanOrEqual(100);
-    } finally {
-      __testResetSdkPendingStart(handle);
-    }
+    const result = await runPaseoSdkAgentWithClient(client as never, "agent-sdk-late-pending", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 10 });
+    const marker = result.permission?.waitStartedAt;
+    expect(marker).toBeDefined();
+    const ageMs = Date.now() - Date.parse(marker!);
+    // First-seen at the ~60ms flip, well before the ~250ms conversion.
+    expect(ageMs).toBeGreaterThanOrEqual(100);
+    // Terminal settlement clears the handle marker (clear-on-settle).
+    expect(hasTrackedPendingPrompt()).toBe(false);
   });
 
   it("(R4-iii) WIRING: live SDK pending signal + 6-min-old start takes the exhaustion path, cleared signal settles", async () => {
     // Production wiring: runReviewer arms the watchdog with
     // isPending: () => hasTrackedPendingPrompt() and the tracked earliest
-    // start. A genuinely pending prompt (6-min-old) must exhaust mid-wait;
-    // a cleared signal must settle normally.
-    const seed = {};
-    __testSeedSdkPendingStart(seed, new Date(Date.now() - 6 * 60_000).toISOString());
+    // start. The live tracker is armed here through the public SDK run path
+    // (a hanging pending turn holds first-seen state mid-run), never through
+    // a hook: a genuinely pending prompt (6-min-old start) must exhaust
+    // mid-wait; once the live turn settles the marker clears and a clean
+    // signal settles normally.
+    let releasePending!: (turn: unknown) => void;
+    const gate = new Promise<unknown>((resolve) => { releasePending = resolve; });
+    const pending = [{ name: "shell", input: {}, id: "pending-3" }];
+    const liveHandle = {
+      id: "agent-sdk-live-pending",
+      pendingPermissions: pending,
+      run: () => gate,
+    };
+    const liveClient = { agents: { ref: () => liveHandle } };
+    const liveRun = runPaseoSdkAgentWithClient(liveClient as never, "agent-sdk-live-pending", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 5 });
     try {
+      // Wait until the mid-run poll observes the pending prompt (first-seen stamp).
+      const armDeadline = Date.now() + 2_000;
+      while (!hasTrackedPendingPrompt() && Date.now() < armDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
       expect(hasTrackedPendingPrompt()).toBe(true);
-      expect(Date.now() - earliestTrackedPendingStartMs()!).toBeGreaterThanOrEqual(6 * 60_000);
       const hangingRun = new Promise<string>(() => {});
       const exhausted = await awaitReviewerRunWithPermissionWatch(hangingRun, {
         permissionTimeoutMs: permissionWaitTimeoutMs(baseConfig),
         isPending: () => hasTrackedPendingPrompt(),
-        pendingStartedAtMs: earliestTrackedPendingStartMs(),
+        pendingStartedAtMs: Date.now() - 6 * 60_000,
         pollMs: 5,
       });
       expect(exhausted.kind).toBe("permission-wait-exhausted");
@@ -397,9 +409,14 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
         expect(exhausted.pendingWaitMs).toBeGreaterThanOrEqual(6 * 60_000);
       }
     } finally {
-      __testResetSdkPendingStart(seed);
+      releasePending({ status: "failed", final: { pendingPermissions: pending } });
     }
+    // Settling the live pending turn consumes the marker AND clears it
+    // (clear-on-settle): no stale state survives into the clean run below.
+    const liveResult = await liveRun;
+    expect(liveResult.permission?.waitStartedAt).toBeDefined();
     expect(hasTrackedPendingPrompt()).toBe(false);
+    expect(earliestTrackedPendingStartMs()).toBeUndefined();
     const cleanRun = new Promise<string>((resolve) => setTimeout(() => resolve("review-evidence"), 20));
     const settled = await awaitReviewerRunWithPermissionWatch(cleanRun, {
       permissionTimeoutMs: 20,
@@ -408,6 +425,87 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
       pollMs: 5,
     });
     expect(settled).toEqual({ kind: "settled", value: "review-evidence" });
+  });
+
+  it("(R5-i) REGRESSION: settled pending turn clears the marker — immediate clean run must NOT exhaust", async () => {
+    // P1: a settled 6-min marker previously remained tracked, so a LATER
+    // clean reviewer run immediately returned permission-wait-exhausted
+    // (marker came through correctly, then contaminated the next run).
+    const pending = [{ name: "shell", input: {}, id: "pending-r5i", waitStartedAt: new Date(Date.now() - 6 * 60_000).toISOString() }];
+    const handle = {
+      id: "agent-sdk-settled-pending",
+      pendingPermissions: pending,
+      run: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return { status: "failed", final: { pendingPermissions: pending } };
+      },
+    };
+    const client = { agents: { ref: () => handle } };
+    const settledTurn = await runPaseoSdkAgentWithClient(client as never, "agent-sdk-settled-pending", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 5 });
+    const marker = settledTurn.permission?.waitStartedAt;
+    expect(marker).toBeDefined();
+    // The provider-stamped 6-min prompt age comes through correctly.
+    expect(Date.now() - Date.parse(marker!)).toBeGreaterThanOrEqual(6 * 60_000);
+    // Terminal settlement cleared the handle: no live pending survives.
+    // (Fails pre-fix: the settled marker stays tracked.)
+    expect(hasTrackedPendingPrompt()).toBe(false);
+    expect(earliestTrackedPendingStartMs()).toBeUndefined();
+    // The immediate clean reviewer run must settle, not exhaust (fails pre-fix).
+    const cleanRun = new Promise<string>((resolve) => setTimeout(() => resolve("review-evidence"), 20));
+    const watched = await awaitReviewerRunWithPermissionWatch(cleanRun, {
+      permissionTimeoutMs: 20,
+      isPending: () => hasTrackedPendingPrompt(),
+      pendingStartedAtMs: earliestTrackedPendingStartMs(),
+      pollMs: 5,
+    });
+    expect(watched).toEqual({ kind: "settled", value: "review-evidence" });
+  });
+
+  it("(R5-ii) REGRESSION: handle A pending never arms handle B — per-handle isolation", async () => {
+    // P1 cross-handle: while handle A holds a live pending prompt, a clean
+    // turn on handle B must convert without any permission marker (tracking
+    // is keyed per handle — B must neither observe nor disturb A's marker),
+    // and settling A afterwards must clear the global signal entirely.
+    let releaseA!: (turn: unknown) => void;
+    const gateA = new Promise<unknown>((resolve) => { releaseA = resolve; });
+    const pendingA = [{ name: "shell", input: {}, id: "pending-r5ii-a" }];
+    const handleA = { id: "agent-sdk-handle-a", pendingPermissions: pendingA, run: () => gateA };
+    const clientA = { agents: { ref: () => handleA } };
+    const runA = runPaseoSdkAgentWithClient(clientA as never, "agent-sdk-handle-a", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 5 });
+    try {
+      const armDeadline = Date.now() + 2_000;
+      while (!hasTrackedPendingPrompt() && Date.now() < armDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(hasTrackedPendingPrompt()).toBe(true);
+      // Clean turn on a DIFFERENT handle while A is still pending.
+      const handleB = {
+        id: "agent-sdk-handle-b",
+        pendingPermissions: [] as unknown[],
+        run: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return { status: "completed", lastMessage: "clean-evidence", final: {} };
+        },
+      };
+      const clientB = { agents: { ref: () => handleB } };
+      const resultB = await runPaseoSdkAgentWithClient(clientB as never, "agent-sdk-handle-b", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 5 });
+      expect(resultB.status).toBe("completed");
+      expect(resultB.permission).toBeUndefined();
+      // B's settle disturbed nothing: A is still the live pending handle.
+      expect(hasTrackedPendingPrompt()).toBe(true);
+    } finally {
+      releaseA({ status: "failed", final: { pendingPermissions: pendingA } });
+    }
+    const resultA = await runA;
+    expect(resultA.permission?.waitStartedAt).toBeDefined();
+    expect(hasTrackedPendingPrompt()).toBe(false);
+    expect(earliestTrackedPendingStartMs()).toBeUndefined();
+  });
+
+  it("(R5-iii) BUILD HYGIENE: production SDK module exposes no __test hooks", () => {
+    // P2: test seams must not ship in production exports (or the build).
+    const leaked = Object.keys(paseoSdk).filter((key) => key.startsWith("__test"));
+    expect(leaked).toEqual([]);
   });
 
   it("(P1b) recent heartbeat + expired lease is NOT stalled", () => {    const now = Date.now();

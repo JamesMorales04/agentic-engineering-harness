@@ -30,7 +30,11 @@ import {
  * running), not the later conversion/terminal observation. That timestamp is
  * threaded into the stop diagnostic so the approval-wait duration measures
  * the true prompt age instead of ~1ms at conversion. Cleared when the prompt
- * clears (resume/grant/deny). Mechanism: DETERMINISTIC.
+ * clears (resume/grant/deny) AND when the turn settles (terminal conversion,
+ * stall/timeout verdict): a settled handle must never leak its pending marker
+ * into a later turn on any handle. Tracking is keyed per handle; the global
+ * presence/earliest queries only reflect currently-live (unsettled) handles.
+ * Mechanism: DETERMINISTIC.
  */
 const pendingStartByHandle = new WeakMap<object, string>();
 
@@ -60,6 +64,17 @@ function trackedPendingStart(handle: object): string | undefined {
 }
 
 /**
+ * Terminal settlement: drop this handle's pending marker so no stale state
+ * survives into later turns (settled completed/failed/exhausted/cancelled/
+ * stalled/timed-out turns never re-arm a later reviewer watch).
+ * Mechanism: DETERMINISTIC.
+ */
+function clearTrackedPendingStart(handle: object): void {
+  pendingStartByHandle.delete(handle);
+  pendingLiveHandles.delete(handle);
+}
+
+/**
  * LIVE pending-prompt presence across SDK handles, polled by the reviewer
  * mid-turn watchdog (reviewLifecycle runReviewer arms its watch ONLY while
  * this is true). Same underlying signal the terminal diagnostic reads
@@ -83,17 +98,7 @@ export function earliestTrackedPendingStartMs(): number | undefined {
   return earliest;
 }
 
-/** Test-only: seed a first-seen pending start for an arbitrary key. */
-export function __testSeedSdkPendingStart(handle: object, startedAtIso: string): void {
-  pendingStartByHandle.set(handle, startedAtIso);
-  pendingLiveHandles.add(handle);
-}
-
-/** Test-only: reset the mid-turn pending-start tracker for a handle. */
-export function __testResetSdkPendingStart(handle: object): void {
-  pendingStartByHandle.delete(handle);
-  pendingLiveHandles.delete(handle);
-}
+/** Production SDK pending tracker exposes no test hooks (see suite-level hygiene assertion). */
 
 export interface PaseoSdkMcpStdioServer {
   type: "stdio";
@@ -681,6 +686,8 @@ export async function dispatchPaseoSdkAgentWithClient(
         const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs: attemptTimeout }), attemptTimeout, activityOptions);
         if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
         if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
+          // Stall settlement bypasses turnResult: drop the marker here.
+          clearTrackedPendingStart(handle);
           return {
             id: handle.id,
             workspaceId: handle.workspaceId ?? undefined,
@@ -792,6 +799,8 @@ export async function runPaseoSdkAgentWithClient(
         const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs: attemptTimeout, ...(outputSchema ? { outputSchema } : {}) }), attemptTimeout, activityOptions);
         if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
         if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
+          // Stall settlement bypasses turnResult: drop the marker here.
+          clearTrackedPendingStart(handle);
           return {
             id: handle.id,
             workspaceId: handle.workspaceId ?? undefined,
@@ -1182,6 +1191,9 @@ async function waitForHandle(
         ? await handle.timeline.refetch({ direction: "tail", limit: 50 }).catch(() => undefined)
         : undefined;
       const permission = await permissionStopDiagnostic(raw?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots, pendingStart ?? trackedPendingStart(handle));
+      // Terminal settlement: the turn is over, so drop this handle's pending
+      // marker — a later clean turn must never re-observe it.
+      clearTrackedPendingStart(handle);
       return {
         id: handle.id,
         workspaceId: handle.workspaceId ?? stringField(raw ?? {}, ["workspaceId", "workspace_id"]),
@@ -1204,6 +1216,8 @@ async function waitForHandle(
       return stallVerdictAfterStop(handle, baseline, firstActivityMs, timeoutMs, synthetic);
     }
     if (Date.now() >= deadline) {
+      // Turn-deadline settlement: same stale-marker drop as terminal conversion.
+      clearTrackedPendingStart(handle);
       if (baseline && observed && !synthetic && lastActivity) {
         // The turn showed provider-visible activity but still hit the hard
         // deadline: regular DEADLINE with counts, never STALLED.
@@ -1335,6 +1349,9 @@ async function stallVerdictAfterStop(
   synthetic = false
 ): Promise<PaseoSdkAgentResult> {
   await stopPaseoSdkAgentHandle(handle).catch(() => undefined);
+  // Stall/timeout settlement freezes then ends the turn: drop the handle's
+  // pending marker so it cannot leak into a later turn.
+  clearTrackedPendingStart(handle);
   if (synthetic) {
     // Deadline-ONLY: progress unprovable, so the stall stands with zero
     // counts without consulting the final read (any content may pre-date
@@ -1695,8 +1712,11 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 1_800_000, messag
 async function turnResult(handle: PaseoSdkAgentHandle, turn: PaseoSdkTurnResult, permissionScopeRoots?: string[]): Promise<PaseoSdkAgentResult> {
   // Terminal conversion threads the mid-turn first-seen pending start (when
   // the wait loop observed it) instead of stamping conversion time, so a
-  // prompt pending for minutes measures its true age.
+  // prompt pending for minutes measures its true age. Terminal settlement:
+  // the marker is consumed AND cleared here so a settled turn never leaks
+  // pending state into a later turn (clear-on-settle, per handle).
   const waitStartedAt = trackedPendingStart(handle);
+  clearTrackedPendingStart(handle);
   const permission = await permissionStopDiagnostic(turn.final?.pendingPermissions ?? handle.pendingPermissions, handle.id, permissionScopeRoots, waitStartedAt);
   if (turn.lastMessage) {
     return {
