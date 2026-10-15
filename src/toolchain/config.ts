@@ -58,6 +58,43 @@ export async function loadToolchainState(root: string, config: HarnessProjectCon
   catch { return undefined; }
 }
 
+/**
+ * Toolchain state propagation for isolated execution roots (MECHANISM:
+ * DETERMINISTIC). Fresh worktrees/staging roots outside the operation
+ * workspace cannot discover the sibling workspace through hermetic
+ * resolution (which climbs toward the common worktree root), so live
+ * provider probes fail without a pinned prefix even though the source
+ * tree is fully provisioned. Copy the source root's resolved state file
+ * when present so worker commands resolve the same pinned install
+ * dirs. Best-effort: unresolvable declarations and absent state return
+ * false, preserving current loud behavior (probes fail as before, never
+ * silently). The file is gitignored, so baseline commits, ChangeSet
+ * diffs, and candidate assembly are unaffected. Returns true when state
+ * was materialized.
+ */
+export async function materializeToolchainStateForIsolatedRoot(sourceRoot: string, targetRoot: string, config: HarnessProjectConfig): Promise<boolean> {
+  let toolchain: ToolchainConfig;
+  try {
+    toolchain = await loadToolchainConfig(sourceRoot, config);
+  } catch {
+    return false;
+  }
+  const relative = toolchainStatePath(config, toolchain);
+  let content: string;
+  try {
+    content = await fs.readFile(path.resolve(sourceRoot, relative), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return false;
+  }
+  const destination = path.resolve(targetRoot, relative);
+  const containment = path.relative(path.resolve(targetRoot), destination);
+  if (!containment || containment.startsWith("..") || path.isAbsolute(containment)) return false;
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  await fs.writeFile(destination, content, "utf8");
+  return true;
+}
+
 export async function writeJsonFile(file: string, value: unknown): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`);

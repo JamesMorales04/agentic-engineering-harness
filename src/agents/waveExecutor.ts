@@ -14,6 +14,7 @@ import { executeAgentPrompt, prepareAgentExecutionIdentity } from "../workers/ag
 import { dispatchDistributedDelegation } from "../distributed/worker.js";
 import { enforceSandboxPolicy } from "../security/sandbox.js";
 import { clearToolchainEnvCache, runExecutable } from "../utils/process.js";
+import { materializeToolchainStateForIsolatedRoot } from "../toolchain/config.js";
 import { recordEvent } from "../telemetry/events.js";
 import { existingRepositoryPath, repositoryPath } from "../utils/repositoryPath.js";
 import { compileExecutionBlueprint, type ExecutionBlueprint, type ParticipantAssignmentV1 } from "../architecture/participantPlan.js";
@@ -1192,7 +1193,7 @@ export async function executeDelegation(input: { root: string; stateRoot: string
     // path — copying afterward would leave the stale miss cached.
     // The copy itself clears the resolver cache (a pure recomputable memo)
     // so no earlier probe of the fresh worktree can shadow the new state.
-    if (await materializeWaveToolchainState(input.root, worktree)) clearToolchainEnvCache();
+    if (await materializeToolchainStateForIsolatedRoot(input.root, worktree, input.config)) clearToolchainEnvCache();
     await materializeCandidateState(input.root, worktree, input.waveBase);
     await copyTaskContext(input.root, worktree, input.config, input.contract); if (input.controller) await materializeControlPlaneSnapshot(input.controller, worktree, input.config);    const baselineAdd = await runExecutable("git", ["add", "-A"], { cwd: worktree, timeoutMs: 30_000 });
     if (baselineAdd.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineAdd.stderr || baselineAdd.stdout}`);
@@ -1758,33 +1759,6 @@ export function selectionForParticipant(base: AgentExecutionSelection, assignmen
   };
 }
 async function copyTaskContext(root: string, target: string, config: HarnessProjectConfig, contract: TaskContract): Promise<void> { const relative = [`${config.sdd?.contractsDir ?? ".harness/contracts"}/${contract.task.id}.yaml`, `.harness/seals/${contract.task.id}.json`, ...Object.values(contract.source ?? {}).filter((value): value is string => Boolean(value)), contract.issue?.snapshotPath].filter((value): value is string => Boolean(value)); for (const item of [...new Set(relative)]) { try { const source = await existingRepositoryPath(root, item); const destination = repositoryPath(target, item); await fs.mkdir(path.dirname(destination), { recursive: true }); await fs.copyFile(source, destination); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } } }
-
-/**
- * Toolchain state propagation for isolated wave worktrees (MECHANISM:
- * DETERMINISTIC). Per-unit worktrees are fresh `git worktree` checkouts
- * outside the operation workspace. Hermetic tool resolution climbs the
- * filesystem toward the common worktree root, but it cannot discover the
- * sibling operation workspace, so without propagation it finds no pinned
- * prefix and live provider probes (Serena health) fail even though the
- * operation workspace is fully provisioned. Copy the run root's
- * `.harness/toolchain.state.json` when present so worker commands
- * resolve the same pinned install dirs. Best-effort and state-only:
- * absent state preserves current behavior (probes fail loudly as
- * before, never silently). The file is gitignored, so the wave baseline
- * commit, ChangeSet diffs, and candidate assembly are unaffected.
- */
-export async function materializeWaveToolchainState(root: string, worktree: string): Promise<boolean> {
-  let content: string;
-  try {
-    content = await fs.readFile(path.join(root, ".harness", "toolchain.state.json"), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return false;
-  }
-  await fs.mkdir(path.join(worktree, ".harness"), { recursive: true });
-  await fs.writeFile(path.join(worktree, ".harness", "toolchain.state.json"), content, "utf8");
-  return true;
-}
 function withinContractScope(candidate: string, allowed: string[]): boolean { return allowed.some((pattern) => pattern === "**" || minimatch(candidate, pattern, { dot: true }) || pathWithin(staticPrefix(candidate), staticPrefix(pattern))); }
 function pathWithin(candidate: string, parent: string): boolean { return Boolean(candidate && parent) && (candidate === parent || candidate.startsWith(`${parent}/`)); }
 function matchesAny(file: string, patterns: string[]): boolean { return patterns.some((pattern) => pattern === "**" || minimatch(file, pattern, { dot: true }) || pathWithin(file, staticPrefix(pattern))); }
