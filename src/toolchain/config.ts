@@ -68,9 +68,10 @@ export async function loadToolchainState(root: string, config: HarnessProjectCon
  * when present so worker commands resolve the same pinned install
  * dirs. Best-effort: unresolvable declarations and absent state return
  * false, preserving current loud behavior (probes fail as before, never
- * silently). The file is gitignored, so baseline commits, ChangeSet
- * diffs, and candidate assembly are unaffected. Returns true when state
- * was materialized.
+ * silently). The default location is gitignored, so baseline commits,
+ * ChangeSet diffs, and candidate assembly are unaffected (a custom
+ * stateFile outside ignored paths is the operator's responsibility).
+ * Returns true when state was materialized.
  */
 export async function materializeToolchainStateForIsolatedRoot(sourceRoot: string, targetRoot: string, config: HarnessProjectConfig): Promise<boolean> {
   let toolchain: ToolchainConfig;
@@ -87,10 +88,39 @@ export async function materializeToolchainStateForIsolatedRoot(sourceRoot: strin
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return false;
   }
-  const destination = path.resolve(targetRoot, relative);
-  const containment = path.relative(path.resolve(targetRoot), destination);
-  if (!containment || containment.startsWith("..") || path.isAbsolute(containment)) return false;
-  await fs.mkdir(path.dirname(destination), { recursive: true });
+  // Symlink-aware containment: the isolated tree is checked out from
+  // candidate-controlled content, which may plant a symlinked `.harness`
+  // (or parent) redirecting outside the root. Lexical checks alone would
+  // then write outside the worktree, before the later symlink gate runs.
+  // Walk the destination chain from the real target root, refusing
+  // symlinks and creating missing segments one level at a time.
+  const realTarget = await fs.realpath(targetRoot).catch(() => undefined);
+  if (!realTarget) return false;
+  const segments = path.dirname(relative).split(path.sep).filter((segment) => segment && segment !== ".");
+  let current = realTarget;
+  for (const segment of segments) {
+    if (segment === "..") return false;
+    const next = path.join(current, segment);
+    let stat: import("node:fs").Stats | undefined;
+    try {
+      stat = await fs.lstat(next);
+    } catch {
+      stat = undefined;
+    }
+    if (stat?.isSymbolicLink() || (stat && !stat.isDirectory())) return false;
+    if (!stat) await fs.mkdir(next);
+    current = next;
+  }
+  const realDir = await fs.realpath(current).catch(() => undefined);
+  if (!realDir || path.relative(realTarget, realDir).startsWith("..")) return false;
+  const fileName = path.basename(relative);
+  if (!fileName || fileName === "." || fileName === "..") return false;
+  const destination = path.join(realDir, fileName);
+  try {
+    if ((await fs.lstat(destination)).isSymbolicLink()) return false;
+  } catch {
+    // Absent destination: safe to create.
+  }
   await fs.writeFile(destination, content, "utf8");
   return true;
 }

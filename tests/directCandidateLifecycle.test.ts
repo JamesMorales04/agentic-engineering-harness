@@ -186,4 +186,44 @@ describe("DIRECT candidate lifecycle", () => {
     expect(isolated.changeSet?.changedFiles).toEqual(["src/extra.mjs"]);
     expect(isolated.changeSet?.patch).toContain("src/extra.mjs");
   });
+
+  it("materializes the run root toolchain state into the isolated root without polluting the ChangeSet", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-direct-toolchain-"));
+    roots.push(root);
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, ".gitignore"), ".harness/\n");
+    await fs.writeFile(path.join(root, "src", "value.ts"), "export const value = 1;\n");
+    await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+    await fs.writeFile(path.join(root, ".harness", "toolchain.yaml"), "version: 1\nmanager:\n  provider: mise\ntools: {}\n", "utf8");
+    const stateContent = JSON.stringify({ version: 1, binPaths: ["/opt/pinned/bin"] });
+    await fs.writeFile(path.join(root, ".harness", "toolchain.state.json"), stateContent, "utf8");
+    await runShell("git init -q && git add -A && git -c user.name=test -c user.email=test@example.com commit -qm initial", { cwd: root });
+    const operationId = "RUN-DIRECT-TOOLCHAIN";
+    const now = "2026-01-01T00:00:00.000Z";
+    await saveOwnedOperation(root, { version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "implementation", root, payload: { taskId: "DIRECT-TOOLCHAIN" }, createdAt: now, updatedAt: now });
+    const baseCandidate = (await loadOperation(root, operationId)).candidateRevision!;
+    const config: HarnessProjectConfig = { version: 1, project: { name: "direct-candidate" } };
+    const contract: TaskContract = { version: 1, task: { id: "DIRECT-TOOLCHAIN", title: "Direct toolchain state test" }, scope: { allowed: ["src/**"], forbidden: [] } };
+    let observedRoot = "";
+    let observedState = "";
+    const isolated = await executeIsolatedCandidateMutation({
+      root,
+      operationId,
+      taskId: contract.task.id,
+      workUnitId: "direct:toolchain-state",
+      candidate: baseCandidate,
+      config,
+      contract,
+      execute: async (isolatedRoot) => {
+        observedRoot = isolatedRoot;
+        observedState = await fs.readFile(path.join(isolatedRoot, ".harness", "toolchain.state.json"), "utf8").catch(() => "");
+        await fs.writeFile(path.join(isolatedRoot, "src", "value.ts"), "export const value = 2;\n");
+        return { provider: "test", logicalAgent: "implementer", participantId: "participant:direct", exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    expect(observedRoot).not.toBe("");
+    expect(observedState).toBe(stateContent);
+    expect(isolated.changeSet?.changedFiles).toEqual(["src/value.ts"]);
+  });
 });
