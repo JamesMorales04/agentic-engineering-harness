@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { commandExists, runShell } from "../../utils/process.js";
+import { commandExists, pinnedWorkspaceBinPaths, runShell } from "../../utils/process.js";
 import type { ProviderExecution, ProviderPlan, ValidationProviderContext } from "./types.js";
 
 export async function fileExists(file: string): Promise<boolean> {
@@ -26,7 +26,18 @@ export async function doctorForCommand(command: string | undefined, cwd: string,
 }
 
 export async function executePlan(plan: ProviderPlan): Promise<ProviderExecution> {
-  const result = await runShell(plan.command, { cwd: plan.cwd, timeoutMs: Number(plan.options?.timeoutMs ?? 900_000), env: plan.env });
+  // Defense in depth (DETERMINISTIC): producers set plan bins explicitly,
+  // but any present or future suite-capable provider path is covered by
+  // falling back to the plan workspace's own pinned prefix. State-derived
+  // only — never ambient — so hermeticity is preserved.
+  const explicit =
+    plan.toolchainExtraBinPaths?.length ? plan.toolchainExtraBinPaths : await pinnedWorkspaceBinPaths(plan.cwd);
+  const result = await runShell(plan.command, {
+    cwd: plan.cwd,
+    timeoutMs: Number(plan.options?.timeoutMs ?? 900_000),
+    env: plan.env,
+    ...(explicit.length ? { toolchainExtraBinPaths: explicit } : {})
+  });
   return { plan, ...result, rawArtifact: "" };
 }
 

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ValidationCapability, ValidatorSpec } from "../../core/types.js";
-import { commandExists } from "../../utils/process.js";
+import { commandExists, pinnedWorkspaceBinPaths } from "../../utils/process.js";
 import { configuredCommand, doctorForCommand, executePlan, fileExists, resolveCwd } from "./providerUtils.js";
 import { parseJson, persistRawArtifact } from "./protocol.js";
 import type { ProviderDetection, ProviderDoctorResult, ProviderExecution, ProviderPlan, TestExecutionResult, TestFailure, ValidationProvider, ValidationProviderContext } from "./types.js";
@@ -33,7 +33,7 @@ export class ProjectNativeTestExecutionProvider implements ValidationProvider<Te
   async plan(context: ValidationProviderContext, detection?: ProviderDetection): Promise<ProviderPlan> {
     const selected = detection ?? await this.detect(context);
     if (!selected?.command) throw new Error("No test execution provider or command is configured.");
-    return { provider: selected.provider, capability: context.capability, command: renderCommand(selected.command, context), cwd: resolveCwd(context), runtime: selected.runtime, options: { timeoutMs: (context.spec?.timeoutSeconds ?? context.providerSpec?.timeoutSeconds ?? 900) * 1000 } };
+    return { provider: selected.provider, capability: context.capability, command: renderCommand(selected.command, context), cwd: resolveCwd(context), runtime: selected.runtime, options: { timeoutMs: (context.spec?.timeoutSeconds ?? context.providerSpec?.timeoutSeconds ?? 900) * 1000 }, toolchainExtraBinPaths: await pinnedWorkspaceBinPaths(context.root) };
   }
 
   async execute(context: ValidationProviderContext, plan: ProviderPlan): Promise<ProviderExecution> {

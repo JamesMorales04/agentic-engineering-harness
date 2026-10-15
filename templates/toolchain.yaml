@@ -123,7 +123,7 @@ tools:
     kind: mise
     command: headroom
     source: "pipx:headroom-ai[all]"
-    version: "0.28.0"
+    version: "0.35.0"
     required: true
     dependsOn: [uv, python]
     activateWhen: [compression:headroom]

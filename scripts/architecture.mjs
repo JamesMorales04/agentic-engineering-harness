@@ -324,6 +324,20 @@ function checkToolchainPinCoherence(checks, root) {
   if (versions.opengrep !== templateOpengrep || versions.opengrep !== overlayOpengrep) {
     problems.push(`opengrep pin diverged (provider-versions=${versions.opengrep}, template=${templateOpengrep}, overlay=${overlayOpengrep})`);
   }
+  // Every additional tool pinned in all three declarations must agree:
+  // a partial bump (e.g. headroom-ai fixed for a CVE in one file but not
+  // the provider-versions runtime pin) otherwise passes this gate and
+  // fails later with version drift. Tools absent from any declaration
+  // are skipped (nothing to compare).
+  for (const tool of ["headroom", "serena", "graphify", "openspec", "engram", "cosign", "playwright", "pnpm"]) {
+    const provider = versions[tool];
+    const template = readYamlVersion(root, "templates/toolchain.yaml", tool);
+    const overlay = readYamlVersion(root, ".harness/toolchain.yaml", tool);
+    if (provider === undefined || template === undefined || overlay === undefined) continue;
+    if (provider !== template || provider !== overlay) {
+      problems.push(`${tool} pin diverged (provider-versions=${provider}, template=${template}, overlay=${overlay})`);
+    }
+  }
   if (pins.tool !== versions.opengrep) {
     problems.push(`opengrep ruleset pins tool '${pins.tool}' but provider-versions pins '${versions.opengrep}'`);
   }

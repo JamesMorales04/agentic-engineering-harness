@@ -37,6 +37,13 @@ export interface ProviderPlan {
   runtime?: string;
   env?: Record<string, string>;
   options?: Record<string, unknown>;
+  /**
+   * State-derived pinned bins for the plan's workspace, forwarded as
+   * explicit `toolchainExtraBinPaths` at execution so suite commands
+   * resolve pinned tools across the managed-child scrub boundary.
+   * Never ambient-derived.
+   */
+  toolchainExtraBinPaths?: string[];
 }
 
 export interface ProviderExecution {

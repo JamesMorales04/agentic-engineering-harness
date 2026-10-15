@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { HarnessProjectConfig, ValidationCheck, ValidatorSpec } from "../core/types.js";
-import { runShell, type ProcessResult } from "../utils/process.js";
+import { pinnedWorkspaceBinPaths, runShell, type ProcessResult } from "../utils/process.js";
 import type { ValidationContext } from "./types.js";
 import {
   ISOLATION_PROVIDER_UNAVAILABLE,
@@ -56,7 +56,16 @@ export async function runSpecCommand(context: ValidationContext, command: string
       return isolationFailure(context, category, command, error);
     }
   } else {
-    result = await runShell(rendered, { cwd, timeoutMs });
+    // Trusted explicit marking (DETERMINISTIC): same rationale as the
+    // command/external validator paths — suite-capable custom commands
+    // must resolve the validation root's pinned tools across the
+    // managed-child scrub boundary. State-derived only, never ambient.
+    const explicitBins = await pinnedWorkspaceBinPaths(context.root);
+    result = await runShell(rendered, {
+      cwd,
+      timeoutMs,
+      ...(explicitBins.length ? { toolchainExtraBinPaths: explicitBins } : {})
+    });
   }
   return {
     id: context.spec.id,
