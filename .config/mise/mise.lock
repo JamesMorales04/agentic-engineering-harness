@@ -187,7 +187,7 @@ specifiers = ["0.156.1"]
 version = "0.35.0"
 backend = "pipx:headroom-ai"
 specifiers = ["0.35.0"]
-uv = { path = "locks/pipx-headroom-ai/0.35.0", digest = "sha256:717ca74dc60b5610f8d2a829432a621136adbf01976c4629a7f47faf8a3c1cf4" }
+uv = { path = "locks/pipx-headroom-ai/0.35.0", digest = "sha256:1feed8983a67c3c3f01ffa941d5c0e8a16cfef1ebd87a1bb85827196453b5c8b" }
 
 [[tools."pipx:serena-agent"]]
 version = "1.6.1"
