@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -271,6 +272,36 @@ describe("canonical Delegated Owner authority (DETERMINISTIC)", () => {
   it("keeps independent review independent: no review capability exists in the Owner vocabulary", () => {
     expect(OWNER_CAPABILITIES_V1.some((capability) => capability.startsWith("review"))).toBe(false);
     expect(OWNER_CAPABILITIES_V1).toContain("merge.automatic");
+  });
+
+  it("inherits the controller delegation store in isolated targets, with target-local precedence", async () => {
+    const controller = await tempRoot();
+    execFileSync("git", ["init", "-q"], { cwd: controller });
+    execFileSync("git", ["config", "user.email", "aeh@example.test"], { cwd: controller });
+    execFileSync("git", ["config", "user.name", "AEH Test"], { cwd: controller });
+    await fs.writeFile(path.join(controller, "README.md"), "# fixture\n");
+    execFileSync("git", ["add", "-A"], { cwd: controller });
+    execFileSync("git", ["commit", "-qm", "fixture"], { cwd: controller });
+    const target = path.join(os.tmpdir(), `aeh-owner-target-${Date.now()}-${process.pid}`);
+    roots.push(target);
+    execFileSync("git", ["-C", controller, "worktree", "add", "--detach", target], { stdio: "ignore" });
+    try {
+      const grant = await issueGrant(controller);
+      // The isolated target inherits the controller store: one grant covers both.
+      const inherited = await resolveOwnerAuthorityV1(target, { actorId: DELEGATE, delegationId: grant.delegationId, projectId: PROJECT });
+      expect(inherited.authorized).toBe(true);
+      // Revocation in the authority root ends target authority too.
+      await revokeDelegatedOwnerGrantV1(controller, grant.delegationId, { revokedBy: GRANTOR }, TEST_CTX);
+      const stranded = await resolveOwnerAuthorityV1(target, { actorId: DELEGATE, delegationId: grant.delegationId, projectId: PROJECT });
+      expect(stranded.authorized).toBe(false);
+      expect(stranded.denialCode).toBe("DELEGATION_REVOKED");
+      // A target-local store takes precedence when explicitly provisioned.
+      const local = await issueGrant(target);
+      const localVerdict = await resolveOwnerAuthorityV1(target, { actorId: DELEGATE, delegationId: local.delegationId, projectId: PROJECT });
+      expect(localVerdict.authorized).toBe(true);
+    } finally {
+      execFileSync("git", ["-C", controller, "worktree", "remove", "--force", target], { stdio: "ignore" });
+    }
   });
 
   it("binds direct-CLI Owner attestation to OS login identity and refuses managed contexts", async () => {
