@@ -26,6 +26,7 @@ import {
 } from "../src/operations/state.js";
 import { cancelOperation } from "../src/operations/controller.js";
 import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
+import { listDelegatedOwnerGrantsV1 } from "../src/security/ownerAuthority.js";
 import { issueDelegatedOwnerGrantV1, revokeDelegatedOwnerGrantV1 } from "../src/security/ownerAuthority.js";
 
 const roots: string[] = [];
@@ -349,5 +350,19 @@ describe("delegated Owner decisions through the real Control Center path", () =>
     // at consumption; with it, the live grant records and consumes its own.
     const cancelled = await cancelOperation(root, waiting.id, { humanActorId: DELEGATE, delegationId: grantB.delegationId });
     expect(cancelled.status).toBe("CANCELLED");
+  });
+
+  it("normalizes empty repository values to the configured binding at issuance", async () => {
+    const root = await tempRoot();
+    await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, ".harness", "project.yaml"),
+      "version: 1\nproject:\n  name: configured-project\ndelivery:\n  github:\n    repository: acme/project-a\n",
+    );
+    const granted = await grantDelegationForSession(root, "configured-project", GRANTOR, {
+      delegatePrincipalId: DELEGATE, ttlDays: 1, repository: "",
+    });
+    const stored = (await listDelegatedOwnerGrantsV1(root)).find((entry) => entry.delegationId === granted.delegationId);
+    expect(stored?.repository).toBe("acme/project-a");
   });
 });

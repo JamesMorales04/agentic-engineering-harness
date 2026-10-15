@@ -47,8 +47,11 @@ export async function grantDelegationForSession(
   }
   // Repository scope binds by construction: an explicit request value wins,
   // otherwise the root configuration supplies it so issuance and
-  // verification resolve the identical scope.
-  const configuredRepository = body.repository ?? (await resolveDelegationProjectScope(root).catch(() => undefined))?.repository;
+  // verification resolve the identical scope. Empty strings normalize to
+  // undefined so they cannot suppress the configured fallback.
+  const explicitRepository = body.repository?.trim() || undefined;
+  const configuredRepository = explicitRepository
+    ?? (await resolveDelegationProjectScope(root).catch(() => undefined))?.repository;
   const grant = await issueDelegatedOwnerGrantV1(root, {
     grantorOwnerId: sessionActorId,
     delegatePrincipalId,
