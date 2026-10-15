@@ -10,6 +10,7 @@ import { parseRepairScopeBlockerFromSession } from "../src/candidates/repairScop
 import { buildRepairPrompt, buildWorkerPrompt } from "../src/workers/prompt.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
 import { saveOwnedOperation } from "./helpers/ownedOperation.js";
+import { persistValidationReportForRepair } from "./helpers/repairReport.js";
 import { runShell } from "../src/utils/process.js";
 
 const roots: string[] = [];
@@ -159,6 +160,7 @@ describe("implementer out-of-scope blocker channel (RED-first)", () => {
       models: { test: { runtime: "test", model: "fake" } },
       roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "implementer", args: [] } },
     });
+    await persistValidationReportForRepair(root, config, task.task.id);
     const result = await executeRepairerCandidateMutation({
       root, stateRoot: root, operationId, taskId: task.task.id,
       workUnitId: "validation-repair:implementer-shape", phase: "validation-repair",

@@ -17,6 +17,7 @@ import { validateSddChange } from "./sdd.js";
 import { sealTask, verifyTaskSeal } from "./seal.js";
 import { verifyTask } from "./verify.js";
 import { createRepairPacket, writeRepairPacket } from "./repair.js";
+import { assertDigestNeutralReportPersist, writeContainedFile } from "../utils/repositoryPath.js";
 import { AehError } from "./errors.js";
 import { createWorkerExecutor } from "../workers/factory.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
@@ -960,7 +961,23 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     const failureType = failureDecision.classification;
     const recovery = executionBoundary.recovery ? resolveRecoveryStep(executionBoundary.recovery, failureType, attempts) : { action: "same-agent" as const };
     const recoveryAction = formatRecoveryAction(recovery, selection?.logicalAgent ?? "legacy-worker");
-    const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction });
+    // Persist the augmented report BEFORE building the packet: worker-execution
+    // and assurance checks merged above postdate the verify-time artifact, and
+    // the packet's report pointer must resolve to evidence covering exactly
+    // the failures it names (a stale artifact would omit them). Persisted
+    // under the control root (the durable evidence of record, containment
+    // checked); repair workspaces receive it through evidence materialization
+    // from the state root, so execution-root candidate digests are untouched.
+    // Digest-neutrality guard: when execution shares the control root, the
+    // write lands inside the digested tree, so a digest-visible reports
+    // location is a configuration error (fail-closed with guidance instead
+    // of a later cryptic identity mismatch). The conventional ignored
+    // `.harness/` location always passes; an unresolvable verdict (no git)
+    // only blocks non-conventional locations.
+    const repairReportArtifact = `${effectiveConfig.sdd?.reportsDir ?? ".harness/reports"}/${effectiveContract.task.id}.json`;
+    await assertDigestNeutralReportPersist(controlRoot, workspaceRoot, effectiveConfig.sdd?.reportsDir, effectiveContract.task.id);
+    await writeContainedFile(controlRoot, repairReportArtifact, `${JSON.stringify(report, null, 2)}\n`);
+    const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction, reportArtifact: repairReportArtifact });
     if (!packet.failures.length) break;
     await writeRepairPacket(controlRoot, effectiveConfig, packet);
     await recordEvent(controlRoot, effectiveConfig, "harness.repair.start", { taskId: effectiveContract.task.id, attempt: attempts, failureType, failureMechanism: failureDecision.mechanism, failureAssessmentDigest: failureDecision.assessmentDigest, failureUnknowns: failureDecision.unknowns, recoveryAction, failures: packet.failures.length });
@@ -994,9 +1011,14 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         selection: repairerSelection,
         executionCatalog: executionBoundary.executionCatalog,
         allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-        forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+        // The repair evidence artifact is read-only input: a repairer that
+        // writes it would tamper with the evidence its own ChangeSet is
+        // judged against. Forbidding it routes such writes to the
+        // fail-closed scope-escape BLOCKED path instead of the candidate.
+        forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? []), repairReportArtifact],
         prompt: repairPrompt,
         prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+        requireRepairEvidence: true,
         execute: (isolatedRoot, participantId, prompt) => {
             // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity
             // records the prior failed identity as its retry parent, so the deterministic
@@ -1084,10 +1106,11 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           selection: repairerSelection,
           executionCatalog: executionBoundary.executionCatalog,
           allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-          forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+          forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? []), repairReportArtifact],
           scopeAmendment: amendment,
           prompt: repairPrompt,
           prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+          requireRepairEvidence: true,
           execute: (isolatedRoot, participantId, prompt) => {
             // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity
             // records the prior failed identity as its retry parent, so the deterministic
@@ -1161,10 +1184,11 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             selection: repairerSelection,
             executionCatalog: executionBoundary.executionCatalog,
             allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-            forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+            forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? []), repairReportArtifact],
             scopeAmendment: secondAmendment,
             prompt: repairPrompt,
             prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+            requireRepairEvidence: true,
             execute: (isolatedRoot, participantId, prompt) => {
             // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity
             // records the prior failed identity as its retry parent, so the deterministic

@@ -1187,8 +1187,7 @@ export async function executeDelegation(input: { root: string; stateRoot: string
   const worktree = await fs.mkdtemp(path.join(os.tmpdir(), `aeh-${safe(input.contract.task.id)}-${safe(input.task.id)}-`)); const add = await runExecutable("git", ["worktree", "add", "--detach", worktree, "HEAD"], { cwd: input.root, timeoutMs: 120_000 }); if (add.exitCode !== 0) return failed(input.task, selection, `Unable to create task worktree: ${add.stderr || add.stdout}`);
   try {
     await materializeCandidateState(input.root, worktree, input.waveBase);
-    await copyTaskContext(input.root, worktree, input.config, input.contract); if (input.controller) await materializeControlPlaneSnapshot(input.controller, worktree, input.config);
-    const baselineAdd = await runExecutable("git", ["add", "-A"], { cwd: worktree, timeoutMs: 30_000 });
+    await copyTaskContext(input.root, worktree, input.config, input.contract); if (input.controller) await materializeControlPlaneSnapshot(input.controller, worktree, input.config);    const baselineAdd = await runExecutable("git", ["add", "-A"], { cwd: worktree, timeoutMs: 30_000 });
     if (baselineAdd.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineAdd.stderr || baselineAdd.stdout}`);
     const baselineCommit = await runExecutable("git", ["-c", "user.name=aeh", "-c", "user.email=aeh@localhost", "commit", "--no-gpg-sign", "-m", "aeh wave baseline", "--allow-empty"], { cwd: worktree, timeoutMs: 60_000 });
     if (baselineCommit.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineCommit.stderr || baselineCommit.stdout}`);

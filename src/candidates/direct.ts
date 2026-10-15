@@ -8,7 +8,7 @@ import { AehError } from "../core/errors.js";
 import { providerGeneratedPathspecExcludes } from "../core/git.js";
 import { runExecutable } from "../utils/process.js";
 import { markOperationResourceReleased, registerOperationResource } from "../runtime/operationResources.js";
-import { existingRepositoryPath, repositoryPath } from "../utils/repositoryPath.js";
+import { existingRepositoryPath, materializeRepairEvidence, repositoryPath, verifyRepairEvidenceUntampered } from "../utils/repositoryPath.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import type { ChangeSetV1 } from "./assembler.js";
 import { resolveAbsoluteWithExistingSymlinks, symlinkTargetEscapesRoot } from "./assembler.js";
@@ -141,6 +141,17 @@ export async function executeIsolatedCandidateMutation(input: {
   contract: TaskContract;
   execute: (isolatedRoot: string) => Promise<WorkerSession>;
   prepareWorkspace?: (isolatedRoot: string) => Promise<void>;
+  /**
+   * Repair task id requiring evidence: when set, the validation report for
+   * this task id must materialize into the isolated root (fail-closed
+   * otherwise). Repair callers set it; planning/rollback mutations omit it.
+   * Materialization reads from `evidenceRoot` (the state root carrying the
+   * persisted augmented report) instead of the execution root, so split-root
+   * runs cannot copy a stale report and execution-root candidate digests are
+   * never touched by evidence writes.
+   */
+  requireRepairEvidenceFor?: string;
+  evidenceRoot?: string;
 }): Promise<IsolatedCandidateExecutionV1> {
   if (input.candidate.operationId !== input.operationId) throw new AehError("CANDIDATE_STALE", "DIRECT execution candidate belongs to another operation.");
   if (input.candidate.taskId && input.candidate.taskId !== input.taskId) throw new AehError("CANDIDATE_STALE", "DIRECT execution candidate belongs to another task.");
@@ -173,6 +184,18 @@ export async function executeIsolatedCandidateMutation(input: {
     // so post-baseline refreshes can never pollute the ChangeSet.
     await writeDirectStagingHeartbeat(isolatedRoot, { operationId: input.operationId, taskId: input.taskId, candidateDigest: input.candidate.identityDigest }).catch(() => undefined);
     await copyTaskContext(input.root, isolatedRoot, input.config, input.contract);
+    // Repair evidence travels with task context when a repair task id is
+    // declared: the repair prompt's report pointer must resolve in the
+    // isolated mutation root. Absent reports are a no-op for non-repair
+    // mutations; repair callers declare the task id and get a fail-closed
+    // assertion against dangling pointers.
+    if (input.requireRepairEvidenceFor !== undefined) {
+      if (!(await materializeRepairEvidence(input.evidenceRoot ?? input.root, isolatedRoot, input.config, input.requireRepairEvidenceFor))) {
+        throw new Error("REPAIR_EVIDENCE_MISSING: validation report artifact is absent for isolated repair; refusing a dangling evidence pointer.");
+      }
+    } else {
+      await materializeRepairEvidence(input.root, isolatedRoot, input.config, input.contract.task.id);
+    }
     await input.prepareWorkspace?.(isolatedRoot);
     await assertContainedSourceSymlinks(isolatedRoot);
 
@@ -194,6 +217,14 @@ export async function executeIsolatedCandidateMutation(input: {
 
     const session = await input.execute(isolatedRoot);
     if (session.exitCode !== 0) return { session };
+    if (input.requireRepairEvidenceFor !== undefined) {
+      // Detection (not prevention): modes cannot stop a shell-capable
+      // participant from re-chmoding an ignored evidence copy, so verify the
+      // copy byte-identical before trusting this turn's ChangeSet.
+      await verifyRepairEvidenceUntampered(
+        input.evidenceRoot ?? input.root, isolatedRoot, input.config, input.requireRepairEvidenceFor,
+      );
+    }
 
     const intent = await runExecutable("git", ["add", "-N", "--all"], { cwd: isolatedRoot, timeoutMs: 30_000 });
     if (intent.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to enumerate DIRECT changes: ${intent.stderr || intent.stdout}`);
