@@ -76,7 +76,7 @@ import { launchManagedPaseoAgent } from "../paseo/runtime.js";
 import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
 import { sha256Canonical } from "../core/digest.js";
 import { HumanDecisionLedgerV2, type DecisionChoiceV1, type HumanDecisionBindingV2 } from "../security/humanDecision.js";
-import { isDelegatedOwnerActor, reverifyDelegatedDecisionForUse } from "../security/ownerAuthority.js";
+import { isDelegatedOwnerActor, reverifyDelegatedDecisionForOperation } from "../security/ownerAuthority.js";
 import { deterministicParticipantId } from "../security/executionLease.js";
 import { assertOperationOriginV1 } from "./operationProvenance.js";
 import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
@@ -1239,7 +1239,7 @@ async function awaitProductChoice(controlRoot: string, operationId: string, chec
     if (isDelegatedOwnerActor(decision.actorId)) {
       const projectId = current.candidateRevision?.projectId ?? binding.candidate.projectId;
       if (!projectId) throw new Error("DELEGATION_DENIED: consumed operation has no project identity for delegation scope checks.");
-      await reverifyDelegatedDecisionForUse(controlRoot, {
+      await reverifyDelegatedDecisionForOperation(controlRoot, {
         actorId: decision.actorId,
         ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
         projectId,

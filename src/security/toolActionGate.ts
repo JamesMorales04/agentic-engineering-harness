@@ -9,7 +9,7 @@ import { isCanonicalRole, roleProfile, type CanonicalRole } from "../participant
 import { assertExecutionAuthority, type ExecutionAuthorityV1 } from "./executionLease.js";
 import { TOOL_ACTION_KINDS_V1, type ToolActionKindV1 } from "./actionKinds.js";
 import { HumanDecisionLedgerV2 } from "./humanDecision.js";
-import { reverifyDelegatedDecisionForUse } from "./ownerAuthority.js";
+import { reverifyDelegatedDecisionForOperation } from "./ownerAuthority.js";
 
 export { TOOL_ACTION_KINDS_V1 } from "./actionKinds.js";
 export type { ToolActionKindV1 } from "./actionKinds.js";
@@ -405,7 +405,7 @@ async function consumeRequiredHumanDecision(request: ToolActionRequestV1, operat
       // grant, and the check binds delegation id, delegate principal, and
       // human grantor; expired/revoked/forged/cross-project grants deny
       // fail-closed here, at consumption — not just at recording.
-      await reverifyDelegatedDecisionForUse(request.root, {
+      await reverifyDelegatedDecisionForOperation(request.root, {
         actorId: decision.actorId,
         ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
         projectId: policy.projectId,

@@ -4,12 +4,16 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import {
+  assertCliOwnerIdentity,
   assertDelegatedOwnerGrant,
+  assertDirectCliContext,
   classifyOwnerActor,
+  controlRootRepository,
   issueDelegatedOwnerGrantV1,
   listDelegatedOwnerGrantsV1,
   OWNER_CAPABILITIES_V1,
   resolveOwnerAuthorityV1,
+  reverifyDelegatedDecisionForOperation,
   revokeDelegatedOwnerGrantV1,
   verifyDelegatedOwnerGrantV1,
 } from "../src/security/ownerAuthority.js";
@@ -267,5 +271,39 @@ describe("canonical Delegated Owner authority (DETERMINISTIC)", () => {
   it("keeps independent review independent: no review capability exists in the Owner vocabulary", () => {
     expect(OWNER_CAPABILITIES_V1.some((capability) => capability.startsWith("review"))).toBe(false);
     expect(OWNER_CAPABILITIES_V1).toContain("merge.automatic");
+  });
+
+  it("binds direct-CLI Owner attestation to OS login identity and refuses managed contexts", async () => {
+    const username = os.userInfo().username;
+    expect(() => assertCliOwnerIdentity(`human:${username}`)).not.toThrow();
+    expect(() => assertCliOwnerIdentity("human:someone-else")).toThrow(/CLI_OWNER_MISMATCH/);
+    expect(() => assertDirectCliContext()).not.toThrow();
+    process.env.AEH_MANAGED_AGENT = "1";
+    expect(() => assertDirectCliContext()).toThrow(/DELEGATION_CLI_CONTEXT_INVALID/);
+    expect(() => assertCliOwnerIdentity(`human:${username}`)).toThrow(/DELEGATION_CLI_CONTEXT_INVALID/);
+    delete process.env.AEH_MANAGED_AGENT;
+  });
+
+  it("enforces repository-bound grants at deferred USE and fails closed without repository identity", async () => {
+    const root = await tempRoot();
+    const grant = await issueGrant(root, { repository: "acme/project-a" });
+    const provenance = { grantorOwnerId: GRANTOR, delegationId: grant.delegationId, profile: "FULL_PROJECT_OWNER" as const };
+    // No project.yaml in this root: repository-bound grants refuse fail-closed.
+    await expect(reverifyDelegatedDecisionForOperation(root, {
+      actorId: DELEGATE, delegatedFrom: provenance, projectId: PROJECT, requiredCapability: "decision.resolve",
+    })).rejects.toThrow(/DELEGATION_REPOSITORY_MISMATCH/);
+    expect(await controlRootRepository(root)).toBeUndefined();
+    // Matching repository identity verifies.
+    await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+    await fs.writeFile(path.join(root, ".harness", "project.yaml"), "version: 1\nproject:\n  name: test-project\ndelivery:\n  github:\n    repository: acme/project-a\n");
+    expect(await controlRootRepository(root)).toBe("acme/project-a");
+    await reverifyDelegatedDecisionForOperation(root, {
+      actorId: DELEGATE, delegatedFrom: provenance, projectId: PROJECT, requiredCapability: "decision.resolve",
+    });
+    // A changed repository identity denies.
+    await fs.writeFile(path.join(root, ".harness", "project.yaml"), "version: 1\nproject:\n  name: test-project\ndelivery:\n  github:\n    repository: acme/project-b\n");
+    await expect(reverifyDelegatedDecisionForOperation(root, {
+      actorId: DELEGATE, delegatedFrom: provenance, projectId: PROJECT, requiredCapability: "decision.resolve",
+    })).rejects.toThrow(/DELEGATION_REPOSITORY_MISMATCH/);
   });
 });

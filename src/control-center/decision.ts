@@ -3,7 +3,7 @@ import { assertResolvedOperationPolicyV2 } from "../architecture/executionIdenti
 import { loadOperation, currentControllerEpoch } from "../operations/state.js";
 import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
 import { assertDecisionBindingMatchesRequest, assertDecisionRequestV1, HumanDecisionLedgerV2 } from "../security/humanDecision.js";
-import { isDelegatedOwnerActor, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
+import { isDelegatedOwnerActor, controlRootRepository, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
 import { runtimeProjectId } from "../runtime/index.js";
 
 interface ProductChoiceSubmissionV1 {
@@ -75,9 +75,11 @@ export async function recordControlCenterDecision(root: string, ledger: HumanDec
   // here — never force-approved, and recorded with delegated provenance.
   let delegatedFrom: { grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined;
   if (isDelegatedOwnerActor(actorId)) {
+    const repository = await controlRootRepository(root);
     const verified = await verifyOwnerActorForCapability(root, {
       actorId,
       projectId: candidate.projectId ?? runtimeProjectId(root),
+      ...(repository ? { repository } : {}),
       requiredCapability: "decision.resolve",
     });
     delegatedFrom = verified.delegatedFrom;

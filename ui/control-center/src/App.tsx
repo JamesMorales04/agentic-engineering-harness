@@ -178,7 +178,7 @@ function ActingPrincipalBanner({ session }: { session: SessionInfo | undefined }
   const capabilityCount = session.delegation?.capabilities?.length;
   return <div className={isDelegate ? "notice banner" : "muted banner"} role="status">
     {isDelegate
-      ? <>Acting as AI delegate <code>{session.actorId}</code> on behalf of Owner <code>{session.delegation?.grantorOwnerId ?? "unknown grantor"}</code> · {profile}{capabilityCount !== undefined ? ` · ${capabilityCount} capabilities` : ""} · grant <code>{session.delegation ? short(session.delegation.delegationId) : "—"}</code>. Every decision is recorded as a delegated decision.</>
+      ? <>Acting as AI delegate <code>{session.actorId}</code> on behalf of Owner <code>{session.delegation?.grantorOwnerId ?? "unknown grantor"}</code> · {profile}{capabilityCount !== undefined ? ` · ${capabilityCount} capabilities${session.delegation?.capabilities ? `: ${session.delegation.capabilities.join(", ")}` : ""}` : ""} · grant <code>{session.delegation ? short(session.delegation.delegationId) : "—"}</code>. Every decision is recorded as a delegated decision.</>
       : <>Acting as human Owner <code>{session.actorId}</code>. Delegated decisions by AI agents appear under their own <code>delegate:*</code> identity.</>}
   </div>;
 }
@@ -217,7 +217,7 @@ function DelegationsCard({ csrfToken, session }: { csrfToken: string; session: S
     {!items.length
       ? <p className="muted">{list.isFetching ? "Loading delegations…" : "No delegations. Owner authority is human-only."}</p>
       : <div className="stack">{items.map((item) => <div className="row" key={item.delegationId}>
-        <span>AI delegate <code>{item.delegatePrincipalId}</code><small>grantor {item.grantorOwnerId} · {item.authorityProfile} · expires {new Date(item.expiresAt).toLocaleString()} · {item.revoked ? `revoked ${item.revokedAt ?? ""}` : item.validNow ? "valid now" : "not valid"}</small></span>
+        <span>AI delegate <code>{item.delegatePrincipalId}</code><small>grantor {item.grantorOwnerId} · {item.authorityProfile} · capabilities: {item.capabilities.join(", ")} · expires {new Date(item.expiresAt).toLocaleString()} · {item.revoked ? `revoked ${item.revokedAt ?? ""}` : item.validNow ? "valid now" : "not valid"}</small></span>
         <span className="row-actions"><button type="button" className="secondary" onClick={() => setReviewing(reviewing === item.delegationId ? undefined : item.delegationId)}>{reviewing === item.delegationId ? "Hide decisions" : "Review decisions"}</button>{isHuman && !item.revoked && <button type="button" className="secondary" disabled={revoke.isPending} onClick={() => revoke.mutate(item.delegationId)}>Revoke now</button>}</span>
       </div>)}</div>}
     {revoke.error && <p className="error" role="alert">{revoke.error instanceof Error ? revoke.error.message : "Revocation failed."}</p>}

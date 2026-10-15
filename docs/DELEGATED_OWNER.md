@@ -80,17 +80,16 @@ Within the delegated project, `FULL_PROJECT_OWNER` covers `decision.resolve`,
 
 ## Trust boundaries (explicit)
 
-## Trust boundaries (explicit)
-
 - The paired Control Center session is the strongly authenticated issuance
   path (single-use pairing nonce). Direct CLI issuance (`--grantor`,
   `--confirm-grantor`) trusts the local Owner shell — the same trust position
   as the existing Owner-authorized `aeh operation start --resolve-operation`
-  entry — plus a deliberate re-attestation flag and a deterministic refusal
-  inside managed worker contexts. It does not resist a worker that can spawn
-  clean-environment children with its own filesystem access; like charters
-  and ledger files, it converts compliant leads into governed behavior
-  rather than stopping a Byzantine shell.
+  entry — plus a deliberate re-attestation flag, OS-login identity binding
+  (`--grantor` must equal `human:<os-username>`), and a deterministic refusal
+  inside managed worker contexts. It does not resist a same-user worker that
+  can spawn clean-environment children with its own filesystem access; like
+  charters and ledger files, it converts compliant leads into governed
+  behavior rather than stopping a Byzantine shell.
 - A `delegationId` is a bearer credential for the bound agent only.
   Delegation enumeration, issuance, revocation, and decision review are
   human-session-only; delegate sessions resolve Owner decisions through the

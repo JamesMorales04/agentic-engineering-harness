@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
+import { loadProjectConfig } from "../core/config.js";
 import { canonicalSerialize, sha256Canonical } from "../core/digest.js";
 
 /**
@@ -490,6 +492,9 @@ export async function verifyDelegatedOwnerGrantV1(root: string, delegationId: st
   const key = await readDelegationKey(root);
   if (!verifyDelegatedOwnerMac(key, grant)) throw new Error("DELEGATION_FORGED: delegation MAC does not verify against the project delegation key.");
   if (grant.projectId !== scope.projectId) throw new Error("DELEGATION_PROJECT_MISMATCH: delegation belongs to another project; cross-project authority is rejected.");
+  if (grant.repository && !scope.repository) {
+    throw new Error("DELEGATION_REPOSITORY_MISMATCH: grant is repository-bound but the resolving control root supplied no repository identity; refusing fail-closed.");
+  }
   if (grant.repository && scope.repository && grant.repository !== scope.repository) {
     throw new Error("DELEGATION_REPOSITORY_MISMATCH: delegation repository binding does not match; cross-repository authority is rejected.");
   }
@@ -659,4 +664,66 @@ export async function reverifyDelegatedDecisionForUse(
   if (grant.grantorOwnerId !== input.delegatedFrom.grantorOwnerId) {
     throw new Error("DELEGATION_GRANTOR_MISMATCH: stored provenance grantor does not match the authorizing grant.");
   }
+}
+
+/**
+ * Control-root repository identity for delegation scope checks. Absent or
+ * unreadable configuration yields undefined, in which case repository-bound
+ * grants still verify when the grant itself carries no repository binding;
+ * grants WITH a repository binding require the caller to supply it (fail
+ * closed below). DETERMINISTIC.
+ */
+export async function controlRootRepository(root: string): Promise<string | undefined> {
+  try {
+    await fs.access(path.resolve(root, ".harness", "project.yaml"));
+  } catch {
+    return undefined;
+  }
+  try {
+    const config = await loadProjectConfig(root);
+    return config?.delivery?.github?.repository?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Bind a claimed direct-CLI Owner identity to process credentials. The paired
+ * Control Center session authenticates via pairing nonce; the direct CLI has
+ * no session, so the claimed `human:*` grantor must equal the OS login
+ * identity of the invoking shell. Managed worker contexts are refused
+ * outright. DETERMINISTIC.
+ */
+export function assertCliOwnerIdentity(claimed: string): void {
+  assertDirectCliContext();
+  let username: string;
+  try {
+    username = os.userInfo().username;
+  } catch {
+    throw new Error("CLI_OWNER_IDENTITY_UNAVAILABLE: the invoking OS identity could not be determined; use a paired Control Center session to manage delegations.");
+  }
+  if (!username || claimed !== `${HUMAN_OWNER_PREFIX}${username}`) {
+    throw new Error(`CLI_OWNER_MISMATCH: direct-CLI Owner actions attest as '${HUMAN_OWNER_PREFIX}${username || "?"}'; use a paired Control Center session for any other Owner identity.`);
+  }
+}
+
+/** Refuse delegation CLI inspection/management inside managed worker contexts. DETERMINISTIC. */
+export function assertDirectCliContext(): void {
+  if (process.env.AEH_MANAGED_AGENT === "1" || process.env.AEH_INTERACTIVE_LEAD === "1" || process.env.AEH_ORCHESTRATION_ALLOWED === "1" || process.env.AEH_OPERATION_ID?.trim()) {
+    throw new Error("DELEGATION_CLI_CONTEXT_INVALID: managed worker contexts cannot inspect or manage Owner delegations; the authenticated human Owner acts through direct CLI or a paired Control Center session.");
+  }
+}
+
+/**
+ * Operation-scoped re-verification: like `reverifyDelegatedDecisionForUse`
+ * but resolves the control-root repository automatically, so
+ * repository-bound grants are enforced at every deferred USE, not only at
+ * issuance and session boundaries.
+ */
+export async function reverifyDelegatedDecisionForOperation(
+  root: string,
+  input: Omit<DelegatedUseVerificationV1, "repository">,
+): Promise<void> {
+  const repository = await controlRootRepository(root);
+  await reverifyDelegatedDecisionForUse(root, repository ? { ...input, repository } : input);
 }

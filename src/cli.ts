@@ -29,7 +29,7 @@ import { inspectGithubIssue } from "./issues/intake.js";
 import { executeIssueWorkflow as executeManagedIssueWorkflow, importIssueThroughManagedOperation } from "./issues/workflow.js";
 import { VERSION } from "./version.js";
 import { assertInteractiveRunSelfHostingV1, issueSelfHostingCharterV1 } from "./operations/selfHostingCharter.js";
-import { issueDelegatedOwnerGrantV1, listDelegatedOwnerGrantsV1, OWNER_CAPABILITIES_V1, revokeDelegatedOwnerGrantV1, type OwnerCapabilityV1 } from "./security/ownerAuthority.js";
+import { issueDelegatedOwnerGrantV1, listDelegatedOwnerGrantsV1, OWNER_CAPABILITIES_V1, revokeDelegatedOwnerGrantV1, assertCliOwnerIdentity, assertDirectCliContext, type OwnerCapabilityV1 } from "./security/ownerAuthority.js";
 import { createSemanticAssessmentRuntimeV1, createSemanticRepositoryBindingV1 } from "./semantic/runtime.js";
 import { CodexAgentProvider } from "./certification/codex.js";
 import { createCommandOracle, runExternalSelfDogfood } from "./certification/bootstrap.js";
@@ -132,6 +132,7 @@ const delegation = program.command("delegation").description("Issue, inspect, an
 delegation.command("grant").requiredOption("--grantor <owner>", "Authenticated human Owner ('human:*')").requiredOption("--confirm-grantor <owner>", "Deliberate re-attestation of the granting Owner (must equal --grantor)").requiredOption("--delegate <principal>", "Bound delegated principal ('delegate:*')").option("--project <id>", "Project scope (defaults to this checkout's project)").option("--repository <owner/repo>", "Optional repository binding").option("--expires-at <iso>", "Explicit expiry instant").option("--ttl-days <days>", "Expiry as days from now (max 366)", "30").option("--capability <capabilities...>", "Explicit capability subset (default: FULL_PROJECT_OWNER vocabulary)").argument("[directory]", "Project directory", ".").action(async (directory: string, options: { grantor: string; confirmGrantor: string; delegate: string; project?: string; repository?: string; expiresAt?: string; ttlDays: string; capability?: string[] }) => {
   const root = path.resolve(directory); const config = await loadProjectConfig(root);
   if (options.confirmGrantor !== options.grantor) throw new Error("--confirm-grantor must re-attest the same authenticated human Owner as --grantor; delegation issuance is a deliberate Owner act.");
+  assertCliOwnerIdentity(options.grantor);
   const ttlDays = Number(options.ttlDays);
   if (!Number.isFinite(ttlDays) || ttlDays <= 0 || ttlDays > 366) throw new Error("--ttl-days must be within (0, 366].");
   const expiresAt = options.expiresAt ?? new Date(Date.now() + ttlDays * 24 * 60 * 60_000).toISOString();
@@ -148,21 +149,26 @@ delegation.command("grant").requiredOption("--grantor <owner>", "Authenticated h
 delegation.command("revoke").requiredOption("--id <delegationId>").requiredOption("--confirm-id <delegationId>", "Deliberate re-attestation of the revoked delegation (must equal --id)").requiredOption("--by <owner>", "Revoking human Owner ('human:*')").option("--reason <reason>").argument("[directory]", "Project directory", ".").action(async (directory: string, options: { id: string; confirmId: string; by: string; reason?: string }) => {
   const root = path.resolve(directory);
   if (options.confirmId !== options.id) throw new Error("--confirm-id must re-attest the same delegation as --id; revocation is a deliberate Owner act.");
+  assertCliOwnerIdentity(options.by);
   await revokeDelegatedOwnerGrantV1(root, options.id, { revokedBy: options.by, ...(options.reason ? { reason: options.reason } : {}) }, { via: "cli-direct" });
   console.log(`DELEGATED_OWNER revoked: ${options.id} (authority ended immediately)`);
 });
 delegation.command("status").option("--json").argument("[directory]", "Project directory", ".").action(async (directory: string, options: { json?: boolean }) => {
+  assertDirectCliContext();
   const root = path.resolve(directory);
   const grants = await listDelegatedOwnerGrantsV1(root);
   if (options.json) { console.log(JSON.stringify(grants, null, 2)); return; }
   if (!grants.length) { console.log("No Owner delegations."); return; }
-  for (const grant of grants) console.log(`${grant.delegationId} delegate=${grant.delegatePrincipalId} grantor=${grant.grantorOwnerId} profile=${grant.authorityProfile} valid=${grant.validNow} revoked=${grant.revoked} expires=${grant.expiresAt}`);
+  // Human-readable status redacts bearer delegation ids (prefix only):
+  // full ids appear only in --json Owner-shell tooling and at grant time.
+  for (const grant of grants) console.log(`${grant.delegationId.slice(0, 18)}… delegate=${grant.delegatePrincipalId} grantor=${grant.grantorOwnerId} profile=${grant.authorityProfile} valid=${grant.validNow} revoked=${grant.revoked} expires=${grant.expiresAt}`);
 });
 
 const charter = program.command("charter").description("Issue isolated self-hosting charters (human Owner or authorized delegate)");
 charter.command("issue").requiredOption("--target-root <path>", "Canonical isolated target control root").requiredOption("--confirm-target-root <path>", "Deliberate re-attestation of the isolated target (must equal --target-root)").requiredOption("--kinds <kinds>", "Comma-separated 'change' and/or 'run'").requiredOption("--expires-at <iso>").requiredOption("--by <principal>", "Authorizing principal ('human:*' or 'delegate:*')").option("--delegation <id>", "Authorizing delegation (required for delegate issuance)").option("--project <id>", "Project scope (defaults to the controller checkout's project)").option("--repository <owner/repo>").argument("[directory]", "Controller checkout directory", ".").action(async (directory: string, options: { targetRoot: string; confirmTargetRoot: string; kinds: string; expiresAt: string; by: string; delegation?: string; project?: string; repository?: string }) => {
   const root = path.resolve(directory);
   if (path.resolve(options.confirmTargetRoot) !== path.resolve(options.targetRoot)) throw new Error("--confirm-target-root must re-attest the same isolated target as --target-root; charter issuance is a deliberate Owner act.");
+  if (options.by.startsWith("human:")) assertCliOwnerIdentity(options.by);
   const kinds = options.kinds.split(",").map((kind) => kind.trim()).filter(Boolean) as Array<"change" | "run">;
   const issued = await issueSelfHostingCharterV1(root, {
     targetRoot: options.targetRoot, kinds, expiresAt: options.expiresAt, authorizedBy: options.by,
