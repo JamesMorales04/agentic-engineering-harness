@@ -15,6 +15,7 @@ import { LocalControlCenterV1 } from "../src/control-center/server.js";
 import {
   bindResolvedOperationPolicy,
   claimControllerEpoch,
+  currentControllerEpoch,
   loadOperation,
   pauseOperationIfRequested,
   pendingOperationControl,
@@ -288,5 +289,42 @@ describe("delegated Owner decisions through the real Control Center path", () =>
     const paused = await pauseOperationIfRequested(root, waiting.id, { activeParticipantIds: [], activeProviderLeaseIds: [], observedAt: new Date().toISOString() });
     expect(paused.phase).toBe("PAUSED");
     expect(paused.pause?.requestedBy).toBe(DELEGATE);
+  });
+
+  it("cancels under a live grant despite a stale revoked-grant cancel decision", async () => {
+    const root = await tempRoot();
+    const waiting = await suspendedFixture(root, "OP-DELEGATED-STALE-CANCEL");
+    const projectId = waiting.candidateRevision!.projectId!;
+    const ctx = { via: "test", allowManagedContext: true } as const;
+    const grantA = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, ctx);
+    const ledger = new HumanDecisionLedgerV2(path.join(root, ".harness", "security", "human-decisions.json"));
+    const op = await loadOperation(root, waiting.id);
+    const now = new Date();
+    await ledger.record({
+      operationId: op.id,
+      candidate: op.candidateRevision!,
+      operationExecutionRevision: op.operationExecutionRevision!,
+      policyDigest: op.resolvedOperationPolicy!.digest,
+      controllerEpoch: currentControllerEpoch(op),
+      purpose: { kind: "OPERATION_CONTROL", command: "CANCEL" },
+      kind: "CANCEL",
+      actorId: DELEGATE,
+      delegatedFrom: { grantorOwnerId: GRANTOR, delegationId: grantA.delegationId, profile: "FULL_PROJECT_OWNER" },
+      reason: "stale grant cancel",
+      createdAt: now,
+      expiresAt: new Date(now.getTime() + 10 * 60_000),
+    });
+    await revokeDelegatedOwnerGrantV1(root, grantA.delegationId, { revokedBy: GRANTOR }, ctx);
+    const grantB = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, ctx);
+    // Without per-grant scoping this would reuse the stale decision and fail
+    // at consumption; with it, the live grant records and consumes its own.
+    const cancelled = await cancelOperation(root, waiting.id, { humanActorId: DELEGATE, delegationId: grantB.delegationId });
+    expect(cancelled.status).toBe("CANCELLED");
   });
 });

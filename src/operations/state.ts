@@ -632,7 +632,8 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
   }
   if (options.humanActorId) {
     const existing = (await ledger.active(binding, now)).some((decision) => decision.actorId === options.humanActorId
-      && decision.kind === "CANCEL" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose));
+      && decision.kind === "CANCEL" && canonicalSerialize(decision.purpose) === canonicalSerialize(purpose)
+      && (!delegatedFrom || decision.delegatedFrom?.delegationId === delegatedFrom.delegationId));
     if (!existing) await ledger.record({
       ...binding,
       purpose,
