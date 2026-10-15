@@ -139,17 +139,18 @@ delegation.command("grant").requiredOption("--grantor <owner>", "Authenticated h
   const capabilities = options.capability?.length ? options.capability as OwnerCapabilityV1[] : undefined;
   if (capabilities?.some((capability) => !OWNER_CAPABILITIES_V1.includes(capability))) throw new Error(`unknown Owner capability (vocabulary: ${OWNER_CAPABILITIES_V1.join(", ")}).`);
   // Repository scope binds by construction: explicit --repository wins,
-  // otherwise the checkout configuration supplies it — except when --project
-  // overrides the project scope, in which case an explicit --repository is
-  // required (fail-closed guidance: a custom project without a repository
-  // binding would leave cross-repository checks unenforced).
-  if (options.project && options.project !== config.project.name && !options.repository) {
+  // otherwise the checkout configuration supplies it whenever the effective
+  // project is the configured one. A custom --project without --repository
+  // is rejected fail-closed (an unbound grant would leave cross-repository
+  // checks unenforced).
+  const effectiveProject = options.project ?? config.project.name;
+  if (effectiveProject !== config.project.name && !options.repository) {
     throw new Error("--repository is required when --project overrides the checkout's configured project; cross-repository checks must stay enforced.");
   }
-  const repository = options.repository ?? (options.project ? undefined : config.delivery?.github?.repository);
+  const repository = options.repository ?? (effectiveProject === config.project.name ? config.delivery?.github?.repository : undefined);
   const grant = await issueDelegatedOwnerGrantV1(root, {
     grantorOwnerId: options.grantor, delegatePrincipalId: options.delegate,
-    projectId: options.project ?? config.project.name,
+    projectId: effectiveProject,
     ...(repository ? { repository } : {}),
     expiresAt, ...(capabilities ? { capabilities } : {})
   }, { via: "cli-direct" });
