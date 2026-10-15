@@ -118,4 +118,25 @@ describe("binding mismatch diagnostics (lease staleness attribution)", () => {
     expect(detail).toContain("session-1");
     expect(detail).toContain("session-2");
   });
+
+  it("truncates overlong values to a fixed bound", () => {
+    const current = candidate();
+    const binding = bindingFor(current, "session-1", "participant:worker");
+    const longId = `participant:${"x".repeat(200)}`;
+    const detail = describeBindingMismatchV1(binding, operation(current), longId);
+    expect(detail).toContain("...");
+    expect(detail.length).toBeLessThan(1200);
+  });
+
+  it("never throws on missing candidate or policy (reports undefined)", () => {
+    const current = candidate();
+    const binding = bindingFor(current, "session-1", "participant:worker");
+    const bare = { ...operation(current), candidateRevision: undefined, resolvedOperationPolicy: undefined };
+    let detail = "";
+    expect(() => {
+      detail = describeBindingMismatchV1(binding, bare as OperationRecordV2, "participant:worker", "session-1");
+    }).not.toThrow();
+    expect(detail).toContain("candidateRevision");
+    expect(detail).toContain("operationPolicyDigest");
+  });
 });
