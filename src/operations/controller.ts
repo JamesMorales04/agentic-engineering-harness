@@ -7,6 +7,7 @@ import { runAudit } from "../audit/run.js";
 import { loadProjectConfig, loadTaskContract } from "../core/config.js";
 import { createControlPlaneSnapshot, materializeControlPlaneRuntimeSurface, materializeControlPlaneSnapshot } from "../core/controlPlane.js";
 import { operationFailureDetail, runTask } from "../core/run.js";
+import { setupToolchain } from "../toolchain/setup.js";
 import type { AssuranceLevel, ImplementationRoute } from "../architecture/contracts.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
@@ -545,6 +546,18 @@ async function executeOperationWithEnvironment(
     const controllerSnapshot = await createControlPlaneSnapshot(absoluteRoot, config, `operation-${operationId}`);
     await materializeControlPlaneSnapshot(controllerSnapshot, executionRoot, config);
     await materializeControlPlaneRuntimeSurface(controllerSnapshot, executionRoot);
+  }
+  if (executionRoot !== absoluteRoot && record.kind !== "audit") {
+    // Provision-before-bind (DETERMINISTIC ordering invariant): toolchain
+    // setup materializes mise-resolved lock state (.config/mise/mise.lock,
+    // backend locks/) inside a fresh execution workspace. The workspace
+    // candidate digest bound below must cover the PROVISIONED tree — binding
+    // first and provisioning later (in runTask's validation preparation)
+    // makes the harness's own provisioning writes fail the later
+    // verify-time CANDIDATE_WORKSPACE_MISMATCH identity check. Project
+    // dependencies stay in runTask (they touch only ignored install dirs).
+    await setupToolchain(executionRoot, config, { skipProjectDependencies: true });
+    await trace(absoluteRoot, "operation.toolchain.prepared", { operationId, executionRoot });
   }
   record = await patchOperation(absoluteRoot, operationId, {
       workspaceId: workspace.workspaceId,
