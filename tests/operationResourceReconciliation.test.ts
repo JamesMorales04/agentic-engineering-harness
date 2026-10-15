@@ -398,7 +398,8 @@ describe("operation resource ownership and terminal/recovery reconciliation", ()
     const deps = {
       ...passThroughDeps(),
       inspectAgent: vi.fn(async (_root: string, _agentId: string) => undefined),
-      archiveAgent: vi.fn(async (_root: string, agentId: string) => { throw new Error(`Agent not found: ${agentId}`); })
+      archiveAgent: vi.fn(async (_root: string, agentId: string) => { throw new Error(`Agent not found: ${agentId}`); }),
+      listAgents: vi.fn(async (_root: string) => [] as Array<{ id?: string }>)
     };
     const receipt = await reconcileOperationResources(root, id, deps);
     // The archive attempt is never skipped: absence is only concluded from
@@ -442,5 +443,39 @@ describe("operation resource ownership and terminal/recovery reconciliation", ()
     expect(receipt.cleanupComplete).toBe(false);
     expect(receipt.errors.length).toBe(1);
     expect(receipt.dispositions).toEqual([expect.objectContaining({ kind: "paseo-agent", identity: "participant:unverifiable-wu", outcome: "failed" })]);
+  });
+
+  it("Q. listing-exception paseo-agent (absent probes but failed corroborating listing) still fails loud", async () => {
+    const root = await makeRoot();
+    const id = "AUDIT-Q";
+    await forceTerminal(root, id, "FAILED");
+    await registerOperationResource(root, id, { kind: "paseo-agent", identity: "participant:ulist-wu" });
+    const deps = {
+      ...passThroughDeps(),
+      inspectAgent: vi.fn(async (_root: string, _agentId: string) => undefined),
+      archiveAgent: vi.fn(async (_root: string, agentId: string) => { throw new Error(`Agent not found: ${agentId}`); }),
+      listAgents: vi.fn(async (_root: string) => { throw new Error("listing channel down"); })
+    };
+    const receipt = await reconcileOperationResources(root, id, deps);
+    expect(receipt.cleanupComplete).toBe(false);
+    expect(receipt.errors.length).toBe(1);
+    expect(receipt.dispositions).toEqual([expect.objectContaining({ kind: "paseo-agent", identity: "participant:ulist-wu", outcome: "failed" })]);
+  });
+
+  it("R. listed-but-uninspectable paseo-agent (present in listing, absent in probes) still fails loud", async () => {
+    const root = await makeRoot();
+    const id = "AUDIT-R";
+    await forceTerminal(root, id, "FAILED");
+    await registerOperationResource(root, id, { kind: "paseo-agent", identity: "participant:listed-wu" });
+    const deps = {
+      ...passThroughDeps(),
+      inspectAgent: vi.fn(async (_root: string, _agentId: string) => undefined),
+      archiveAgent: vi.fn(async (_root: string, agentId: string) => { throw new Error(`Agent not found: ${agentId}`); }),
+      listAgents: vi.fn(async (_root: string) => [{ id: "participant:listed-wu" }])
+    };
+    const receipt = await reconcileOperationResources(root, id, deps);
+    expect(receipt.cleanupComplete).toBe(false);
+    expect(receipt.errors.length).toBe(1);
+    expect(receipt.dispositions).toEqual([expect.objectContaining({ kind: "paseo-agent", identity: "participant:listed-wu", outcome: "failed" })]);
   });
 });

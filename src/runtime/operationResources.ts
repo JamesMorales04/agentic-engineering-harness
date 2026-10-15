@@ -211,6 +211,13 @@ export interface OperationResourceReconcileDeps {
   /** Durable label-bound ownership discovery (`aeh.operation` is minted only by this product). */
   listOwnedAgents?: (root: string, operationId: string) => Promise<Array<{ id?: string; workspaceId?: string }>>;
   /**
+   * Unlabeled Paseo agent listing for absence corroboration. Unlike the
+   * inspector (which maps some SDK errors to absent), the listing channel
+   * throws on SDK errors, so omission from a successful listing is
+   * positive absence evidence. Used only on the already-absent path.
+   */
+  listAgents?: (root: string) => Promise<Array<{ id?: string }>>;
+  /**
    * Unbounded Paseo workspace listing for title-anchored discovery. The caller
    * filters by exact minted title; entries carry no trust until matched.
    */
@@ -1790,8 +1797,9 @@ async function releaseResource(
       // absence: only a clean probe that omits the agent counts toward
       // already-absent. (The default inspector may itself mask SDK errors
       // as absent; that contract is relied upon by liveness and lead
-      // paths and is out of scope here. Corroboration below still
-      // requires the archive attempt to fail first.)
+      // paths and is out of scope here. The already-absent branch below
+      // additionally requires omission from a successful unlabeled agent
+      // listing, which throws rather than masks on SDK errors.)
       const probe = async (): Promise<{ record: Awaited<ReturnType<typeof inspect>>; failed: boolean }> => {
         try {
           return { record: await inspect(root, resource.identity), failed: false };
@@ -1813,11 +1821,24 @@ async function releaseResource(
         // spawned, which otherwise strand the failed chain with zero live
         // resources but an incomplete receipt). Corroborated clean
         // absence only — any probe failure or any observed presence still
-        // throws and stays visible in the receipt. Mirrors the ESRCH
+        // throws and stays visible in the receipt. Because the default
+        // inspector maps some SDK errors to absent, a third independent
+        // channel corroborates: omission from a successful unlabeled
+        // agent listing (which throws, never masks, on SDK errors) is
+        // required too; any listing failure stays loud. Mirrors the ESRCH
         // already-exited precedent for managed processes below.
         const after = await probe();
         if (!before.failed && !after.failed && before.record === undefined && after.record === undefined) {
-          return { action: "already-absent", agentId: resource.identity, observedStatus: null };
+          const list = deps.listAgents ?? (async (cwd: string) => listManagedPaseoAgents(cwd, {}));
+          let listed: Array<{ id?: string }>;
+          try {
+            listed = await list(root);
+          } catch {
+            throw error;
+          }
+          if (!listed.some((agent) => agent?.id === resource.identity)) {
+            return { action: "already-absent", agentId: resource.identity, observedStatus: null };
+          }
         }
         // Archive can fail for an already-removed session; re-observe before failing.
         if (after.record?.status?.toLowerCase() === "archived") return { action: "already-archived", status: after.record.status };

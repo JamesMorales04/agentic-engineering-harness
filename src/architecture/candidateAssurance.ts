@@ -303,18 +303,19 @@ function verifiedImpactDigest(impact: BoundCandidateImpactV1): string {
  * Structural enforcement for the deterministic NO_CHANGE interpretation
  * (MECHANISM: DETERMINISTIC). The gate — not just the synthesizer — must
  * guarantee that a NO_CHANGE impact carries no changed files, dimensions,
- * kinds, or unknowns, binds identical candidate/base identity (no patch
- * lineage to smuggle in), and forces independent review. Otherwise a
- * self-digested NO_CHANGE with changed files but no dimensions would skip
- * per-file impact requirements and the high-risk BLOCKED rule. A forged
- * shape is rejected here before compilation, never downgraded.
+ * kinds, or unknowns and binds identical candidate/base identity (no patch
+ * lineage to smuggle in). Otherwise a self-digested NO_CHANGE with changed
+ * files but no dimensions would skip per-file impact requirements and the
+ * high-risk BLOCKED rule. Reviewer depth stays policy-driven (the gate
+ * does not force review for nothing-changed); acceptance assertions and
+ * any policy-required reviewers still apply. A forged shape is rejected
+ * here before compilation, never downgraded.
  */
 function assertNoChangeImpactShape(impact: BoundCandidateImpactV1): void {
   for (const field of ["changedFiles", "reviewDimensions", "changeKinds", "unknowns"] as const) {
     const value = field === "unknowns" ? (impact.unknowns ?? []) : impact[field];
     if (!Array.isArray(value) || value.length !== 0) reject(`NO_CHANGE impact must carry an empty '${field}'.`);
   }
-  if (impact.requiresIndependentReview !== true) reject("NO_CHANGE impact must require independent review.");
   const candidate = impact.candidate;
   const base = impact.baseCandidate;
   if (!candidate || !base || candidate.candidateId !== base.candidateId || candidate.revision !== base.revision || candidate.identityDigest !== base.identityDigest) {

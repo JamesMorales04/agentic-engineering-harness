@@ -1116,13 +1116,15 @@ function candidateImpactProjectionDigest(assessment: Omit<CandidateImpactProject
  * assure, so no MODEL CANDIDATE_IMPACT judgment is required or even
  * possible (assessment requires evidence per changed file). The
  * `NO_CHANGE` interpretation keeps the normal assurance compilation
- * (base requirements, policy-floor independent review) so the no-op claim
- * itself is still reviewed; acceptance assertions separately judge whether
- * a change was required. Callers must only synthesize when the report
- * shows zero changed files.
+ * (base requirements, policy-driven review) so acceptance assertions and
+ * any policy-required reviewers still apply; whether a change was
+ * required is an acceptance judgment, not an assurance one. Reviewer
+ * depth stays policy-driven (requiresIndependentReview follows the
+ * nothing-to-review reality, not a forced floor). Callers must only
+ * synthesize when the report shows zero changed files.
  */
 export function synthesizeNoChangeImpactV1(binding: Pick<CandidateImpactV1, "candidate" | "baseCandidate" | "patchDigest">): CandidateImpactV1 {
-  const payload = { version: 1 as const, ...binding, changedFiles: [], changeKinds: [], reviewDimensions: [], requiresIndependentReview: true, interpretation: "NO_CHANGE" as const, unknowns: [] as string[] };
+  const payload = { version: 1 as const, ...binding, changedFiles: [], changeKinds: [], reviewDimensions: [], requiresIndependentReview: false, interpretation: "NO_CHANGE" as const, unknowns: [] as string[] };
   return { ...payload, digest: sha256Canonical(payload) };
 }
 
