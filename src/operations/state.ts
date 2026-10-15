@@ -14,7 +14,7 @@ import { assertExecutionBindingV3, assertResolvedOperationPolicyV2, type Executi
 import { evaluateObjectiveCompletionV1, type ObjectiveCompletionInputV1 } from "../architecture/objectiveCompletion.js";
 import { currentObjectiveIdentityV1, loadCurrentAcceptanceOracleArtifactV1, type AcceptanceOracleDispositionV1 } from "../architecture/acceptanceOracle.js";
 import { HumanDecisionLedgerV2, assertContinuationRecordV1, assertDecisionRequestV1, type ContinuationRecordV1, type DecisionRequestV1, type HumanDecisionBindingV2, type HumanDecisionV2, type OperationControlCommandV1 } from "../security/humanDecision.js";
-import { isDelegatedOwnerActor, controlRootRepository, reverifyDelegatedDecisionForOperation, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
+import { isDelegatedOwnerActor, resolveDelegationProjectScope, reverifyDelegatedDecisionForOperation, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
 import { assertOwnerHardProtectionExemptionGrant, type OwnerHardProtectionExemptionGrantV1 } from "../security/ownerExemption.js";
 import type { OwnerEconomicBoundaryRequirementV1, OwnerEconomicBoundarySignalV1, ParticipantExecutionLivenessV1, SupervisorRecoveryDecisionV1 } from "./executionLiveness.js";
 import { assertOperationOriginV1, type OperationOriginV1 } from "./operationProvenance.js";
@@ -619,12 +619,12 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
   // currently-valid grant (`recovery.authorize` covers destructive control).
   let delegatedFrom: { grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined;
   if (options.humanActorId && isDelegatedOwnerActor(options.humanActorId)) {
-    const repository = await controlRootRepository(root);
+    const scope = await resolveDelegationProjectScope(root);
     const verified = await verifyOwnerActorForCapability(root, {
       actorId: options.humanActorId,
       ...(options.delegationId?.trim() ? { delegationId: options.delegationId.trim() } : {}),
-      projectId: policy.projectId,
-      ...(repository ? { repository } : {}),
+      projectId: scope.projectId,
+      ...(scope.repository ? { repository: scope.repository } : {}),
       requiredCapability: "recovery.authorize",
     });
     delegatedFrom = verified.delegatedFrom;
@@ -653,7 +653,6 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
     await reverifyDelegatedDecisionForOperation(root, {
       actorId: decision.actorId,
       ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
-      projectId: policy.projectId,
       requiredCapability: "recovery.authorize",
     });
   }
@@ -1376,12 +1375,10 @@ async function controlActorProvenance(
   delegationId?: string,
 ): Promise<{ grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined> {
   if (!isDelegatedOwnerActor(actorId)) return undefined;
-  const projectId = operation.candidateRevision?.projectId ?? operation.resolvedOperationPolicy?.projectId;
-  if (!projectId) throw new Error("DELEGATION_DENIED: operation has no project identity for delegation scope checks.");
-  const repository = await controlRootRepository(root);
+  const scope = await resolveDelegationProjectScope(root);
   const verified = await verifyOwnerActorForCapability(root, {
     actorId, ...(delegationId?.trim() ? { delegationId: delegationId.trim() } : {}),
-    projectId, ...(repository ? { repository } : {}), requiredCapability,
+    projectId: scope.projectId, ...(scope.repository ? { repository: scope.repository } : {}), requiredCapability,
   });
   if (!verified.delegatedFrom) throw new Error("DELEGATION_DENIED: delegated control produced no provenance.");
   return verified.delegatedFrom;
@@ -1458,14 +1455,13 @@ export async function pendingOperationControl(root: string, operationId: string,
   // decisions always qualify; revoked/expired delegated grants do not), so
   // a stale decision from a dead grant neither blocks nor gets applied.
   // Multiple LIVE decisions for the same purpose stay ambiguous fail-closed.
-  const projectId = current.candidateRevision?.projectId ?? current.resolvedOperationPolicy?.projectId;
   const live: HumanDecisionV2[] = [];
   for (const decision of matches) {
     if (!isDelegatedOwnerActor(decision.actorId)) { live.push(decision); continue; }
-    if (!projectId || !decision.delegatedFrom) continue;
+    if (!decision.delegatedFrom) continue;
     try {
       await reverifyDelegatedDecisionForOperation(root, {
-        actorId: decision.actorId, delegatedFrom: decision.delegatedFrom, projectId, requiredCapability: "recovery.authorize",
+        actorId: decision.actorId, delegatedFrom: decision.delegatedFrom, requiredCapability: "recovery.authorize",
       });
       live.push(decision);
     } catch { /* dead grant: skipped, never applied */ }
@@ -1490,12 +1486,9 @@ export async function pauseOperationIfRequested(root: string, operationId: strin
     const binding = currentDecisionBinding(current, "operation pause");
     if (!sameHumanDecisionBinding(decision, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: pause control no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
     if (isDelegatedOwnerActor(decision.actorId)) {
-      const projectId = current.candidateRevision?.projectId ?? current.resolvedOperationPolicy?.projectId;
-      if (!projectId) throw new Error("DELEGATION_DENIED: paused operation has no project identity for delegation scope checks.");
       await reverifyDelegatedDecisionForOperation(root, {
         actorId: decision.actorId,
         ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
-        projectId,
         requiredCapability: "recovery.authorize",
       });
     }
@@ -1526,12 +1519,9 @@ async function applyOperationResume(root: string, operationId: string, decision:
     if (!sameHumanDecisionBinding(pause, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: pause record no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
     if (!sameHumanDecisionBinding(decision, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: resume control no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
     if (isDelegatedOwnerActor(decision.actorId)) {
-      const projectId = current.candidateRevision?.projectId ?? current.resolvedOperationPolicy?.projectId;
-      if (!projectId) throw new Error("DELEGATION_DENIED: paused operation has no project identity for delegation scope checks.");
       await reverifyDelegatedDecisionForOperation(root, {
         actorId: decision.actorId,
         ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
-        projectId,
         requiredCapability: "recovery.authorize",
       });
     }

@@ -408,7 +408,6 @@ async function consumeRequiredHumanDecision(request: ToolActionRequestV1, operat
       await reverifyDelegatedDecisionForOperation(request.root, {
         actorId: decision.actorId,
         ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
-        projectId: policy.projectId,
         requiredCapability: "delivery.authorize",
       });
     } catch (error) {

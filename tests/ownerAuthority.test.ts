@@ -9,10 +9,10 @@ import {
   assertDelegatedOwnerGrant,
   assertDirectCliContext,
   classifyOwnerActor,
-  controlRootRepository,
   issueDelegatedOwnerGrantV1,
   listDelegatedOwnerGrantsV1,
   OWNER_CAPABILITIES_V1,
+  resolveDelegationProjectScope,
   resolveOwnerAuthorityV1,
   reverifyDelegatedDecisionForOperation,
   revokeDelegatedOwnerGrantV1,
@@ -343,18 +343,39 @@ describe("canonical Delegated Owner authority (DETERMINISTIC)", () => {
     await expect(reverifyDelegatedDecisionForOperation(root, {
       actorId: DELEGATE, delegatedFrom: provenance, projectId: PROJECT, requiredCapability: "decision.resolve",
     })).rejects.toThrow(/DELEGATION_REPOSITORY_MISMATCH/);
-    expect(await controlRootRepository(root)).toBeUndefined();
+    expect(await resolveDelegationProjectScope(root)).toMatchObject({ projectId: expect.stringMatching(/^project:/) });
     // Matching repository identity verifies.
     await fs.mkdir(path.join(root, ".harness"), { recursive: true });
     await fs.writeFile(path.join(root, ".harness", "project.yaml"), "version: 1\nproject:\n  name: test-project\ndelivery:\n  github:\n    repository: acme/project-a\n");
-    expect(await controlRootRepository(root)).toBe("acme/project-a");
+    expect(await resolveDelegationProjectScope(root)).toEqual({ projectId: "test-project", repository: "acme/project-a" });
     await reverifyDelegatedDecisionForOperation(root, {
-      actorId: DELEGATE, delegatedFrom: provenance, projectId: PROJECT, requiredCapability: "decision.resolve",
+      actorId: DELEGATE, delegatedFrom: provenance, projectId: PROJECT, repository: "acme/project-a", requiredCapability: "decision.resolve",
     });
     // A changed repository identity denies.
     await fs.writeFile(path.join(root, ".harness", "project.yaml"), "version: 1\nproject:\n  name: test-project\ndelivery:\n  github:\n    repository: acme/project-b\n");
     await expect(reverifyDelegatedDecisionForOperation(root, {
       actorId: DELEGATE, delegatedFrom: provenance, projectId: PROJECT, requiredCapability: "decision.resolve",
     })).rejects.toThrow(/DELEGATION_REPOSITORY_MISMATCH/);
+  });
+
+  it("scopes verification to the configured project identity, not candidate runtime ids", async () => {
+    const root = await tempRoot();
+    await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+    await fs.writeFile(path.join(root, ".harness", "project.yaml"), "version: 1\nproject:\n  name: configured-project\n");
+    // Grant binds the configured name while the operation candidate carries
+    // an unrelated path-hash runtime id: verification must use the config
+    // identity resolved from the control root.
+    const grant = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId: "configured-project",
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, TEST_CTX);
+    await reverifyDelegatedDecisionForOperation(root, {
+      actorId: DELEGATE,
+      delegatedFrom: { grantorOwnerId: GRANTOR, delegationId: grant.delegationId, profile: "FULL_PROJECT_OWNER" },
+      requiredCapability: "decision.resolve",
+    });
+    const verdict = await resolveOwnerAuthorityV1(root, { actorId: DELEGATE, delegationId: grant.delegationId, projectId: "project:deadbeefdeadbeefdeadbeef" });
+    expect(verdict.authorized).toBe(false);
+    expect(verdict.denialCode).toBe("DELEGATION_PROJECT_MISMATCH");
   });
 });

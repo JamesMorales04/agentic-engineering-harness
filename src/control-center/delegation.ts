@@ -4,6 +4,7 @@ import {
   isHumanOwnerActor,
   issueDelegatedOwnerGrantV1,
   listDelegatedOwnerGrantsV1,
+  resolveDelegationProjectScope,
   revokeDelegatedOwnerGrantV1,
   verifyDelegatedOwnerGrantV1,
   type DelegationStatusV1,
@@ -44,11 +45,18 @@ export async function grantDelegationForSession(
   if (body.expiresAt === undefined && (!Number.isFinite(ttlDays) || ttlDays <= 0 || ttlDays > 366)) {
     throw new Error("DELEGATION_ISSUANCE_DENIED: ttlDays must be within (0, 366].");
   }
+  // Repository scope binds by construction: an explicit request value wins,
+  // otherwise the root configuration supplies it so issuance and
+  // verification resolve the identical scope. Empty strings normalize to
+  // undefined so they cannot suppress the configured fallback.
+  const explicitRepository = body.repository?.trim() || undefined;
+  const configuredRepository = explicitRepository
+    ?? (await resolveDelegationProjectScope(root).catch(() => undefined))?.repository;
   const grant = await issueDelegatedOwnerGrantV1(root, {
     grantorOwnerId: sessionActorId,
     delegatePrincipalId,
     projectId,
-    ...(body.repository ? { repository: body.repository } : {}),
+    ...(configuredRepository ? { repository: configuredRepository } : {}),
     expiresAt: body.expiresAt ?? new Date(Date.now() + ttlDays * 24 * 60 * 60_000).toISOString(),
     ...(body.capabilities?.length ? { capabilities: body.capabilities } : {}),
   }, { via: "control-center-paired", pairedActorId: sessionActorId });

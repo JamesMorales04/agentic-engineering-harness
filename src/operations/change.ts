@@ -1237,12 +1237,9 @@ async function awaitProductChoice(controlRoot: string, operationId: string, chec
     // capability, expiry, revocation) when the deferred choice takes effect —
     // a grant revoked or expired while the decision was pending fails closed.
     if (isDelegatedOwnerActor(decision.actorId)) {
-      const projectId = current.candidateRevision?.projectId ?? binding.candidate.projectId;
-      if (!projectId) throw new Error("DELEGATION_DENIED: consumed operation has no project identity for delegation scope checks.");
       await reverifyDelegatedDecisionForOperation(controlRoot, {
         actorId: decision.actorId,
         ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
-        projectId,
         requiredCapability: "decision.resolve",
       });
     }

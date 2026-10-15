@@ -3,7 +3,7 @@ import { assertResolvedOperationPolicyV2 } from "../architecture/executionIdenti
 import { loadOperation, currentControllerEpoch } from "../operations/state.js";
 import { candidateRevisionsEqual } from "../operations/v2Contracts.js";
 import { assertDecisionBindingMatchesRequest, assertDecisionRequestV1, HumanDecisionLedgerV2 } from "../security/humanDecision.js";
-import { isDelegatedOwnerActor, controlRootRepository, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
+import { isDelegatedOwnerActor, resolveDelegationProjectScope, verifyOwnerActorForCapability } from "../security/ownerAuthority.js";
 import { runtimeProjectId } from "../runtime/index.js";
 
 interface ProductChoiceSubmissionV1 {
@@ -75,12 +75,12 @@ export async function recordControlCenterDecision(root: string, ledger: HumanDec
   // here — never force-approved, and recorded with delegated provenance.
   let delegatedFrom: { grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined;
   if (isDelegatedOwnerActor(actorId)) {
-    const repository = await controlRootRepository(root);
+    const scope = await resolveDelegationProjectScope(root);
     const verified = await verifyOwnerActorForCapability(root, {
       actorId,
       ...(delegationId?.trim() ? { delegationId: delegationId.trim() } : {}),
-      projectId: candidate.projectId ?? runtimeProjectId(root),
-      ...(repository ? { repository } : {}),
+      projectId: scope.projectId,
+      ...(scope.repository ? { repository: scope.repository } : {}),
       requiredCapability: "decision.resolve",
     });
     delegatedFrom = verified.delegatedFrom;

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { lock } from "proper-lockfile";
 import { loadProjectConfig } from "../core/config.js";
-import { canonicalSerialize, sha256Canonical } from "../core/digest.js";
+import { canonicalSerialize, sha256Canonical, sha256Utf8 } from "../core/digest.js";
 
 /**
  * Canonical Owner authority model (MECHANISM: DETERMINISTIC).
@@ -669,6 +669,32 @@ export async function resolveOwnerAuthorityV1(root: string, input: ResolveOwnerA
   }
 }
 
+export interface DelegationProjectScopeV1 {
+  projectId: string;
+  repository?: string;
+}
+
+/**
+ * Canonical delegation scope identity for a control root (DETERMINISTIC):
+ * the configured project name (stable across worktrees of one project) plus
+ * the configured repository binding when present. Operation candidates carry
+ * path-hash runtime ids that differ per checkout, so delegation scope must
+ * NOT use them — otherwise one Owner grant could never cover a controller
+ * and its isolated targets. Falls back to the runtime id only when no
+ * project configuration exists.
+ */
+export async function resolveDelegationProjectScope(root: string): Promise<DelegationProjectScopeV1> {
+  try {
+    const config = await loadProjectConfig(root);
+    const projectId = config?.project?.name?.trim();
+    if (projectId) {
+      const repository = config?.delivery?.github?.repository?.trim() || undefined;
+      return repository ? { projectId, repository } : { projectId };
+    }
+  } catch { /* fall through to the runtime identity */ }
+  return { projectId: `project:${sha256Utf8(path.resolve(root)).slice(0, 24)}` };
+}
+
 /** List delegations with live validity for Owner inspection. No key material. */
 export async function listDelegatedOwnerGrantsV1(root: string, nowMs?: number, store?: DelegationStoreOptions): Promise<DelegationStatusV1[]> {
   const at = nowMs ?? Date.now();
@@ -743,7 +769,14 @@ export async function verifyOwnerActorForCapability(
 export interface DelegatedUseVerificationV1 {
   actorId: string;
   delegatedFrom?: { grantorOwnerId: string; delegationId: string; profile: OwnerAuthorityProfileV1 };
-  projectId: string;
+  /**
+   * Explicit scope override (tests/seams only). Production callers omit it:
+   * scope always resolves from the control root via
+   * resolveDelegationProjectScope, because operation candidates carry
+   * path-hash runtime ids that differ per checkout while delegations bind
+   * the stable configured project identity.
+   */
+  projectId?: string;
   repository?: string;
   requiredCapability: OwnerCapabilityV1;
   store?: DelegationStoreOptions;
@@ -764,9 +797,12 @@ export async function reverifyDelegatedDecisionForUse(
 ): Promise<void> {
   if (!isDelegatedOwnerActor(input.actorId)) return;
   if (!input.delegatedFrom) throw new Error("DELEGATION_INVALID: delegated use lacks stored provenance.");
+  const scope = input.projectId !== undefined
+    ? { projectId: input.projectId, ...(input.repository ? { repository: input.repository } : {}) }
+    : await resolveDelegationProjectScope(root);
   const grant = await verifyDelegatedOwnerGrantV1(root, input.delegatedFrom.delegationId, {
-    projectId: input.projectId,
-    ...(input.repository ? { repository: input.repository } : {}),
+    projectId: scope.projectId,
+    ...(scope.repository ? { repository: scope.repository } : {}),
     requiredCapability: input.requiredCapability,
     ...(input.store ? { store: input.store } : {}),
   });
@@ -775,27 +811,6 @@ export async function reverifyDelegatedDecisionForUse(
   }
   if (grant.grantorOwnerId !== input.delegatedFrom.grantorOwnerId) {
     throw new Error("DELEGATION_GRANTOR_MISMATCH: stored provenance grantor does not match the authorizing grant.");
-  }
-}
-
-/**
- * Control-root repository identity for delegation scope checks. Absent or
- * unreadable configuration yields undefined, in which case repository-bound
- * grants still verify when the grant itself carries no repository binding;
- * grants WITH a repository binding require the caller to supply it (fail
- * closed below). DETERMINISTIC.
- */
-export async function controlRootRepository(root: string): Promise<string | undefined> {
-  try {
-    await fs.access(path.resolve(root, ".harness", "project.yaml"));
-  } catch {
-    return undefined;
-  }
-  try {
-    const config = await loadProjectConfig(root);
-    return config?.delivery?.github?.repository?.trim() || undefined;
-  } catch {
-    return undefined;
   }
 }
 
@@ -834,8 +849,10 @@ export function assertDirectCliContext(): void {
  */
 export async function reverifyDelegatedDecisionForOperation(
   root: string,
-  input: Omit<DelegatedUseVerificationV1, "repository">,
+  input: Omit<DelegatedUseVerificationV1, "repository" | "projectId"> & { projectId?: string },
 ): Promise<void> {
-  const repository = await controlRootRepository(root);
-  await reverifyDelegatedDecisionForUse(root, repository ? { ...input, repository } : input);
+  // Scope always resolves from the control root inside
+  // reverifyDelegatedDecisionForUse (stable configured project identity);
+  // callers pass explicit ids only as test seams.
+  await reverifyDelegatedDecisionForUse(root, input);
 }
