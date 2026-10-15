@@ -13,7 +13,7 @@ import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidationRep
 import { executeAgentPrompt, prepareAgentExecutionIdentity } from "../workers/agentPrompt.js";
 import { dispatchDistributedDelegation } from "../distributed/worker.js";
 import { enforceSandboxPolicy } from "../security/sandbox.js";
-import { runExecutable } from "../utils/process.js";
+import { clearToolchainEnvCache, runExecutable } from "../utils/process.js";
 import { recordEvent } from "../telemetry/events.js";
 import { existingRepositoryPath, repositoryPath } from "../utils/repositoryPath.js";
 import { compileExecutionBlueprint, type ExecutionBlueprint, type ParticipantAssignmentV1 } from "../architecture/participantPlan.js";
@@ -1186,8 +1186,15 @@ export async function executeDelegation(input: { root: string; stateRoot: string
   }
   const worktree = await fs.mkdtemp(path.join(os.tmpdir(), `aeh-${safe(input.contract.task.id)}-${safe(input.task.id)}-`)); const add = await runExecutable("git", ["worktree", "add", "--detach", worktree, "HEAD"], { cwd: input.root, timeoutMs: 120_000 }); if (add.exitCode !== 0) return failed(input.task, selection, `Unable to create task worktree: ${add.stderr || add.stdout}`);
   try {
+    // Toolchain state lands BEFORE any command resolves tools inside the
+    // unit worktree: materializeCandidateState and the baseline below run
+    // Git commands there, and the resolver caches the missing prefix per
+    // path — copying afterward would leave the stale miss cached.
+    // The copy itself clears the resolver cache (a pure recomputable memo)
+    // so no earlier probe of the fresh worktree can shadow the new state.
+    if (await materializeWaveToolchainState(input.root, worktree)) clearToolchainEnvCache();
     await materializeCandidateState(input.root, worktree, input.waveBase);
-    await copyTaskContext(input.root, worktree, input.config, input.contract); if (input.controller) await materializeControlPlaneSnapshot(input.controller, worktree, input.config);    await materializeWaveToolchainState(input.root, worktree); const baselineAdd = await runExecutable("git", ["add", "-A"], { cwd: worktree, timeoutMs: 30_000 });
+    await copyTaskContext(input.root, worktree, input.config, input.contract); if (input.controller) await materializeControlPlaneSnapshot(input.controller, worktree, input.config);    const baselineAdd = await runExecutable("git", ["add", "-A"], { cwd: worktree, timeoutMs: 30_000 });
     if (baselineAdd.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineAdd.stderr || baselineAdd.stdout}`);
     const baselineCommit = await runExecutable("git", ["-c", "user.name=aeh", "-c", "user.email=aeh@localhost", "commit", "--no-gpg-sign", "-m", "aeh wave baseline", "--allow-empty"], { cwd: worktree, timeoutMs: 60_000 });
     if (baselineCommit.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineCommit.stderr || baselineCommit.stdout}`);
@@ -1755,10 +1762,11 @@ async function copyTaskContext(root: string, target: string, config: HarnessProj
 /**
  * Toolchain state propagation for isolated wave worktrees (MECHANISM:
  * DETERMINISTIC). Per-unit worktrees are fresh `git worktree` checkouts
- * outside the operation workspace, so hermetic tool resolution — which
- * stops climbing at the unit `.git` — finds no pinned prefix and live
- * provider probes (Serena health) fail even though the operation
- * workspace is fully provisioned. Copy the run root's
+ * outside the operation workspace. Hermetic tool resolution climbs the
+ * filesystem toward the common worktree root, but it cannot discover the
+ * sibling operation workspace, so without propagation it finds no pinned
+ * prefix and live provider probes (Serena health) fail even though the
+ * operation workspace is fully provisioned. Copy the run root's
  * `.harness/toolchain.state.json` when present so worker commands
  * resolve the same pinned install dirs. Best-effort and state-only:
  * absent state preserves current behavior (probes fail loudly as
