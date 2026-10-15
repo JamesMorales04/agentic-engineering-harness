@@ -245,6 +245,35 @@ async function requireCurrentOperation(input: OperationProviderLifecycleInputV1,
   return operation;
 }
 
+/**
+ * Bounded field-level diff for a stale execution binding (MECHANISM:
+ * DETERMINISTIC). The bare STALE verdict names neither the participant
+ * nor the mismatching fields, which once cost a full probe cycle of
+ * forensics to attribute. Field values here are short ids, digests,
+ * revisions, and epochs already present in durable records — no
+ * secrets — truncated to fixed bounds. Exported for regression
+ * coverage.
+ */
+export function describeBindingMismatchV1(binding: ExecutionBindingV3, operation: OperationRecordV2, participantId: string, sessionId?: string): string {
+  const clip = (value: unknown): string => {
+    const text = typeof value === "string" ? value : JSON.stringify(value) ?? "undefined";
+    return text.length <= 80 ? text : `${text.slice(0, 77)}...`;
+  };
+  const parts: string[] = [`participant=${clip(participantId)}`];
+  const check = (name: string, got: unknown, want: unknown): void => {
+    if (got !== want) parts.push(`${name}: got ${clip(got)} want ${clip(want)}`);
+  };
+  check("operationId", binding.operationId, operation.id);
+  check("operationExecutionRevision", binding.operationExecutionRevision, operation.operationExecutionRevision);
+  check("candidateRevision", binding.candidateRevision, operation.candidateRevision?.revision);
+  check("candidateDigest", binding.candidateDigest, operation.candidateRevision?.identityDigest);
+  check("operationPolicyDigest", binding.operationPolicyDigest, operation.resolvedOperationPolicy?.digest);
+  check("controllerEpoch", binding.controllerEpoch, currentControllerEpoch(operation));
+  check("bindingParticipantId", binding.participantId, participantId);
+  if (sessionId) check("sessionId", binding.runtime.sessionId, sessionId);
+  return parts.join("; ");
+}
+
 function assertBindingCurrent(binding: ExecutionBindingV3, operation: OperationRecordV2, participantId: string, sessionId?: string): void {
   assertExecutionBindingV3(binding);
   if (!operation.candidateRevision || !operation.resolvedOperationPolicy
@@ -252,7 +281,7 @@ function assertBindingCurrent(binding: ExecutionBindingV3, operation: OperationR
     || binding.candidateRevision !== operation.candidateRevision.revision || binding.candidateDigest !== operation.candidateRevision.identityDigest
     || binding.operationPolicyDigest !== operation.resolvedOperationPolicy.digest || binding.controllerEpoch !== currentControllerEpoch(operation)
     || binding.participantId !== participantId || (sessionId && binding.runtime.sessionId !== sessionId)) {
-    throw new Error("PASEO_PROVIDER_LEASE_EXECUTION_BINDING_STALE: current Paseo session binding does not match the durable operation, participant, policy, and controller epoch.");
+    throw new Error(`PASEO_PROVIDER_LEASE_EXECUTION_BINDING_STALE: current Paseo session binding does not match the durable operation, participant, policy, and controller epoch (${describeBindingMismatchV1(binding, operation, participantId, sessionId)}).`);
   }
 }
 
