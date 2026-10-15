@@ -8,6 +8,7 @@ import { loadProjectConfig, loadTaskContract } from "../core/config.js";
 import { createControlPlaneSnapshot, materializeControlPlaneRuntimeSurface, materializeControlPlaneSnapshot } from "../core/controlPlane.js";
 import { operationFailureDetail, runTask } from "../core/run.js";
 import { setupToolchain } from "../toolchain/setup.js";
+import { loadToolchainConfig, toolchainLockPath } from "../toolchain/config.js";
 import type { AssuranceLevel, ImplementationRoute } from "../architecture/contracts.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
@@ -1751,6 +1752,21 @@ export async function bindProvisionedWorkspaceCandidate(input: ProvisionedWorksp
   const { root, operationId, priorCandidate, executionRoot, kind, config } = input;
   const isolated = path.resolve(executionRoot) !== path.resolve(root);
   if (isolated && kind !== "audit") {
+    // A fresh execution tree must never inherit the control root's
+    // machine-local toolchain lock: the snapshot materializes it, but it
+    // records resolutions for the control root's checkout state, and a
+    // stale lock would silently downgrade the workspace's committed pins
+    // (observed: headroom-ai 0.35.0 downgraded to 0.28.0, reintroducing a
+    // patched CVE into the candidate). Discard the propagated copy so
+    // setup resolves the workspace from its committed toolchain
+    // declaration; absent lock is the normal fresh-tree case.
+    try {
+      const workspaceToolchain = await loadToolchainConfig(executionRoot, config);
+      await fs.rm(path.join(executionRoot, toolchainLockPath(config, workspaceToolchain)), { force: true });
+    } catch {
+      // Unresolvable toolchain declaration: leave the tree untouched and
+      // let setup report the underlying problem.
+    }
     await (input.setup ?? setupToolchain)(executionRoot, config, { skipProjectDependencies: true });
     await input.trace("operation.toolchain.prepared", { executionRoot });
   }

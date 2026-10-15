@@ -49,6 +49,22 @@ export async function setupToolchain(root: string, project: HarnessProjectConfig
     return { profile: resolved.profile, generatedConfig, lockFile, stateFile, installed, containers, systemMissing, projectDependencyCommands, dryRun: true };
   }
 
+  // Stale-lock gate (DETERMINISTIC): a machine-local lock whose requested
+  // versions no longer match the committed declaration (checkout updated
+  // without re-locking) would silently install the stale resolutions —
+  // observed downgrading headroom-ai 0.35.0 back to the vulnerable
+  // 0.28.0. Fail loud directing `setup --update-lock` instead of
+  // installing stale tools. Skipped for --update-lock (which rewrites
+  // the lock) and dry runs (informational only).
+  if (!options.updateLock && lock) {
+    const stale = miseTools
+      .map((tool) => ({ name: tool.name, requested: tool.version, locked: lock.tools[tool.name]?.requestedVersion }))
+      .filter((entry) => typeof entry.requested === "string" && typeof entry.locked === "string" && entry.requested !== entry.locked);
+    if (stale.length) {
+      throw new Error(`TOOLCHAIN_LOCK_STALE: the machine-local toolchain lock is stale for ${stale.map((entry) => `${entry.name} (declared ${entry.requested}, locked ${entry.locked})`).join(", ")}; installing it would silently downgrade committed pins. Re-run setup with --update-lock to re-resolve, then retry.`);
+    }
+  }
+
   let adapter: Awaited<ReturnType<typeof resolveMiseAdapter>> | undefined;
   let binPaths: string[] = [];
   if (miseTools.length) {
