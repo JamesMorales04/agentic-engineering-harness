@@ -392,8 +392,14 @@ export async function getDiffStats(cwd: string, baseRef: string, options: GitCha
   return { files: changed.length, added, deleted };
 }
 
-async function resolveCommit(cwd: string, ref: string): Promise<string | undefined> {
-  const result = await runExecutable("git", ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], { cwd, timeoutMs: 15_000 });
+/**
+ * Resolve a branch name, tag, or ref to its exact commit SHA (DETERMINISTIC).
+ * Branch names are unstable across checkouts (a stale local `main` in a
+ * detached clone resolves differently from the live `main`); workspace
+ * creation must pin the SHA observed at start so isolated worktrees never
+ * branch off a moved or stale ref. Returns undefined when unresolvable.
+ */
+export async function resolveCommit(cwd: string, ref: string): Promise<string | undefined> {  const result = await runExecutable("git", ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], { cwd, timeoutMs: 15_000 });
   const commit = result.stdout.trim();
   return result.exitCode === 0 && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commit) ? commit : undefined;
 }

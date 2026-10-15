@@ -47,7 +47,7 @@ import { delegatedCapsuleObjectiveV1, prepareChangeOperation, resolveChangePrefl
 import { prepareGithubIssueTask, type IssuePreparationResult } from "../issues/intake.js";
 import { createSemanticAssessmentRuntimeV1 } from "../semantic/runtime.js";
 import type { ChangePreflightV1 } from "../core/triage.js";
-import { computeWorktreeDigest, resolveBaseRef } from "../core/git.js";
+import { computeWorktreeDigest, resolveBaseRef, resolveCommit } from "../core/git.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { assertIntentDecisionForRoute } from "../audit/intentDecision.js";
 import { assertIsolatedSelfHostingCharterV1, assertSelfHostingExecutionV1, bindSelfHostingCharterV1 } from "./selfHostingCharter.js";
@@ -1765,6 +1765,47 @@ export async function bindProvisionedWorkspaceCandidate(input: ProvisionedWorksp
   }));
 }
 
+export interface BranchOffWorkspaceCommand {
+  command: string;
+  branch: string;
+  slug: string;
+  base: string;
+  pinned: boolean;
+}
+
+/**
+ * Build the isolated-worktree create command with a SHA-pinned base
+ * (DETERMINISTIC): a branch name can resolve differently across checkouts
+ * (a stale local `main` in a detached clone/checkout), forking isolated
+ * worktrees off an unintended base. Falls back to the configured name
+ * (current behavior) only when unresolvable. Extracted for unit coverage;
+ * callers pass the result straight to the gated create.
+ */
+export async function buildBranchOffWorkspaceCommand(
+  root: string,
+  record: OperationRecordV2,
+  config: HarnessProjectConfig,
+  naming: { title: string; branch: string; slug: string },
+  trace?: (event: string, detail?: Record<string, unknown>) => Promise<unknown> | unknown,
+): Promise<BranchOffWorkspaceCommand> {
+  const configuredBase = config.validation?.baseRef ?? "HEAD";
+  const baseCommit = await resolveCommit(root, configuredBase).catch(() => undefined);
+  const base = baseCommit ?? configuredBase;
+  if (!baseCommit) await trace?.("workspace.base.unresolved", { operationId: record.id, configuredBase, reason: "base ref did not resolve to a commit; passing the configured name through" });
+  const command = [
+    "paseo workspace create",
+    "--isolation worktree",
+    `--path ${quote(root)}`,
+    "--mode branch-off",
+    `--new-branch ${quote(naming.branch)}`,
+    `--base ${quote(base)}`,
+    `--worktree-slug ${quote(naming.slug)}`,
+    `--title ${quote(naming.title)}`,
+    "--json"
+  ].join(" ");
+  return { command, branch: naming.branch, slug: naming.slug, base, pinned: baseCommit !== undefined };
+}
+
 export async function ensureOperationWorkspace(
   root: string,
   record: OperationRecordV2,
@@ -1853,18 +1894,7 @@ export async function ensureOperationWorkspace(
 
   const slug = name;
   const branch = `aeh/op-${record.id.toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 96)}`;
-  const base = config.validation?.baseRef ?? "HEAD";
-  const command = [
-    "paseo workspace create",
-    "--isolation worktree",
-    `--path ${quote(root)}`,
-    "--mode branch-off",
-    `--new-branch ${quote(branch)}`,
-    `--base ${quote(base)}`,
-    `--worktree-slug ${quote(slug)}`,
-    `--title ${quote(title)}`,
-    "--json"
-  ].join(" ");
+  const { command, base } = await buildBranchOffWorkspaceCommand(root, record, config, { title, branch, slug });
   await trace(root, "workspace.cli.required", { operationId: record.id, kind: record.kind, reason: "mutating operations require isolated worktree execution", isolation: "worktree", branch, base });
   const result = await gatedWorkspaceCreate({ root, record, run, command, timeoutMs: 180_000, payload: { isolation: "worktree", path: root, title, branch, base, slug } });
   if (result.exitCode !== 0) {

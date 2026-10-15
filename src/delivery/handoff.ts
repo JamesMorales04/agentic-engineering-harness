@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
-import { getOriginRemote } from "../core/git.js";
+import { getOriginRemote, resolveCommit } from "../core/git.js";
 import { loadTaskContract } from "../core/config.js";
 import { validateSddChange } from "../core/sdd.js";
 import { verifyTaskSeal } from "../core/seal.js";
@@ -211,7 +211,11 @@ async function createCheckoutWorkspace(root: string, branch: string, slug: strin
 async function createBranchOffWorkspace(root: string, base: string, branch: string, slug: string, title: string, operationId: string): Promise<{ workspaceId?: string; worktreePath?: string }> {
   assertGitBranchName(branch);
   assertGitBranchName(base);
-  return runPaseoWorkspace(root, ["--mode", "branch-off", "--new-branch", branch, "--base", base], slug, title, branch, operationId);
+  // Pin to the exact commit SHA observed now: branch names can resolve
+  // differently across checkouts (stale local branches in detached clones).
+  // Falls back to the configured name (current behavior) when unresolvable.
+  const baseCommit = await resolveCommit(root, base).catch(() => undefined);
+  return runPaseoWorkspace(root, ["--mode", "branch-off", "--new-branch", branch, "--base", baseCommit ?? base], slug, title, branch, operationId);
 }
 
 interface HandoffAuthority {
