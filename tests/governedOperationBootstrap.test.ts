@@ -240,6 +240,9 @@ describe("governed operation bootstrap policy", () => {
       trace: vi.fn(async () => undefined),
       startWatchdog: () => () => undefined,
       notifyCompletion: vi.fn(async () => undefined),
+      // Provisioning is covered by dedicated toolchain tests; this fixture
+      // focuses on policy rebind and must never shell real setup.
+      setupWorkspaceToolchain: vi.fn(async () => ({} as never)),
       runChange: vi.fn(async () => {
         captured = await loadOperation(root, operation.id) as OperationRecordV2;
         // A FAILED change run carries its owning failing checks in the durable terminal error

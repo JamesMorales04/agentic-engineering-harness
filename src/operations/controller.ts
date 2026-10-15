@@ -7,6 +7,7 @@ import { runAudit } from "../audit/run.js";
 import { loadProjectConfig, loadTaskContract } from "../core/config.js";
 import { createControlPlaneSnapshot, materializeControlPlaneRuntimeSurface, materializeControlPlaneSnapshot } from "../core/controlPlane.js";
 import { operationFailureDetail, runTask } from "../core/run.js";
+import { setupToolchain } from "../toolchain/setup.js";
 import type { AssuranceLevel, ImplementationRoute } from "../architecture/contracts.js";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy } from "../architecture/executionIdentity.js";
@@ -127,6 +128,14 @@ export interface OperationControllerDeps {
   runChange?: typeof runChangeOperation;
   runIssueIntake?: typeof prepareGithubIssueTask;
   createSemanticRuntime?: typeof createSemanticAssessmentRuntimeV1;
+  /**
+   * Workspace toolchain provisioning seam. Defaults to the real toolchain
+   * setup (mise-resolved lock state must materialize before candidate
+   * binding). Tests that focus on later pipeline stages inject a no-op so
+   * they never shell real provisioning; provisioning itself is covered by
+   * dedicated toolchain tests.
+   */
+  setupWorkspaceToolchain?: typeof setupToolchain;
   /** Trusted actor from the paired Control Center session; absent callers must present a recorded scoped decision. */
   humanActorId?: string;
   /** Deterministic provider observation seam for cleanup tests and disposable packed fixtures. */
@@ -585,18 +594,17 @@ async function executeOperationWithEnvironment(
     }
     const priorCandidate = record.candidateRevision;
     if (path.resolve(priorCandidate.worktree ?? absoluteRoot) !== executionRoot) {
-      record = await bindOperationCandidate(absoluteRoot, operationId, createCandidateRevisionV1({
+      record = await bindProvisionedWorkspaceCandidate({
+        root: absoluteRoot,
         operationId,
-        candidateId: `candidate:${operationId}:r${priorCandidate.revision + 1}`,
-        projectId: priorCandidate.projectId,
-        taskId: priorCandidate.taskId,
-        revision: priorCandidate.revision + 1,
-        parentCandidateId: priorCandidate.candidateId,
-        sourceDigest: await computeWorktreeDigest(executionRoot),
-        workspace: workspace.workspaceId,
-        worktree: executionRoot,
-        createdAt: new Date().toISOString()
-      }));
+        priorCandidate,
+        workspaceId: workspace.workspaceId,
+        executionRoot,
+        kind: record.kind,
+        config,
+        trace: (event, detail) => trace(absoluteRoot, event, { operationId, ...detail }),
+        ...(deps.setupWorkspaceToolchain ? { setup: deps.setupWorkspaceToolchain } : {}),
+      });
       // Binding a workspace candidate clears the frozen policy; participant launches require
       // a policy that binds the current candidate revision and digest before they can start.
       record = await bindBootstrapOperationPolicy(absoluteRoot, config, record, bootstrapRoute, bootstrapAssurance, runContract);
@@ -1710,14 +1718,60 @@ async function executeIssueIntakeOperation(root: string, config: HarnessProjectC
   }, deps, config);
 }
 
+export interface ProvisionedWorkspaceCandidateInput {
+  root: string;
+  operationId: string;
+  priorCandidate: CandidateRevisionV1;
+  workspaceId?: string;
+  executionRoot: string;
+  kind: OperationKind;
+  config: HarnessProjectConfig;
+  trace: (event: string, detail?: Record<string, unknown>) => Promise<unknown> | unknown;
+  /** Test seam: replaces toolchain setup (never shells in unit tests). */
+  setup?: typeof setupToolchain;
+}
+
+/**
+ * Provision-before-bind as one composed step (DETERMINISTIC ordering
+ * invariant): toolchain setup materializes mise-resolved lock state
+ * (.config/mise/mise.lock, backend locks/) inside a fresh execution
+ * workspace, so the workspace candidate digest MUST cover the provisioned
+ * tree. Binding first and provisioning later (in runTask's validation
+ * preparation) makes the harness's own provisioning writes fail the later
+ * verify-time CANDIDATE_WORKSPACE_MISMATCH identity check. Composing
+ * provision → digest → bind here (rather than relying on call-site order)
+ * makes the ordering unit-testable. Project dependencies stay in runTask
+ * (they touch only ignored install dirs). Audits and control-root execution
+ * never provision (read-only / no isolated tree).
+ */
+export async function bindProvisionedWorkspaceCandidate(input: ProvisionedWorkspaceCandidateInput): Promise<OperationRecordV2> {
+  const { root, operationId, priorCandidate, executionRoot, kind, config } = input;
+  const isolated = path.resolve(executionRoot) !== path.resolve(root);
+  if (isolated && kind !== "audit") {
+    await (input.setup ?? setupToolchain)(executionRoot, config, { skipProjectDependencies: true });
+    await input.trace("operation.toolchain.prepared", { executionRoot });
+  }
+  return bindOperationCandidate(root, operationId, createCandidateRevisionV1({
+    operationId,
+    candidateId: `candidate:${operationId}:r${priorCandidate.revision + 1}`,
+    projectId: priorCandidate.projectId,
+    taskId: priorCandidate.taskId,
+    revision: priorCandidate.revision + 1,
+    parentCandidateId: priorCandidate.candidateId,
+    sourceDigest: await computeWorktreeDigest(executionRoot),
+    workspace: input.workspaceId,
+    worktree: executionRoot,
+    createdAt: new Date().toISOString()
+  }));
+}
+
 export async function ensureOperationWorkspace(
   root: string,
   record: OperationRecordV2,
   config: HarnessProjectConfig,
   run: typeof runShell,
   trace: typeof recordPaseoTrace
-): Promise<OperationWorkspace> {
-  if (isDeterministicPaseoRuntimeEnabled()) {
+): Promise<OperationWorkspace> {  if (isDeterministicPaseoRuntimeEnabled()) {
     // Fixture journeys execute against the disposable control root; no external
     // Paseo worktree is materialized for the scripted provider boundary.
     await trace(root, "workspace.deterministic.local-root", { operationId: record.id, kind: record.kind });
