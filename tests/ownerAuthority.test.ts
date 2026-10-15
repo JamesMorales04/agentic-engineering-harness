@@ -304,6 +304,26 @@ describe("canonical Delegated Owner authority (DETERMINISTIC)", () => {
     }
   });
 
+  it("refuses store inheritance through a forged controller pointer", async () => {
+    const victim = await tempRoot();
+    execFileSync("git", ["init", "-q"], { cwd: victim });
+    execFileSync("git", ["config", "user.email", "aeh@example.test"], { cwd: victim });
+    execFileSync("git", ["config", "user.name", "AEH Test"], { cwd: victim });
+    await fs.writeFile(path.join(victim, "README.md"), "# fixture\n");
+    execFileSync("git", ["add", "-A"], { cwd: victim });
+    execFileSync("git", ["commit", "-qm", "fixture"], { cwd: victim });
+    const victimGrant = await issueGrant(victim);
+    const impostorTarget = await tempRoot();
+    await fs.mkdir(path.join(impostorTarget, ".git"));
+    // Simulate a rewritten .git pointer naming the victim checkout: the
+    // victim never registered this worktree, so inheritance must fail closed.
+    const forged = await resolveOwnerAuthorityV1(impostorTarget, {
+      actorId: DELEGATE, delegationId: victimGrant.delegationId, projectId: PROJECT,
+      store: { resolveCommonDir: () => path.join(victim, ".git") },
+    });
+    expect(forged.authorized).toBe(false);
+  });
+
   it("binds direct-CLI Owner attestation to OS login identity and refuses managed contexts", async () => {
     const username = os.userInfo().username;
     expect(() => assertCliOwnerIdentity(`human:${username}`)).not.toThrow();

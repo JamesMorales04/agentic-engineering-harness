@@ -185,12 +185,18 @@ async function storeHasContent(root: string): Promise<boolean> {
   try {
     const entries = await fs.readdir(delegationGrantsDir(root));
     if (entries.some((entry) => entry.endsWith(".json"))) return true;
-  } catch { /* absent */ }
+  } catch (error) {
+    // Absence falls through to inheritance; any other I/O failure denies
+    // fail-closed instead of silently treating an unreadable store as empty.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   try {
     await fs.access(delegationRevocationsFile(root));
     return true;
-  } catch { /* absent */ }
-  return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return false;
+  }
 }
 
 function defaultCommonDir(controlRoot: string): string | undefined {
@@ -211,6 +217,24 @@ function controllerRootFor(commonDir: string): string {
   return checkout || path.sep;
 }
 
+/**
+ * Bidirectional worktree proof (DETERMINISTIC). The target's own
+ * `.git` metadata naming a controller is a self-asserted claim: a target
+ * that rewrites its `.git` pointer could otherwise redirect inheritance to
+ * an unrelated checkout. The controller must acknowledge the target in its
+ * own `git worktree list`; a forged pointer to a repository that never
+ * registered this worktree fails closed (local root, which denies without a
+ * local grant). Any git failure denies inheritance.
+ */
+function controllerAcknowledgesWorktree(controllerRoot: string, targetRootReal: string): boolean {
+  try {
+    const out = execFileSync("git", ["-C", controllerRoot, "worktree", "list", "--porcelain"], { encoding: "utf8", timeout: 15_000 });
+    return out.split("\n").some((line) => line.startsWith("worktree ") && path.resolve(line.slice("worktree ".length).trim()) === targetRootReal);
+  } catch {
+    return false;
+  }
+}
+
 async function realpathOrSelf(value: string): Promise<string> {
   try {
     return await fs.realpath(value);
@@ -225,7 +249,10 @@ async function realpathOrSelf(value: string): Promise<string> {
  * Delegations are project-bound, not directory-bound: an isolated target
  * worktree inherits the delegation store of its owning controller checkout,
  * so one Owner grant covers the controller and its authorized targets, and
- * one revocation ends authority everywhere. A target-local store takes
+ * one revocation ends authority everywhere. Inheritance requires a
+ * bidirectional worktree proof (the controller's own `git worktree list`
+ * must acknowledge the target), so a forged `.git` pointer cannot redirect
+ * inheritance to an unrelated checkout. A target-local store takes
  * precedence when present (explicit provisioning wins); otherwise the
  * controller store is used when it exists; otherwise the local root stands
  * alone (fail-closed: no grants verify). Issuance and revocation always
@@ -246,6 +273,7 @@ export async function resolveDelegationStoreRoot(root: string, options: Delegati
   const controllerRoot = controllerRootFor(commonDir);
   const [rootReal, controllerReal] = await Promise.all([realpathOrSelf(absoluteRoot), realpathOrSelf(controllerRoot)]);
   if (rootReal === controllerReal) return absoluteRoot;
+  if (!controllerAcknowledgesWorktree(controllerReal, rootReal)) return absoluteRoot;
   if (await storeHasContent(controllerReal)) return controllerReal;
   return absoluteRoot;
 }
