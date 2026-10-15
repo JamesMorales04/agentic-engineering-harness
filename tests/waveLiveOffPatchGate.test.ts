@@ -460,18 +460,22 @@ describe("wave live off-patch gate (FAM-WAVE residual)", () => {
 
   it("(P2) heartbeat and provider-generated scratch never read as off-patch writes", async () => {
     expect(isWaveWorktreeExcludedV1(".aeh-direct-heartbeat.json")).toBe(true);
+    // R2: nested heartbeat-named files are NOT excluded (DIRECT exclusion is
+    // root-only; a nested heartbeat name is an ordinary off-patch write).
+    expect(isWaveWorktreeExcludedV1("outside/.aeh-direct-heartbeat.json")).toBe(false);
     expect(isWaveWorktreeExcludedV1(".serena")).toBe(true);
     expect(isWaveWorktreeExcludedV1(".serena/scratch.json")).toBe(true); // root-anchored prefix: nested scratch excluded like the DIRECT pathspec `:(exclude).serena/**`
     expect(isWaveWorktreeExcludedV1("graphify-out/x.json")).toBe(true);
     expect(isWaveWorktreeExcludedV1("src/a.ts")).toBe(false);
-    // String-set matcher mode: harness-owned files filtered, real escape kept.
+    // String-set matcher mode: harness-owned files filtered, real escape kept,
+    // including nested heartbeat-named escapes.
     expect(
       findOffPatchWritesV1({
         snapshot: [],
-        current: [".aeh-direct-heartbeat.json", ".serena", "graphify-out", "outside/evil.ts"],
+        current: [".aeh-direct-heartbeat.json", ".serena", "graphify-out", "outside/evil.ts", "outside/.aeh-direct-heartbeat.json"],
         allowedScope: ["src/a.ts"],
       })
-    ).toEqual(["outside/evil.ts"]);
+    ).toEqual(["outside/.aeh-direct-heartbeat.json", "outside/evil.ts"]);
 
     // Live: heartbeat refresh + provider scratch written post-snapshot are invisible.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-wave-excl-"));
@@ -486,6 +490,12 @@ describe("wave live off-patch gate (FAM-WAVE residual)", () => {
     expect(await checkWaveWorktreeOffPatchV1(dir, snap, ["src-a.ts"])).toEqual([]);
     const snap2 = await snapshotWaveWorktreeV1(dir);
     expect([...snap2.keys()].sort()).toEqual(["src-a.ts"]);
+    // R2 live: a nested heartbeat-named file written post-snapshot is denied.
+    await fs.mkdir(path.join(dir, "outside"), { recursive: true });
+    await fs.writeFile(path.join(dir, "outside", ".aeh-direct-heartbeat.json"), "{}\n");
+    expect(await checkWaveWorktreeOffPatchV1(dir, snap, ["src-a.ts"])).toEqual([
+      "outside/.aeh-direct-heartbeat.json",
+    ]);
   });
 });
 

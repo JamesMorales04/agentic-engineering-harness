@@ -266,7 +266,11 @@ const WAVE_WORKTREE_PROVIDER_GENERATED_PREFIXES_V1 = [".serena", "graphify-out"]
 export function isWaveWorktreeExcludedV1(file: string): boolean {
   const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
   const segments = normalized.split("/");
-  if ((segments.at(-1) ?? normalized) === DIRECT_STAGING_HEARTBEAT_FILENAME) return true;
+  // R2: the heartbeat exemption is ROOT-ONLY. DIRECT's pathspec exclusion
+  // covers only the root heartbeat file; a nested heartbeat-named file
+  // (e.g. outside/.aeh-direct-heartbeat.json) is an ordinary off-patch write
+  // and must not be excluded at any depth.
+  if (segments.length === 1 && segments[0] === DIRECT_STAGING_HEARTBEAT_FILENAME) return true;
   const first = segments[0] ?? normalized;
   return WAVE_WORKTREE_PROVIDER_GENERATED_PREFIXES_V1.some((prefix) => first === prefix);
 }
