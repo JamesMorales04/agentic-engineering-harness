@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createRepairPacket } from "../src/core/repair.js";
 import type { ValidationReport } from "../src/core/types.js";
+import { buildRepairPrompt, projectRepairFailureEvidence } from "../src/workers/prompt.js";
 
 describe("repair packets", () => {
   it("contains only deterministic failures", () => {
@@ -21,5 +22,29 @@ describe("repair packets", () => {
     const packet = createRepairPacket(report, 1);
     expect(packet.failures).toHaveLength(1);
     expect(packet.failures[0]).toMatchObject({ id: "acceptance", category: "acceptance", message: "scenario failed" });
+  });
+
+  it("bounds unbounded failure transcripts while keeping id, message and report pointer", () => {
+    const transcript = `TRANS-START\n${"x".repeat(400_000)}\nTRANS-END marker-tail-42`;
+    const packet = createRepairPacket({
+      version: 1, taskId: "T-2", status: "FAIL",
+      startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z",
+      changedFiles: [], metadata: {},
+      checks: [{ id: "build", category: "build", status: "FAIL", message: "build broke", details: { stdout: transcript } }],
+    }, 2, { reportArtifact: ".harness/reports/T-2.json" });
+    expect(packet.reportArtifact).toBe(".harness/reports/T-2.json");
+    const prompt = buildRepairPrompt(packet);
+    // Bounded: a 400k transcript must not inflate the prompt.
+    expect(prompt.length).toBeLessThan(8_000);
+    // Complete: id, message, head, tail and pointer survive.
+    expect(prompt).toContain("build broke");
+    expect(prompt).toContain("TRANS-START");
+    expect(prompt).toContain("marker-tail-42");
+    expect(prompt).toContain("omitted");
+    expect(prompt).toContain(".harness/reports/T-2.json");
+  });
+
+  it("renders small failure details whole", () => {
+    expect(projectRepairFailureEvidence({ scenario: "A" })).toBe(JSON.stringify({ scenario: "A" }));
   });
 });

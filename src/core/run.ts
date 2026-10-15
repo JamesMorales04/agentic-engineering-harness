@@ -960,7 +960,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     const failureType = failureDecision.classification;
     const recovery = executionBoundary.recovery ? resolveRecoveryStep(executionBoundary.recovery, failureType, attempts) : { action: "same-agent" as const };
     const recoveryAction = formatRecoveryAction(recovery, selection?.logicalAgent ?? "legacy-worker");
-    const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction });
+    const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction, reportArtifact: `${effectiveConfig.sdd?.reportsDir ?? ".harness/reports"}/${effectiveContract.task.id}.json` });
     if (!packet.failures.length) break;
     await writeRepairPacket(controlRoot, effectiveConfig, packet);
     await recordEvent(controlRoot, effectiveConfig, "harness.repair.start", { taskId: effectiveContract.task.id, attempt: attempts, failureType, failureMechanism: failureDecision.mechanism, failureAssessmentDigest: failureDecision.assessmentDigest, failureUnknowns: failureDecision.unknowns, recoveryAction, failures: packet.failures.length });
