@@ -34,6 +34,7 @@ import {
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import { HumanDecisionLedgerV2 } from "../src/security/humanDecision.js";
 import { saveOwnedOperation } from "./helpers/ownedOperation.js";
+import { persistValidationReportForRepair } from "./helpers/repairReport.js";
 import { runShell } from "../src/utils/process.js";
 import { buildRepairPrompt } from "../src/workers/prompt.js";
 
@@ -234,6 +235,7 @@ describe("owner-scoped hard-protection exemption via suspend/decide/resume (DETE
       models: { test: { runtime: "test", model: "fake" } },
       roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
     });
+    await persistValidationReportForRepair(root, config, task.task.id);
     await expect(
       executeRepairerCandidateMutation({
         root, stateRoot: root, operationId, taskId: task.task.id,
@@ -420,6 +422,7 @@ describe("owner-scoped hard-protection exemption via suspend/decide/resume (DETE
       models: { test: { runtime: "test", model: "fake" } },
       roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
     });
+    await persistValidationReportForRepair(root, config, task.task.id);
     await expect(
       executeRepairerCandidateMutation({
         root, stateRoot: root, operationId, taskId: task.task.id,
@@ -612,6 +615,7 @@ async function hardBlockerViaRepairer(root: string, operationId: string, task: T
     models: { test: { runtime: "test", model: "fake" } },
     roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
   });
+  await persistValidationReportForRepair(root, config, task.task.id);
   return executeRepairerCandidateMutation({
     root, stateRoot: root, operationId, taskId: task.task.id,
     workUnitId: `validation-repair:${operationId}`, phase: "validation-repair",
@@ -649,6 +653,7 @@ async function retryWriting(root: string, operationId: string, task: TaskContrac
     models: { test: { runtime: "test", model: "fake" } },
     roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
   });
+  await persistValidationReportForRepair(root, config, task.task.id);
   return executeRepairerCandidateMutation({
     root, stateRoot: root, operationId, taskId: task.task.id,
     workUnitId: "validation-repair:owner-retry", phase: "validation-repair",

@@ -77,4 +77,17 @@ describe("repair packets", () => {
     expect(() => encodeURIComponent(excerpt)).not.toThrow();
     expect(Array.from(excerpt).join("")).toBe(excerpt);
   });
+
+  it("caps unbounded check ids and categories", () => {
+    const packet = createRepairPacket({
+      version: 1, taskId: "T-4", status: "FAIL",
+      startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z",
+      changedFiles: [], metadata: {},
+      checks: [{ id: `id-${"i".repeat(600)}`, category: `cat-${"c".repeat(600)}`, status: "FAIL", message: "broke" }],
+    }, 1, { reportArtifact: ".harness/reports/T-4.json" });
+    const prompt = buildRepairPrompt(packet);
+    expect(prompt).not.toContain("i".repeat(600));
+    expect(prompt).not.toContain("c".repeat(600));
+    expect(prompt).toContain("broke");
+  });
 });

@@ -141,6 +141,12 @@ export async function executeIsolatedCandidateMutation(input: {
   contract: TaskContract;
   execute: (isolatedRoot: string) => Promise<WorkerSession>;
   prepareWorkspace?: (isolatedRoot: string) => Promise<void>;
+  /**
+   * Repair task id requiring evidence: when set, the validation report for
+   * this task id must materialize into the isolated root (fail-closed
+   * otherwise). Repair callers set it; planning/rollback mutations omit it.
+   */
+  requireRepairEvidenceFor?: string;
 }): Promise<IsolatedCandidateExecutionV1> {
   if (input.candidate.operationId !== input.operationId) throw new AehError("CANDIDATE_STALE", "DIRECT execution candidate belongs to another operation.");
   if (input.candidate.taskId && input.candidate.taskId !== input.taskId) throw new AehError("CANDIDATE_STALE", "DIRECT execution candidate belongs to another task.");
@@ -173,9 +179,18 @@ export async function executeIsolatedCandidateMutation(input: {
     // so post-baseline refreshes can never pollute the ChangeSet.
     await writeDirectStagingHeartbeat(isolatedRoot, { operationId: input.operationId, taskId: input.taskId, candidateDigest: input.candidate.identityDigest }).catch(() => undefined);
     await copyTaskContext(input.root, isolatedRoot, input.config, input.contract);
-    // Repair evidence travels with task context: the repair prompt's report
-    // pointer must resolve in the isolated mutation root.
-    await materializeRepairEvidence(input.root, isolatedRoot, input.config, input.contract.task.id);
+    // Repair evidence travels with task context when a repair task id is
+    // declared: the repair prompt's report pointer must resolve in the
+    // isolated mutation root. Absent reports are a no-op for non-repair
+    // mutations; repair callers declare the task id and get a fail-closed
+    // assertion against dangling pointers.
+    if (input.requireRepairEvidenceFor !== undefined) {
+      if (!(await materializeRepairEvidence(input.root, isolatedRoot, input.config, input.requireRepairEvidenceFor))) {
+        throw new Error("REPAIR_EVIDENCE_MISSING: validation report artifact is absent for isolated repair; refusing a dangling evidence pointer.");
+      }
+    } else {
+      await materializeRepairEvidence(input.root, isolatedRoot, input.config, input.contract.task.id);
+    }
     await input.prepareWorkspace?.(isolatedRoot);
     await assertContainedSourceSymlinks(isolatedRoot);
 

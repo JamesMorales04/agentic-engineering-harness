@@ -44,8 +44,24 @@ export async function materializeRepairEvidence(
     throw error;
   });
   if (!source) return false;
-  const destination = repositoryPath(target, relative);
+  const absoluteTarget = path.resolve(target);
+  const destination = repositoryPath(absoluteTarget, relative);
   await fs.mkdir(path.dirname(destination), { recursive: true });
+  // Destination symlink defense: a pre-existing symlink at the destination
+  // (or in its resolved parent) would redirect the copy outside the isolated
+  // workspace. Resolve the real parent and re-check containment, and refuse
+  // to copy through a destination symlink.
+  const realParent = await fs.realpath(path.dirname(destination));
+  const parentWithin = path.relative(absoluteTarget, realParent);
+  if (parentWithin.startsWith("..") || path.isAbsolute(parentWithin)) {
+    throw new Error("REPAIR_EVIDENCE_ESCAPE: repair evidence destination escapes the isolated workspace.");
+  }
+  try {
+    const existing = await fs.lstat(destination);
+    if (existing.isSymbolicLink()) throw new Error("REPAIR_EVIDENCE_ESCAPE: repair evidence destination is a symlink.");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || String((error as Error).message).startsWith("REPAIR_EVIDENCE_ESCAPE")) throw error;
+  }
   await fs.copyFile(source, destination);
   return true;
 }
