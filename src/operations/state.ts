@@ -653,7 +653,6 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
     await reverifyDelegatedDecisionForOperation(root, {
       actorId: decision.actorId,
       ...(decision.delegatedFrom ? { delegatedFrom: decision.delegatedFrom } : {}),
-      projectId: policy.projectId,
       requiredCapability: "recovery.authorize",
     });
   }
