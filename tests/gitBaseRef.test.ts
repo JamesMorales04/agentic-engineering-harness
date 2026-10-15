@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveCommit, resolveWorkspaceBase } from "../src/core/git.js";
-import { resolveHandoffWorkspaceBase } from "../src/delivery/handoff.js";
+import { buildHandoffWorkspaceEvidence, buildHandoffWorkspacePayload, resolveHandoffWorkspaceBase } from "../src/delivery/handoff.js";
 import { buildBranchOffWorkspaceCommand } from "../src/operations/controller.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
@@ -89,6 +89,23 @@ describe("workspace base commit resolution (DETERMINISTIC)", () => {
     });
     expect(await resolveHandoffWorkspaceBase(root, undefined, "no-such-ref")).toEqual({
       mode: "branch-off", branch: "", base: "no-such-ref", basePinned: false,
+    });
+  });
+
+  it("builds the exact authorized handoff payload, receipt-bound to the resolved base", async () => {
+    const payload = buildHandoffWorkspacePayload({
+      root: "/repo", slug: "slug", taskId: "T-1", mode: "branch-off",
+      branch: "feature/T-1", base: "a".repeat(40), basePinned: true,
+    });
+    expect(payload).toEqual({
+      path: "/repo", isolation: "worktree", mode: "branch-off", branch: "feature/T-1",
+      base: "a".repeat(40), basePinned: true, slug: "slug", title: "T-1",
+    });
+    // The receipt evidence carries the same base so the authorization,
+    // executor call, and receipt cannot disagree about the base.
+    expect(buildHandoffWorkspaceEvidence({ workspaceId: "wks_1", worktreePath: "/w" }, payload)).toEqual({
+      workspaceId: "wks_1", worktreePath: "/w", branch: "feature/T-1",
+      base: "a".repeat(40), basePinned: true,
     });
   });
 });
