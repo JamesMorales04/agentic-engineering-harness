@@ -41,10 +41,7 @@ function noteNativePendingStart(handle: object, pending: unknown): string | unde
   return undefined;
 }
 
-/** Test-only: reset the native mid-turn pending-start tracker for a handle. */
-export function __testResetNativePendingStart(handle: object): void {
-  nativePendingStartByHandle.delete(handle);
-}
+/** Production native pending tracker exposes no test hooks (see suite-level hygiene assertion). */
 
 export interface PaseoNativeUsage {
   inputTokens?: number;

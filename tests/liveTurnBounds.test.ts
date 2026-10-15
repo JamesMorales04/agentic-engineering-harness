@@ -502,10 +502,60 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
     expect(earliestTrackedPendingStartMs()).toBeUndefined();
   });
 
+  it("(R6-i) REGRESSION: rejected second stop still clears the marker — stalled run, first stop ok", async () => {
+    // P1: the stalled run() path stops the handle inside
+    // runWithFirstActivityWatch, then attempts ANOTHER stop before the
+    // stall early-return clears the marker. When the second stop rejects,
+    // the call must still drop the tracked pending marker instead of
+    // rejecting with the marker armed for later clean reviewers.
+    const pending = [{ name: "shell", input: {}, id: "pending-r6i" }];
+    let stops = 0;
+    const handle = {
+      id: "agent-sdk-stall-stop-rejects",
+      pendingPermissions: pending,
+      cancel: async () => {
+        stops += 1;
+        if (stops > 1) throw new Error("cancel already settled");
+      },
+      run: () => new Promise<unknown>(() => {}),
+    };
+    const client = { agents: { ref: () => handle } };
+    await expect(
+      runPaseoSdkAgentWithClient(client as never, "agent-sdk-stall-stop-rejects", "work", 10_000, undefined, undefined, { firstActivityMs: 60, pollMs: 5 })
+    ).rejects.toThrow("cancel already settled");
+    expect(stops).toBe(2);
+    // Fails pre-fix: the rejected second stop skips the clear.
+    expect(hasTrackedPendingPrompt()).toBe(false);
+    expect(earliestTrackedPendingStartMs()).toBeUndefined();
+  });
+
   it("(R5-iii) BUILD HYGIENE: production SDK module exposes no __test hooks", () => {
     // P2: test seams must not ship in production exports (or the build).
     const leaked = Object.keys(paseoSdk).filter((key) => key.startsWith("__test"));
     expect(leaked).toEqual([]);
+  });
+
+  it("(R6-ii) BUILD HYGIENE: no production module under src/ exposes __test hooks", async () => {
+    // P2 widened: the native.ts seam survived because the assertion checked
+    // only the sdk module object. Grep every production source file instead.
+    const { readdirSync, readFileSync, statSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const { join } = await import("node:path");
+    const srcRoot = fileURLToPath(new URL("../src/", import.meta.url));
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!full.endsWith(".ts")) continue;
+        if (/export\s+[^\n]*__test/.test(readFileSync(full, "utf8"))) offenders.push(full);
+      }
+    };
+    walk(srcRoot);
+    expect(offenders).toEqual([]);
   });
 
   it("(P1b) recent heartbeat + expired lease is NOT stalled", () => {    const now = Date.now();

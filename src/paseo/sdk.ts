@@ -684,7 +684,16 @@ export async function dispatchPaseoSdkAgentWithClient(
         // A4: the atomic dispatch-run carries the same first-activity watch
         // as the resumed-turn run path (same stop-then-read verdicts).
         const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs: attemptTimeout }), attemptTimeout, activityOptions);
-        if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+        if (turn.status === "timeout") {
+          try {
+            await stopPaseoSdkAgentHandle(handle);
+          } finally {
+            // Stop-outcome paths must never skip tracker cleanup: the second
+            // stop can reject (the handle was already stopped inside
+            // runWithFirstActivityWatch) and must still drop the marker.
+            clearTrackedPendingStart(handle);
+          }
+        }
         if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
           // Stall settlement bypasses turnResult: drop the marker here.
           clearTrackedPendingStart(handle);
@@ -797,7 +806,16 @@ export async function runPaseoSdkAgentWithClient(
       const handle = client.agents.ref(agentId);
       if (typeof handle.run === "function") {
         const turn = await runWithFirstActivityWatch(handle, () => handle.run!(prompt, { timeoutMs: attemptTimeout, ...(outputSchema ? { outputSchema } : {}) }), attemptTimeout, activityOptions);
-        if (turn.status === "timeout") await stopPaseoSdkAgentHandle(handle);
+        if (turn.status === "timeout") {
+          try {
+            await stopPaseoSdkAgentHandle(handle);
+          } finally {
+            // Stop-outcome paths must never skip tracker cleanup: the second
+            // stop can reject (the handle was already stopped inside
+            // runWithFirstActivityWatch) and must still drop the marker.
+            clearTrackedPendingStart(handle);
+          }
+        }
         if (turn.killReason === "STALLED_FIRST_ACTIVITY") {
           // Stall settlement bypasses turnResult: drop the marker here.
           clearTrackedPendingStart(handle);
