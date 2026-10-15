@@ -54,10 +54,10 @@ export interface LocalControlCenterOptionsV1 {
   host?: "127.0.0.1" | "localhost";
   port?: number;
   snapshot?: () => Promise<ControlCenterSnapshotInputV1> | ControlCenterSnapshotInputV1;
-  onDecision?: (decision: ControlCenterDecisionInputV1, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
-  onCancelOperation?: (operationId: string, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
-  onPauseOperation?: (operationId: string, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
-  onResumeOperation?: (operationId: string, actorId: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
+  onDecision?: (decision: ControlCenterDecisionInputV1, actorId: string, delegationId?: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
+  onCancelOperation?: (operationId: string, actorId: string, delegationId?: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
+  onPauseOperation?: (operationId: string, actorId: string, delegationId?: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
+  onResumeOperation?: (operationId: string, actorId: string, delegationId?: string) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
   onListDelegations?: (actorId: string) => Promise<readonly unknown[]> | readonly unknown[];
   onGrantDelegation?: (body: Record<string, unknown>, actorId: string) => Promise<Record<string, unknown>> | Record<string, unknown>;
   onRevokeDelegation?: (delegationId: string, actorId: string, reason: string | undefined) => Promise<ControlCenterActionResultV1> | ControlCenterActionResultV1;
@@ -289,7 +289,9 @@ export class LocalControlCenterV1 {
       }
       if (request.method === "POST" && url.pathname === "/api/v1/decisions") {
         const session = this.assertCsrf(request);
-        const result = this.onDecision ? await this.onDecision(await this.body(request) as ControlCenterDecisionInputV1, session.actorId) : { accepted: false, reason: "no decision handler configured" };
+        // Delegate sessions act under the grant they were minted for: its id travels
+      // with every Owner action so multi-grant delegates never hit ambiguity.
+      const result = this.onDecision ? await this.onDecision(await this.body(request) as ControlCenterDecisionInputV1, session.actorId, session.delegation?.delegationId) : { accepted: false, reason: "no decision handler configured" };
         return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
       }
       if (request.method === "GET" && url.pathname === "/api/v1/delegations") {
@@ -331,21 +333,21 @@ export class LocalControlCenterV1 {
       if (request.method === "POST" && cancel) {
         const session = this.assertCsrf(request);
         const operationId = decodeURIComponent(cancel[1]);
-        const result = this.onCancelOperation ? await this.onCancelOperation(operationId, session.actorId) : { accepted: false, reason: "no cancellation handler configured" };
+        const result = this.onCancelOperation ? await this.onCancelOperation(operationId, session.actorId, session.delegation?.delegationId) : { accepted: false, reason: "no cancellation handler configured" };
         return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
       }
       const pause = /^\/api\/v1\/operations\/([^/]+)\/pause$/.exec(url.pathname);
       if (request.method === "POST" && pause) {
         const session = this.assertCsrf(request);
         const operationId = decodeURIComponent(pause[1]);
-        const result = this.onPauseOperation ? await this.onPauseOperation(operationId, session.actorId) : { accepted: false, reason: "no pause handler configured" };
+        const result = this.onPauseOperation ? await this.onPauseOperation(operationId, session.actorId, session.delegation?.delegationId) : { accepted: false, reason: "no pause handler configured" };
         return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
       }
       const resume = /^\/api\/v1\/operations\/([^/]+)\/resume$/.exec(url.pathname);
       if (request.method === "POST" && resume) {
         const session = this.assertCsrf(request);
         const operationId = decodeURIComponent(resume[1]);
-        const result = this.onResumeOperation ? await this.onResumeOperation(operationId, session.actorId) : { accepted: false, reason: "no resume handler configured" };
+        const result = this.onResumeOperation ? await this.onResumeOperation(operationId, session.actorId, session.delegation?.delegationId) : { accepted: false, reason: "no resume handler configured" };
         return this.json(response, 200, { version: CONTROL_CENTER_CONTRACT_VERSION, ...result });
       }
       this.json(response, 404, { error: "not found" });
