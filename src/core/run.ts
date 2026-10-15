@@ -1011,7 +1011,11 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         selection: repairerSelection,
         executionCatalog: executionBoundary.executionCatalog,
         allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-        forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+        // The repair evidence artifact is read-only input: a repairer that
+        // writes it would tamper with the evidence its own ChangeSet is
+        // judged against. Forbidding it routes such writes to the
+        // fail-closed scope-escape BLOCKED path instead of the candidate.
+        forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? []), repairReportArtifact],
         prompt: repairPrompt,
         prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
         requireRepairEvidence: true,
@@ -1102,7 +1106,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           selection: repairerSelection,
           executionCatalog: executionBoundary.executionCatalog,
           allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-          forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+          forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? []), repairReportArtifact],
           scopeAmendment: amendment,
           prompt: repairPrompt,
           prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
@@ -1180,7 +1184,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             selection: repairerSelection,
             executionCatalog: executionBoundary.executionCatalog,
             allowedScope: effectiveContract.scope?.allowed ?? ["**"],
-            forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
+            forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? []), repairReportArtifact],
             scopeAmendment: secondAmendment,
             prompt: repairPrompt,
             prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
