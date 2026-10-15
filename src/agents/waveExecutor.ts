@@ -46,7 +46,7 @@ import {
   type RepairScopeBlockerReceiptV1,
 } from "../candidates/repairScope.js";
 import { partitionRepairScopeBlockerFiles, repairProtectedPaths } from "../candidates/repair.js";
-import { materializeCandidateState } from "../candidates/direct.js";
+import { materializeCandidateState, DIRECT_STAGING_HEARTBEAT_FILENAME } from "../candidates/direct.js";
 import { createWaveBase, integrateWaveChangeSets, type WaveChangeSetSubmissionV1 } from "../candidates/wave.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
@@ -189,6 +189,347 @@ export function classifyWaveCorrectionDeclarationV1(input: {
     filesNeededOutsideScope: partitioned.genuinelyBlocked,
   });
   return { blocked: true, blocker, strippedCount: partitioned.stripped.length };
+}
+
+/**
+ * FAM-WAVE live off-patch gate (DETERMINISTIC, fail-closed, hardcoded-deny).
+ *
+ * Per-unit worker filesystem writes used to be observed only through the
+ * captured `git diff` (assembler defense-in-depth). The live gate below
+ * snapshots the per-unit worktree file set at unit launch (after
+ * `materializeCandidateState` + baseline commit) and scope-checks the live
+ * worktree filesystem state immediately after EACH worker invocation on the
+ * unit worktree (initial turn and correction turn each get a fresh
+ * pre-invocation snapshot paired with an immediate post-invocation check),
+ * BEFORE the diff is captured. A write introduced by one invocation is
+ * therefore caught by that invocation's post-check even if a later
+ * invocation reverts it (cross-invocation revert is caught; only a
+ * write+revert fully contained inside a SINGLE worker invocation leaves no
+ * observable filesystem trace). Entries carry full-precision ctime + inode
+ * alongside the content hash, so an in-place write+revert that restores bytes
+ * and mtime is still flagged (restoring mtime via utime updates ctime, and
+ * delete+recreate changes the inode). Any new/modified/deleted/unreadable
+ * file outside the unit's claimed pathspec — plus any regular file whose
+ * content cannot be read (fail-closed sentinel, in or out of scope) — is
+ * DENIED live with an OFF_PATCH_WRITE_DENIED receipt (terminal FAIL, no
+ * correction turn on the local path). The distributed branch applies the same
+ * off-patch check to the remotely reported changed-file list UNION the files
+ * named by the returned patch. Harness-owned heartbeat and provider-generated
+ * scratch paths (same set the DIRECT path excludes from ChangeSet diffs) are
+ * excluded from the walker and the matcher. The assembler diff gate stays as
+ * defense-in-depth.
+ *
+ * NARROWED RESIDUAL (honest): an intra-single-invocation write+revert that
+ * restores content bytes, mtime, ctime and inode leaves no observable state
+ * trace for any snapshot-compare gate; the assembler diff gate plus
+ * per-invocation checks stand as defense-in-depth for that residue.
+ *
+ * MECHANISM: DETERMINISTIC (filesystem snapshot + minimatch pathspec; no model).
+ */
+export const WAVE_OFF_PATCH_DENIED_EVENT_V1 = "harness.wave.off-patch-denied";
+
+/**
+ * Sentinel content hash marking a regular file that was present in the unit
+ * worktree but whose bytes could not be read. Unreadable means unprovable
+ * containment, so the matcher treats sentinel entries as touched (a
+ * violation) rather than skipping them. The value is deliberately not a hex
+ * digest so it can never collide with a real content hash.
+ */
+export const WAVE_WORKTREE_UNREADABLE_HASH_V1 = "wave-unreadable:v1";
+
+export interface WaveWorktreeSnapshotEntryV1 {
+  hash: string;
+  mtimeMs: number;
+  size: number;
+  symlink: boolean;
+  /** Full-precision ctime (NOT floored): restoring mtime via utime updates
+   * ctime, so in-place write+revert with mtime restore is still detected. */
+  ctimeMs: number;
+  /** Inode number (0 when unavailable): delete+recreate with restored
+   * content/mtime still changes identity. Compared only when both sides
+   * carry a nonzero value. */
+  ino: number;
+}
+
+/**
+ * Harness-owned paths that are never product source and never scope
+ * evidence. Mirrors the DIRECT ChangeSet exclusions (direct.ts:201-202):
+ * the owner heartbeat file plus provider-generated scratch prefixes
+ * (canonical prefix list in src/core/git.ts `PROVIDER_GENERATED_PREFIXES`).
+ * Applied to the unit-worktree walker AND the off-patch matcher so
+ * heartbeat liveness refreshes and provider scratch updates can never read
+ * as off-patch writes.
+ *
+ * MECHANISM: DETERMINISTIC (fixed name/prefix match; no model).
+ */
+const WAVE_WORKTREE_PROVIDER_GENERATED_PREFIXES_V1 = [".serena", "graphify-out"];
+export function isWaveWorktreeExcludedV1(file: string): boolean {
+  const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
+  const segments = normalized.split("/");
+  // R2: the heartbeat exemption is ROOT-ONLY. DIRECT's pathspec exclusion
+  // covers only the root heartbeat file; a nested heartbeat-named file
+  // (e.g. outside/.aeh-direct-heartbeat.json) is an ordinary off-patch write
+  // and must not be excluded at any depth.
+  if (segments.length === 1 && segments[0] === DIRECT_STAGING_HEARTBEAT_FILENAME) return true;
+  const first = segments[0] ?? normalized;
+  return WAVE_WORKTREE_PROVIDER_GENERATED_PREFIXES_V1.some((prefix) => first === prefix);
+}
+
+export interface WaveOffPatchDenialV1 {
+  version: 1;
+  operationId: string;
+  taskId: string;
+  workUnitId: string;
+  participantId?: string;
+  files: string[];
+  fileCount: number;
+  digest: string;
+}
+
+export function createWaveOffPatchDenialV1(input: {
+  operationId: string;
+  taskId: string;
+  workUnitId: string;
+  participantId?: string;
+  files: readonly string[];
+}): WaveOffPatchDenialV1 {
+  const files = [...new Set(input.files.map((f) => f.replaceAll("\\", "/").replace(/^\.\//, "")))].sort();
+  const digest = sha256Canonical({
+    version: 1,
+    operationId: input.operationId,
+    taskId: input.taskId,
+    workUnitId: input.workUnitId,
+    ...(input.participantId ? { participantId: input.participantId } : {}),
+    files,
+  });
+  return {
+    version: 1,
+    operationId: input.operationId,
+    taskId: input.taskId,
+    workUnitId: input.workUnitId,
+    ...(input.participantId ? { participantId: input.participantId } : {}),
+    files,
+    fileCount: files.length,
+    digest,
+  };
+}
+
+/** Pure set-difference core: touched files (new/changed/deleted vs snapshot) outside scope. */
+export function findOffPatchWritesV1(input: {
+  snapshot: ReadonlyMap<string, WaveWorktreeSnapshotEntryV1> | readonly string[];
+  current: ReadonlyMap<string, WaveWorktreeSnapshotEntryV1> | readonly string[];
+  allowedScope: readonly string[];
+}): string[] {
+  const snapMap = Array.isArray(input.snapshot)
+    ? new Map(input.snapshot.map((f) => [f, undefined] as const))
+    : input.snapshot;
+  const curMap = Array.isArray(input.current)
+    ? new Map(input.current.map((f) => [f, undefined] as const))
+    : input.current;
+  const touched: string[] = [];
+  const unreadable: string[] = [];
+  for (const [file, cur] of curMap as Map<string, WaveWorktreeSnapshotEntryV1 | undefined>) {
+    const prev = (snapMap as Map<string, WaveWorktreeSnapshotEntryV1 | undefined>).get(file);
+    if (cur !== undefined && (cur as WaveWorktreeSnapshotEntryV1).hash === WAVE_WORKTREE_UNREADABLE_HASH_V1) {
+      // Fail-closed: a regular file present but unreadable is unprovable
+      // containment — always a violation, even when a previous snapshot also
+      // carries the sentinel (hash-equal would otherwise hide it) and even
+      // inside the claimed scope (scope filtering below never applies).
+      unreadable.push(file);
+      touched.push(file);
+      continue;
+    }
+    if (prev === undefined && cur === undefined) {
+      // String-set mode: every current file counts as touched (caller passes
+      // post-turn listing); scope filter below decides.
+      touched.push(file);
+      continue;
+    }
+    if (prev === undefined) {
+      touched.push(file); // new file
+      continue;
+    }
+    if (cur === undefined) {
+      touched.push(file); // deleted (present in snapshot, absent now)
+      continue;
+    }
+    const p = prev as WaveWorktreeSnapshotEntryV1;
+    const c = cur as WaveWorktreeSnapshotEntryV1;
+    if (p.hash !== c.hash || p.mtimeMs !== c.mtimeMs || p.size !== c.size || p.symlink !== c.symlink || waveWorktreeIdentityChangedV1(p, c)) {
+      touched.push(file);
+    }
+  }
+  // Deletions: snapshot files absent from current.
+  for (const file of (snapMap as Map<string, unknown>).keys()) {
+    if (!(curMap as Map<string, unknown>).has(file)) touched.push(file);
+  }
+  const unique = [...new Set(touched)].sort();
+  const unreadableSet = new Set(unreadable);
+  // Harness-owned heartbeat/generated paths are never scope evidence
+  // (walker + matcher exclusion, same set the DIRECT path excludes from
+  // ChangeSet diffs). Unreadable sentinels bypass the scope filter (deny even
+  // in-scope) but never bypass the harness-owned exclusion.
+  return unique.filter((file) => !isWaveWorktreeExcludedV1(file) && (unreadableSet.has(file) || !matchesAny(file, [...input.allowedScope])));
+}
+
+/**
+ * Identity change beyond content hash: full-precision ctime or inode
+ * differs. Catches in-place write+revert with restored bytes+mtime (utime
+ * updates ctime) and delete+recreate with restored bytes+mtime (new inode).
+ * Compared only when both sides carry the signal (hand-built maps without
+ * ctime/ino degrade to hash/mtime/size comparison, never to a false hit).
+ *
+ * MECHANISM: DETERMINISTIC.
+ */
+function waveWorktreeIdentityChangedV1(prev: WaveWorktreeSnapshotEntryV1, cur: WaveWorktreeSnapshotEntryV1): boolean {
+  if (Number.isFinite(prev.ctimeMs) && Number.isFinite(cur.ctimeMs) && prev.ctimeMs !== cur.ctimeMs) return true;
+  if (Number.isFinite(prev.ino) && Number.isFinite(cur.ino) && prev.ino !== 0 && cur.ino !== 0 && prev.ino !== cur.ino) return true;
+  return false;
+}
+
+/**
+ * List files named by a unified patch (DETERMINISTIC, pure, no I/O).
+ * Parses `diff --git a/<p> b/<p>` headers plus `---`/`+++` file lines
+ * (`/dev/null` sides skipped), so a remotely reported patch cannot smuggle
+ * an off-scope file the changed-file list omits. Over-approximates: unparseable
+ * lines are ignored, never allow-listed.
+ */
+export function listWavePatchFilesV1(patch: string): string[] {
+  const files = new Set<string>();
+  const add = (raw: string): void => {
+    let file = raw.trim();
+    if (!file || file === "/dev/null") return;
+    if ((file.startsWith('"') && file.endsWith('"')) || (file.startsWith("'") && file.endsWith("'"))) file = file.slice(1, -1);
+    for (const prefix of ["a/", "b/"]) if (file.startsWith(prefix)) { file = file.slice(2); break; }
+    file = file.replaceAll("\\", "/").replace(/^\.\//, "");
+    if (file && file !== "/dev/null") files.add(file);
+  };
+  for (const line of patch.split(/\r?\n/)) {
+    const git = line.match(/^diff --git\s+(\S+)\s+(\S+)\s*$/);
+    if (git) { add(git[1]!); add(git[2]!); continue; }
+    const side = line.match(/^[+-]{3}\s+(\S.*)$/);
+    if (side) add(side[1]!.split("\t")[0]!);
+  }
+  return [...files].sort();
+}
+
+/**
+ * Distributed-branch off-patch check: the remotely reported changed-file
+ * list UNION the files named by the returned patch, validated against the
+ * unit's claimed pathspec. A remote worker's file list is self-reported, so
+ * the patch it ships is cross-checked too — either channel naming an
+ * off-scope (non-harness-owned) file is a violation.
+ *
+ * MECHANISM: DETERMINISTIC.
+ */
+export function findDistributedWaveOffPatchV1(input: { changedFiles: readonly string[]; patch: string; allowedScope: readonly string[] }): string[] {
+  const claimed = [...new Set([...input.changedFiles, ...listWavePatchFilesV1(input.patch)].map((f) => f.replaceAll("\\", "/").replace(/^\.\//, "")))].sort();
+  return claimed.filter((file) => !isWaveWorktreeExcludedV1(file) && !matchesAny(file, [...input.allowedScope]));
+}
+
+async function walkWaveWorktreeFiles(worktree: string, dir = "", out: string[] = []): Promise<string[]> {
+  const entries = await fs.readdir(path.join(worktree, dir), { withFileTypes: true });
+  for (const entry of entries) {
+    if (!dir && entry.name === ".git") continue;
+    const rel = dir ? `${dir}/${entry.name}` : entry.name;
+    // Harness-owned heartbeat/generated paths never enter the snapshot
+    // (same set the DIRECT path excludes from ChangeSet diffs); excluded
+    // directories are not descended into.
+    if (isWaveWorktreeExcludedV1(rel)) continue;
+    if (entry.isDirectory()) await walkWaveWorktreeFiles(worktree, rel, out);
+    else out.push(rel);
+  }
+  return out;
+}
+
+/** Snapshot the live per-unit worktree file set (after materialize + baseline). Fail-closed: throws on I/O. */
+export async function snapshotWaveWorktreeV1(worktree: string): Promise<Map<string, WaveWorktreeSnapshotEntryV1>> {
+  const files = (await walkWaveWorktreeFiles(worktree)).sort();
+  const snapshot = new Map<string, WaveWorktreeSnapshotEntryV1>();
+  for (const file of files) {
+    const absolute = path.join(worktree, ...file.split("/"));
+    const stat = await fs.lstat(absolute);
+    if (stat.isSymbolicLink()) {
+      const target = await fs.readlink(absolute).catch(() => "");
+      snapshot.set(file, { hash: sha256Utf8(`link:${target}`), mtimeMs: Math.floor(stat.mtimeMs), size: target.length, symlink: true, ctimeMs: stat.ctimeMs, ino: stat.ino });
+    } else if (stat.isFile()) {
+      const bytes = await fs.readFile(absolute).catch(() => undefined);
+      if (bytes === undefined) {
+        // Fail-closed: a regular file present in the worktree whose bytes
+        // cannot be read proves nothing about containment — record the
+        // unreadable sentinel (matcher treats it as a violation, deny)
+        // instead of silently omitting it.
+        snapshot.set(file, { hash: WAVE_WORKTREE_UNREADABLE_HASH_V1, mtimeMs: Math.floor(stat.mtimeMs), size: stat.size, symlink: false, ctimeMs: stat.ctimeMs, ino: stat.ino });
+        continue;
+      }
+      snapshot.set(file, { hash: sha256Utf8(bytes.toString("utf8")), mtimeMs: Math.floor(stat.mtimeMs), size: bytes.length, symlink: false, ctimeMs: stat.ctimeMs, ino: stat.ino });
+    }
+    // Non-regular, non-symlink entries (sockets, fifos, block/char devices)
+    // are explicitly skipped: they carry no stable content bytes to hash, so
+    // snapshotting them would either false-positive on every state poll
+    // (ephemeral socket identity) or block on read. A worker exfiltrating
+    // through a socket still lands bytes in a regular file elsewhere (or in
+    // no file at all, which no filesystem gate can observe); regular-file
+    // coverage above is the containment boundary.
+  }
+  return snapshot;
+}
+
+/** List + hash the current per-unit worktree state for the live gate. */
+export async function currentWaveWorktreeStateV1(worktree: string): Promise<Map<string, WaveWorktreeSnapshotEntryV1>> {
+  return snapshotWaveWorktreeV1(worktree);
+}
+
+/** Live gate check: touched-off-scope files vs the launch snapshot. */
+export async function checkWaveWorktreeOffPatchV1(worktree: string, snapshot: ReadonlyMap<string, WaveWorktreeSnapshotEntryV1>, allowedScope: readonly string[]): Promise<string[]> {
+  const current = await currentWaveWorktreeStateV1(worktree);
+  return findOffPatchWritesV1({ snapshot, current, allowedScope });
+}
+
+/**
+ * Per-invocation live check: snapshot the current unit-worktree state and
+ * scope-check it against a pre-invocation snapshot, returning both the fresh
+ * state (for chaining the next invocation's pre-snapshot) and the violation
+ * list. Every worker invocation on the unit worktree pairs one fresh
+ * pre-snapshot (taken immediately before dispatch) with one immediate call
+ * here (before any further worker or git activity), so a write introduced by
+ * one invocation is caught even if a later invocation reverts it.
+ *
+ * MECHANISM: DETERMINISTIC.
+ */
+export async function checkWaveUnitTurnOffPatchV1(worktree: string, preSnapshot: ReadonlyMap<string, WaveWorktreeSnapshotEntryV1>, allowedScope: readonly string[]): Promise<{ current: Map<string, WaveWorktreeSnapshotEntryV1>; offPatch: string[] }> {
+  const current = await snapshotWaveWorktreeV1(worktree);
+  return { current, offPatch: findOffPatchWritesV1({ snapshot: preSnapshot, current, allowedScope }) };
+}
+
+/**
+ * Local-path live denial: emit the OFF_PATCH_WRITE_DENIED receipt event and
+ * return the terminal FAIL result (patch "" is protection). Shared by the
+ * initial-turn and correction-turn post-invocation checks so both denial
+ * sites stay identical.
+ *
+ * MECHANISM: DETERMINISTIC.
+ */
+async function denyWaveUnitLiveOffPatchV1(input: { stateRoot: string; config: HarnessProjectConfig; operationId: string; contract: TaskContract; task: WorkUnitOutput; participantId: string; session: WorkerSession; files: readonly string[]; correction?: boolean }): Promise<DelegationExecutionResult> {
+  const denial = createWaveOffPatchDenialV1({ operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId: input.participantId, files: input.files });
+  await recordEvent(input.stateRoot, input.config, WAVE_OFF_PATCH_DENIED_EVENT_V1, { operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId: input.participantId, files: denial.files, fileCount: denial.fileCount, denialDigest: denial.digest, status: "FAIL", ...(input.correction ? { correction: true } : {}) }).catch(() => undefined);
+  return { task: input.task, session: input.session, changedFiles: denial.files, patch: "", status: "FAIL", message: `OFF_PATCH_WRITE_DENIED: worker wrote outside its claimed scope live: ${denial.files.slice(0, 8).join(", ")} (denial ${denial.digest.slice(0, 16)}). Writes outside the unit pathspec are denied; declare via filesNeededOutsideScope.` };
+}
+
+/**
+ * Distributed-branch live denial: same OFF_PATCH_WRITE_DENIED receipt and
+ * event as the local path, plus the WAVE_RECONCILIATION_REQUIRED prefix so
+ * the wave boundary routes the sibling to reconciliation (the distributed
+ * branch never reaches the assembler's reconciliation path with a built
+ * ChangeSet — denial happens before `buildWaveChangeSet`). Terminal FAIL,
+ * no correction turn for a live denial.
+ *
+ * MECHANISM: DETERMINISTIC.
+ */
+async function denyDistributedWaveOffPatchV1(input: { stateRoot: string; config: HarnessProjectConfig; operationId: string; contract: TaskContract; task: WorkUnitOutput; participantId: string; session: WorkerSession; files: readonly string[] }): Promise<DelegationExecutionResult> {
+  const denial = createWaveOffPatchDenialV1({ operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId: input.participantId, files: input.files });
+  await recordEvent(input.stateRoot, input.config, WAVE_OFF_PATCH_DENIED_EVENT_V1, { operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId: input.participantId, files: denial.files, fileCount: denial.fileCount, denialDigest: denial.digest, status: "FAIL", distributed: true }).catch(() => undefined);
+  return { task: input.task, session: input.session, changedFiles: denial.files, patch: "", status: "FAIL", distributed: true, message: `WAVE_RECONCILIATION_REQUIRED: OFF_PATCH_WRITE_DENIED: distributed worker reported files outside its claimed scope: ${denial.files.slice(0, 8).join(", ")} (denial ${denial.digest.slice(0, 16)}). Writes outside the unit pathspec are denied; declare via filesNeededOutsideScope.` };
 }
 
 export async function executePlannerWaves(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; plannerSelection?: AgentExecutionSelection; librarianSelection?: AgentExecutionSelection; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; capabilityRegistry: CapabilityRegistryV1; controller?: ControlPlaneSnapshot; precomputedPlan?: PlannerOutput; plannerPromptContext?: { operationId?: string; request?: string; explorerContext?: string; inputsPrompt?: string; readRoots?: readonly string[] }; semanticAssessment?: CandidateImpactAssessmentRuntimeV1; projectStack?: ProjectStackProfileV1; knowledgeMode?: KnowledgeModeV1; knowledgeCache?: KnowledgeCacheV1; knowledgeResolutions?: readonly KnowledgeResolutionV1[]; knowledgeLookup?: (gap: Parameters<NonNullable<Parameters<typeof resolveKnowledgeGate>[0]["lookup"]>>[0]) => Promise<KnowledgePackV1 | KnowledgeLookupResultV1>; revalidate: () => Promise<ValidationReport>; onScopeEscape?: (record: CandidateScopeEscapeV1) => Promise<void> | void }): Promise<PlannerWaveResult> {
@@ -640,7 +981,7 @@ function buildLibrarianPrompt(gap: { cacheKey: string; missingCompetencies: stri
   return `Resolve this deterministic knowledge gap as a read-only Librarian. Do not edit source, install anything, grant tools or change policy. ${gap.mode === "DOCS_ONLY" ? "Use official, version-matched documentation only; repository examples, public code, community pages and unknown sources are not acceptable." : gap.mode === "OFFLINE" ? "Do not perform external lookup; report the gap as unresolved." : "Use approved version-matched documentation or clearly identified repository/public-code evidence."} Preserve source provenance. Return exactly one AEH_RESULT_JSON object with {"pack":{"version":1,"cacheKey":${JSON.stringify(gap.cacheKey)},"topic":...,"claims":[{"id":...,"statement":...,"competency":...,"confidence":"high|medium|low"}],"sources":[{"uri":...,"kind":"official|repository|public-code|unknown","version":...}],"retrievedAt":"ISO-8601","packDigest":"sha256"},"skillCandidate":{"version":1,"id":"ephemeral:<competency>","competency":"<competency>","procedure":["<exact step text>"],"sourcePackDigest":"<pack digest>","procedureEvidence":[{"stepIndex":0,"claimIds":["<claim id supporting this exact step>"],"sourceUris":["<supporting source URI from pack.sources>"]}]}}. If returning a procedure, provide one procedureEvidence entry for every step, with at least one pack claim ID and allowed source URI that support that exact step; do not add trust or acceptance fields because SkillTrustGate makes that decision. The pack and any candidate must address only: ${gap.missingCompetencies.join(", ")}. Gap reason: ${gap.reason}.`;
 }
 
-async function executeDelegation(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; controller?: ControlPlaneSnapshot; operationId: string; task: WorkUnitOutput; participantAssignment?: ParticipantAssignmentV1; executionBlueprint: ExecutionBlueprint; waveBase: CandidateRevisionV1; escapeCorrectionGate?: EscapeCorrectionBudgetGateV1; }): Promise<DelegationExecutionResult> {
+export async function executeDelegation(input: { root: string; stateRoot: string; config: HarnessProjectConfig; contract: TaskContract; implementationSelection: AgentExecutionSelection; executionCatalog: ExecutionCatalogV1; controller?: ControlPlaneSnapshot; operationId: string; task: WorkUnitOutput; participantAssignment?: ParticipantAssignmentV1; executionBlueprint: ExecutionBlueprint; waveBase: CandidateRevisionV1; escapeCorrectionGate?: EscapeCorrectionBudgetGateV1; }): Promise<DelegationExecutionResult> {
   if (!input.participantAssignment) return failed(input.task, input.implementationSelection, "EXECUTION_BLUEPRINT_INVALID: work unit has no frozen participant assignment.");
   const participantId = input.participantAssignment.participantId;
   let selection: AgentExecutionSelection;
@@ -774,6 +1115,17 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
                 escapeCorrectionSessions: [correctionRemote.session],
               };
             }
+            // Distributed live gate on the accepted correction patch: deny
+            // (no second correction) when the patch names off-scope files the
+            // changed-file list omitted.
+            const correctionPatchOffPatch = findDistributedWaveOffPatchV1({ changedFiles: correctionRemote.changedFiles, patch: correctionRemote.patch, allowedScope: input.task.scope });
+            if (correctionPatchOffPatch.length) {
+              return {
+                ...(await denyDistributedWaveOffPatchV1({ stateRoot: input.stateRoot, config: input.config, operationId: input.operationId, contract: input.contract, task: input.task, participantId, session: correctionRemote.session, files: correctionPatchOffPatch })),
+                escapeCorrectionUsed: true,
+                escapeCorrectionSessions: [remote.session],
+              };
+            }
             return {
               task: input.task,
               session: correctionRemote.session,
@@ -815,6 +1167,17 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
       }
       if (remote.status === "PASS" && remote.patch.trim()) {
         if (remote.observedCandidateSourceDigest !== input.waveBase.sourceDigest) return { task: input.task, session: remote.session, changedFiles: remote.changedFiles, patch: "", status: "FAIL", distributed: true, message: "WAVE_RECONCILIATION_REQUIRED: distributed worker did not materialize the frozen wave Candidate source." };
+        // Distributed live gate (P1a): the distributed branch returns here
+        // without ever touching the local snapshot/check path, so the same
+        // off-patch denial applies to the returned changed-file list + patch
+        // before any ChangeSet is built. Deny + OFF_PATCH_WRITE_DENIED event;
+        // the WAVE_RECONCILIATION_REQUIRED prefix routes the sibling to
+        // reconciliation at the wave boundary (no correction turn for a live
+        // denial, same as the local path).
+        const liveOffPatch = findDistributedWaveOffPatchV1({ changedFiles: remote.changedFiles, patch: remote.patch, allowedScope: input.task.scope });
+        if (liveOffPatch.length) {
+          return denyDistributedWaveOffPatchV1({ stateRoot: input.stateRoot, config: input.config, operationId: input.operationId, contract: input.contract, task: input.task, participantId, session: remote.session, files: liveOffPatch });
+        }
         return { task: input.task, session: remote.session, changedFiles: remote.changedFiles, patch: remote.patch, status: remote.status, distributed: true, message: remote.message, changeSet: buildWaveChangeSet(input, participantId, remote.changedFiles, remote.patch) };
       }
       return { task: input.task, session: remote.session, changedFiles: remote.changedFiles, patch: remote.patch, status: remote.status, distributed: true, message: remote.message };
@@ -829,11 +1192,37 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
     if (baselineAdd.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineAdd.stderr || baselineAdd.stdout}`);
     const baselineCommit = await runExecutable("git", ["-c", "user.name=aeh", "-c", "user.email=aeh@localhost", "commit", "--no-gpg-sign", "-m", "aeh wave baseline", "--allow-empty"], { cwd: worktree, timeoutMs: 60_000 });
     if (baselineCommit.exitCode !== 0) return failed(input.task, selection, `Unable to create task baseline: ${baselineCommit.stderr || baselineCommit.stdout}`);
+    // FAM-WAVE live gate: snapshot the per-unit worktree file set at unit
+    // launch (after materialize + baseline). Fail-closed: an unsnapshotable
+    // worktree cannot prove containment, so the unit FAILs before dispatch.
+    let launchSnapshot: Map<string, WaveWorktreeSnapshotEntryV1>;
+    try {
+      launchSnapshot = await snapshotWaveWorktreeV1(worktree);
+    } catch (error) {
+      return { task: input.task, session: { provider: selection.runtimeAdapter, model: selection.modelName, logicalAgent: selection.logicalAgent, runtime: selection.runtimeName, profile: selection.profile, exitCode: 1, stdout: "", stderr: `OFF_PATCH_WRITE_DENIED: unable to snapshot per-unit worktree for live scope gate: ${String(error).slice(0, 300)}` }, changedFiles: [], patch: "", status: "FAIL", message: `OFF_PATCH_WRITE_DENIED: unable to snapshot per-unit worktree for live scope gate.` };
+    }
     // The frozen role invocation policy's output contract is the durable structured result for this
     // work unit. It must be propagated on dispatch (provider turn activation) and finalization
     // (acceptance), or the Implementer's result channel is never activated and the participant can
     // only fall back to unstructured text (AEH-V2-0118).
     const session = await executeAgentPrompt(worktree, input.config, input.contract, selection, prompt, { outputContract: input.participantAssignment.roleInvocationPolicy?.outputContract ?? selection.outputContract ?? "implementer", participantId, phase: "implementation", operationKind: currentOperationContext().kind, requireExecutionAuthority: true, executionBlueprint: input.executionBlueprint, executionBlueprintDigest: input.executionBlueprint.digest, roleInvocationPolicy: input.participantAssignment.roleInvocationPolicy, skillManifest: input.participantAssignment.skillManifest }); if (session.exitCode !== 0) return { task: input.task, session, changedFiles: [], patch: "", status: "FAIL", message: `Agent exited with ${session.exitCode}.` };
+    // FAM-WAVE live gate (per-unit worktree, hardcoded-deny): scope-check the
+    // LIVE filesystem state immediately after THIS worker invocation, before
+    // capturing the diff. Per-invocation pairing (fresh pre-snapshot above +
+    // immediate post-check here) catches a write this turn introduced even if
+    // a later turn reverts it; hash + full-precision ctime + inode comparison
+    // also catches in-place write+revert with restored bytes+mtime. Terminal
+    // FAIL with OFF_PATCH_WRITE_DENIED receipt — no correction turn for a
+    // live denial. Assembler diff gate stays below as defense-in-depth.
+    try {
+      const { offPatch } = await checkWaveUnitTurnOffPatchV1(worktree, launchSnapshot, input.task.scope);
+      if (offPatch.length) {
+        return await denyWaveUnitLiveOffPatchV1({ stateRoot: input.stateRoot, config: input.config, operationId: input.operationId, contract: input.contract, task: input.task, participantId, session, files: offPatch });
+      }
+    } catch (error) {
+      await recordEvent(input.stateRoot, input.config, WAVE_OFF_PATCH_DENIED_EVENT_V1, { operationId: input.operationId, taskId: input.contract.task.id, workUnitId: input.task.id, participantId, files: [], fileCount: 0, status: "FAIL", error: `live-gate unverifiable: ${String(error).slice(0, 200)}` }).catch(() => undefined);
+      return { task: input.task, session, changedFiles: [], patch: "", status: "FAIL", message: `OFF_PATCH_WRITE_DENIED: per-unit live scope gate unverifiable (fail-closed).` };
+    }
     const status = await runExecutable("git", ["status", "--porcelain"], { cwd: worktree, timeoutMs: 30_000 }); const untracked = status.stdout.split(/\r?\n/).filter((line) => line.startsWith("?? ")).map((line) => line.slice(3).trim()).filter(Boolean); if (untracked.length) await runExecutable("git", ["add", "-N", "--", ...untracked], { cwd: worktree, timeoutMs: 30_000 });
     const names = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 }); const changedFiles = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const violations = changedFiles.filter((file) => !matchesAny(file, input.task.scope));
     if (violations.length) {
@@ -885,6 +1274,24 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
         skillManifest: input.participantAssignment.skillManifest,
       };
       let correctionSession: import("../core/types.js").WorkerSession | undefined;
+      // Per-invocation pairing for the correction turn: fresh pre-snapshot
+      // taken immediately before correction dispatch (fail-closed when the
+      // worktree cannot be snapshotted — an unsnapshotable worktree cannot
+      // prove the correction stayed in scope).
+      let correctionPreSnapshot: Map<string, WaveWorktreeSnapshotEntryV1>;
+      try {
+        correctionPreSnapshot = await snapshotWaveWorktreeV1(worktree);
+      } catch {
+        return {
+          task: input.task,
+          session,
+          changedFiles,
+          patch: "",
+          status: "FAIL",
+          message: `OFF_PATCH_WRITE_DENIED: per-unit live scope gate unverifiable before correction turn (fail-closed).`,
+          escapeCorrectionUsed: true,
+        };
+      }
       try {
         correctionSession = await executeAgentPrompt(worktree, input.config, input.contract, selection, correctionPrompt, correctionOptions);
       } catch (correctionError) {
@@ -929,6 +1336,32 @@ async function executeDelegation(input: { root: string; stateRoot: string; confi
           patch: "",
           status: "FAIL",
           message: originalMessage,
+          escapeCorrectionUsed: true,
+          escapeCorrectionSessions: [correctionSession],
+        };
+      }
+      // FAM-WAVE live gate on the correction turn: per-invocation
+      // post-check against BOTH the launch snapshot (whole-unit containment)
+      // and the fresh correction pre-snapshot (this invocation's own writes),
+      // before accepting the corrected diff. Either basis firing denies.
+      try {
+        const [againstLaunch, againstPre] = await Promise.all([
+          checkWaveUnitTurnOffPatchV1(worktree, launchSnapshot, input.task.scope),
+          checkWaveUnitTurnOffPatchV1(worktree, correctionPreSnapshot, input.task.scope),
+        ]);
+        const offPatchCorrection = [...new Set([...againstLaunch.offPatch, ...againstPre.offPatch])].sort();
+        if (offPatchCorrection.length) {
+          const denialResult = await denyWaveUnitLiveOffPatchV1({ stateRoot: input.stateRoot, config: input.config, operationId: input.operationId, contract: input.contract, task: input.task, participantId, session, files: offPatchCorrection, correction: true });
+          return { ...denialResult, escapeCorrectionUsed: true, escapeCorrectionSessions: [correctionSession] };
+        }
+      } catch {
+        return {
+          task: input.task,
+          session,
+          changedFiles,
+          patch: "",
+          status: "FAIL",
+          message: `OFF_PATCH_WRITE_DENIED: per-unit live scope gate unverifiable on correction turn (fail-closed).`,
           escapeCorrectionUsed: true,
           escapeCorrectionSessions: [correctionSession],
         };

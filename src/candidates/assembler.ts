@@ -343,8 +343,9 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
   // here, before any `git apply` touches the worktree. This is the single
   // assembly choke point: repair, wave and direct-assemble all funnel through
   // this function. Residual (not covered here): patch-scope is not a sandbox;
-  // worker off-patch filesystem writes are only observed through the captured
-  // diff, never scope-checked live.
+  // worker off-patch filesystem writes are live-gated per-unit in waveExecutor
+  // (OFF_PATCH_WRITE_DENIED, snapshot at unit launch); this diff gate stays as
+  // defense-in-depth.
   await assertPatchSymlinksContained(input.root, changeSet.patch);
   // Amendment-path exact carve-out (see field docs): exact files only, and
   // the allowed-scope check below still applies to them unchanged.
