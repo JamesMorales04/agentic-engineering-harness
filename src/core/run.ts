@@ -17,7 +17,7 @@ import { validateSddChange } from "./sdd.js";
 import { sealTask, verifyTaskSeal } from "./seal.js";
 import { verifyTask } from "./verify.js";
 import { createRepairPacket, writeRepairPacket } from "./repair.js";
-import { ignoreVerdict, writeContainedFile } from "../utils/repositoryPath.js";
+import { assertDigestNeutralReportPersist, writeContainedFile } from "../utils/repositoryPath.js";
 import { AehError } from "./errors.js";
 import { createWorkerExecutor } from "../workers/factory.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
@@ -975,13 +975,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     // `.harness/` location always passes; an unresolvable verdict (no git)
     // only blocks non-conventional locations.
     const repairReportArtifact = `${effectiveConfig.sdd?.reportsDir ?? ".harness/reports"}/${effectiveContract.task.id}.json`;
-    if (path.resolve(workspaceRoot) === path.resolve(controlRoot)
-      && !(effectiveConfig.sdd?.reportsDir ?? ".harness/reports").startsWith(".harness/")) {
-      const verdict = await ignoreVerdict(controlRoot, repairReportArtifact).catch(() => "unknown" as const);
-      if (verdict !== "ignored") {
-        throw new Error("REPAIR_REPORT_CONFIG_INVALID: the validation report artifact is digest-visible in a local execution root; persisting it after candidate binding would break candidate identity. Configure an ignored reportsDir (for example .harness/reports).");
-      }
-    }
+    await assertDigestNeutralReportPersist(controlRoot, workspaceRoot, effectiveConfig.sdd?.reportsDir, effectiveContract.task.id);
     await writeContainedFile(controlRoot, repairReportArtifact, `${JSON.stringify(report, null, 2)}\n`);
     const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction, reportArtifact: repairReportArtifact });
     if (!packet.failures.length) break;

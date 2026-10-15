@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { HarnessProjectConfig } from "../src/core/types.js";
-import { ignoreVerdict, materializeRepairEvidence, writeContainedFile } from "../src/utils/repositoryPath.js";
+import { ignoreVerdict, assertDigestNeutralReportPersist, materializeRepairEvidence, writeContainedFile } from "../src/utils/repositoryPath.js";
 
 const config = { version: 1, project: { name: "repair-evidence-test" } } as HarnessProjectConfig;
 
@@ -85,6 +85,43 @@ describe("materializeRepairEvidence", () => {
       expect(await ignoreVerdict(root, "reports/T-1.json")).toBe("tracked-visible");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes digest-neutral persists for isolated execution and conventional locations", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-"));
+    const other = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      await fs.writeFile(path.join(root, ".gitignore"), ".harness/\n");
+      await assertDigestNeutralReportPersist(root, other, ".harness/reports", "T-1");
+      await assertDigestNeutralReportPersist(root, root, ".harness/reports", "T-1");
+      await assertDigestNeutralReportPersist(root, root, undefined, "T-1");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(other, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for digest-visible reports locations in local execution", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      await fs.writeFile(path.join(root, ".gitignore"), ".harness/\n");
+      await expect(assertDigestNeutralReportPersist(root, root, "reports", "T-1"))
+        .rejects.toThrow(/REPAIR_REPORT_CONFIG_INVALID/);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+    const plain = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-"));
+    try {
+      await expect(assertDigestNeutralReportPersist(plain, plain, "reports", "T-1"))
+        .rejects.toThrow(/REPAIR_REPORT_CONFIG_INVALID/);
+      await assertDigestNeutralReportPersist(plain, plain, undefined, "T-1");
+    } finally {
+      await fs.rm(plain, { recursive: true, force: true });
     }
   });
 });

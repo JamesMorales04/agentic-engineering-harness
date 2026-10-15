@@ -112,3 +112,28 @@ export async function materializeRepairEvidence(
   await writeContainedFile(absoluteTarget, relative, await fs.readFile(source));
   return true;
 }
+
+/**
+ * Digest-neutrality guard for post-bind evidence writes (DETERMINISTIC):
+ * when execution shares the control root, persisting the validation report
+ * lands inside the digested tree, so a digest-visible reports location is a
+ * configuration error (fail-closed with guidance instead of a later cryptic
+ * identity mismatch). The conventional ignored `.harness/` location always
+ * passes; anything else must prove ignored via git. An unresolvable verdict
+ * (no git) only passes for the conventional location. Re-included or tracked
+ * `.harness/` paths fail closed.
+ */
+export async function assertDigestNeutralReportPersist(
+  controlRoot: string,
+  workspaceRoot: string,
+  reportsDir: string | undefined,
+  taskId: string,
+): Promise<void> {
+  if (path.resolve(workspaceRoot) !== path.resolve(controlRoot)) return;
+  const conventionalLocation = (reportsDir ?? ".harness/reports").startsWith(".harness/");
+  const artifact = `${reportsDir ?? ".harness/reports"}/${taskId}.json`;
+  const verdict = await ignoreVerdict(controlRoot, artifact).catch(() => "unknown" as const);
+  if (verdict !== "ignored" && !(conventionalLocation && verdict === "unknown")) {
+    throw new Error("REPAIR_REPORT_CONFIG_INVALID: the validation report artifact is digest-visible in a local execution root; persisting it after candidate binding would break candidate identity. Configure an ignored reportsDir (for example .harness/reports).");
+  }
+}

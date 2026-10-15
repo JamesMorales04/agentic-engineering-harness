@@ -127,4 +127,20 @@ describe("repair packets", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects path-shaped task ids at the schema boundary (evidence paths stay plain names)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-config-"));
+    try {
+      await fs.mkdir(path.join(root, ".harness", "contracts"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, ".harness", "contracts", "slashed.yaml"),
+        `version: 1\ntask:\n  id: "a/b"\n  title: slashed\nscope: {}\nrouting: {}\nverification: {}\n`,
+      );
+      const { loadTaskContract } = await import("../src/core/config.js");
+      const config = { version: 1, project: { name: "schema-test" } } as never;
+      await expect(loadTaskContract(root, "slashed", config)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
