@@ -547,6 +547,7 @@ export async function claimControllerEpoch(root: string, operationId: string, ow
   pid?: number;
   cause?: "cancellation";
   humanActorId?: string;
+  delegationId?: string;
   expectedCancellation?: { operationExecutionRevision: number; candidateDigest: string; policyDigest: string; controllerEpoch: number };
 } = {}): Promise<OperationRecordV2> {
   const token = crypto.randomBytes(32).toString("hex");
@@ -584,6 +585,7 @@ export async function claimControllerEpoch(root: string, operationId: string, ow
 
 async function consumeControllerCancellationDecision(root: string, current: OperationRecordV2, options: {
   humanActorId?: string;
+  delegationId?: string;
   expectedCancellation?: { operationExecutionRevision: number; candidateDigest: string; policyDigest: string; controllerEpoch: number };
 }): Promise<void> {
   const candidate = current.candidateRevision;
@@ -620,6 +622,7 @@ async function consumeControllerCancellationDecision(root: string, current: Oper
     const repository = await controlRootRepository(root);
     const verified = await verifyOwnerActorForCapability(root, {
       actorId: options.humanActorId,
+      ...(options.delegationId?.trim() ? { delegationId: options.delegationId.trim() } : {}),
       projectId: policy.projectId,
       ...(repository ? { repository } : {}),
       requiredCapability: "recovery.authorize",
@@ -1369,13 +1372,15 @@ async function controlActorProvenance(
   operation: OperationRecordV2,
   actorId: string,
   requiredCapability: "recovery.authorize" | "decision.resolve",
+  delegationId?: string,
 ): Promise<{ grantorOwnerId: string; delegationId: string; profile: "FULL_PROJECT_OWNER" } | undefined> {
   if (!isDelegatedOwnerActor(actorId)) return undefined;
   const projectId = operation.candidateRevision?.projectId ?? operation.resolvedOperationPolicy?.projectId;
   if (!projectId) throw new Error("DELEGATION_DENIED: operation has no project identity for delegation scope checks.");
   const repository = await controlRootRepository(root);
   const verified = await verifyOwnerActorForCapability(root, {
-    actorId, projectId, ...(repository ? { repository } : {}), requiredCapability,
+    actorId, ...(delegationId?.trim() ? { delegationId: delegationId.trim() } : {}),
+    projectId, ...(repository ? { repository } : {}), requiredCapability,
   });
   if (!verified.delegatedFrom) throw new Error("DELEGATION_DENIED: delegated control produced no provenance.");
   return verified.delegatedFrom;
@@ -1386,13 +1391,13 @@ function operationControlPurpose(command: OperationControlCommandV1): { kind: "O
 }
 
 /** Record a scoped PAUSE control request for the current operation identity. */
-export async function requestOperationPause(root: string, operationId: string, actorId: string, reason?: string): Promise<HumanDecisionV2> {
+export async function requestOperationPause(root: string, operationId: string, actorId: string, reason?: string, delegationId?: string): Promise<HumanDecisionV2> {
   const current = await loadOperation(root, operationId);
   if (isTerminalOperation(current.status)) throw new Error("OPERATION_CONTROL_TERMINAL: a terminal operation cannot be paused.");
   if (current.status !== "RUNNING") throw new Error("OPERATION_CONTROL_STATE_INVALID: only a running operation can be paused.");
   if (current.phase === "PAUSED" || current.pause) throw new Error("OPERATION_CONTROL_STATE_INVALID: the operation is already paused.");
   const binding = currentDecisionBinding(current, "pause request");
-  const delegatedFrom = await controlActorProvenance(root, current, actorId, "recovery.authorize");
+  const delegatedFrom = await controlActorProvenance(root, current, actorId, "recovery.authorize", delegationId);
   const ledger = operationControlLedger(root);
   const now = new Date();
   const purpose = operationControlPurpose("PAUSE");
@@ -1411,14 +1416,14 @@ export async function requestOperationPause(root: string, operationId: string, a
 }
 
 /** Record a scoped RESUME control request against a current PAUSED operation. */
-export async function requestOperationResume(root: string, operationId: string, actorId: string, reason?: string): Promise<HumanDecisionV2> {
+export async function requestOperationResume(root: string, operationId: string, actorId: string, reason?: string, delegationId?: string): Promise<HumanDecisionV2> {
   const current = await loadOperation(root, operationId);
   if (isTerminalOperation(current.status)) throw new Error("OPERATION_CONTROL_TERMINAL: a terminal operation cannot be resumed.");
   if (current.phase !== "PAUSED" || !current.pause) throw new Error("OPERATION_CONTROL_STATE_INVALID: only a PAUSED operation can be resumed.");
   assertOperationPauseRecordV1(current.pause);
   const binding = currentDecisionBinding(current, "resume request");
   if (!sameHumanDecisionBinding(current.pause, binding)) throw new Error("OPERATION_CONTROL_BINDING_STALE: the pause record no longer matches the current operation, candidate, policy, execution revision, and controller epoch.");
-  const delegatedFrom = await controlActorProvenance(root, current, actorId, "recovery.authorize");
+  const delegatedFrom = await controlActorProvenance(root, current, actorId, "recovery.authorize", delegationId);
   const ledger = operationControlLedger(root);
   const now = new Date();
   const purpose = operationControlPurpose("RESUME");

@@ -171,8 +171,8 @@ async function runControlCenter(argv: string[]): Promise<void> {
         return current.status === "BOUND" ? current.leadId : undefined;
       }
     } } : {}),
-    onDecision: root && decisionLedger ? async (value, actorId): Promise<ControlCenterActionResultV1> => {
-      const result = await recordControlCenterDecision(root, decisionLedger, value, actorId);
+    onDecision: root && decisionLedger ? async (value, actorId, delegationId): Promise<ControlCenterActionResultV1> => {
+      const result = await recordControlCenterDecision(root, decisionLedger, value, actorId, delegationId);
       return {
         accepted: result.accepted === true,
         ...(typeof result.decisionId === "string" ? { decisionId: result.decisionId } : {}),
@@ -188,17 +188,17 @@ async function runControlCenter(argv: string[]): Promise<void> {
         } : {}),
       };
     } : undefined,
-    onCancelOperation: root ? async (operationId, actorId): Promise<ControlCenterActionResultV1> => {
-      const result = await cancelOperation(root, operationId, { humanActorId: actorId });
+    onCancelOperation: root ? async (operationId, actorId, delegationId): Promise<ControlCenterActionResultV1> => {
+      const result = await cancelOperation(root, operationId, { humanActorId: actorId, ...(delegationId ? { delegationId } : {}) });
       return { accepted: true, operationId: result.id, status: result.status, phase: result.phase, revision: result.revision };
     } : undefined,
-    onPauseOperation: root ? async (operationId, actorId): Promise<ControlCenterActionResultV1> => {
-      const decision = await requestOperationPause(root, operationId, actorId);
+    onPauseOperation: root ? async (operationId, actorId, delegationId): Promise<ControlCenterActionResultV1> => {
+      const decision = await requestOperationPause(root, operationId, actorId, undefined, delegationId);
       const current = await loadOperation(root, operationId);
       return { accepted: true, operationId: current.id, decisionId: decision.decisionId, status: current.status, phase: current.phase, revision: current.revision };
     } : undefined,
-    onResumeOperation: root ? async (operationId, actorId): Promise<ControlCenterActionResultV1> => {
-      const decision = await requestOperationResume(root, operationId, actorId);
+    onResumeOperation: root ? async (operationId, actorId, delegationId): Promise<ControlCenterActionResultV1> => {
+      const decision = await requestOperationResume(root, operationId, actorId, undefined, delegationId);
       const current = await loadOperation(root, operationId);
       return { accepted: true, operationId: current.id, decisionId: decision.decisionId, status: current.status, phase: current.phase, revision: current.revision };
     } : undefined,

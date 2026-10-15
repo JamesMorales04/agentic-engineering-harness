@@ -18,7 +18,7 @@ export class ProductChoiceConflictError extends Error {
   constructor(message: string) { super(message); this.name = "ProductChoiceConflictError"; }
 }
 
-export async function recordControlCenterDecision(root: string, ledger: HumanDecisionLedgerV2, value: unknown, actorId: string): Promise<Record<string, unknown>> {
+export async function recordControlCenterDecision(root: string, ledger: HumanDecisionLedgerV2, value: unknown, actorId: string, delegationId?: string): Promise<Record<string, unknown>> {
   // Hard-protected repair no longer has a standalone exemption endpoint:
   // every HUMAN_REQUIRED approval is a bounded PRODUCT_CHOICE bound to its
   // WAITING continuation (suspend/consume/resume). Stale
@@ -78,6 +78,7 @@ export async function recordControlCenterDecision(root: string, ledger: HumanDec
     const repository = await controlRootRepository(root);
     const verified = await verifyOwnerActorForCapability(root, {
       actorId,
+      ...(delegationId?.trim() ? { delegationId: delegationId.trim() } : {}),
       projectId: candidate.projectId ?? runtimeProjectId(root),
       ...(repository ? { repository } : {}),
       requiredCapability: "decision.resolve",

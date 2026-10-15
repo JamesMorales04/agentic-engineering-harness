@@ -138,6 +138,8 @@ export interface OperationControllerDeps {
   setupWorkspaceToolchain?: typeof setupToolchain;
   /** Trusted actor from the paired Control Center session; absent callers must present a recorded scoped decision. */
   humanActorId?: string;
+  /** Delegate session grant binding the actor above; selects among multiple live grants. */
+  delegationId?: string;
   /** Deterministic provider observation seam for cleanup tests and disposable packed fixtures. */
   inspectProviderSession?: (root: string, provider: string, sessionId: string) => Promise<{ status?: string } | undefined>;
   /** Deterministic seam for durable label-bound agent discovery during resource reconciliation. */
@@ -792,6 +794,7 @@ export async function cancelOperation(
         pid: process.pid,
         cause: "cancellation",
         humanActorId: deps.humanActorId,
+        ...(deps.delegationId ? { delegationId: deps.delegationId } : {}),
         expectedCancellation: {
           operationExecutionRevision: record.operationExecutionRevision!,
           candidateDigest: record.candidateRevision!.identityDigest,

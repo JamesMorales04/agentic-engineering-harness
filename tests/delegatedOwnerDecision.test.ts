@@ -123,8 +123,7 @@ describe("delegated Owner decisions through the real Control Center path", () =>
     expect(cancelled.status).toBe("CANCELLED");
   });
 
-  it("fails closed when a grant is revoked between recording and applying a deferred control", async () => {
-    const root = await tempRoot();
+  it("fails closed when a grant is revoked between recording and applying a deferred control", async () => {    const root = await tempRoot();
     const waiting = await suspendedFixture(root, "OP-DELEGATED-REVOKE-RACE");
     const projectId = waiting.candidateRevision!.projectId!;
     const grant = await issueDelegatedOwnerGrantV1(root, {
@@ -232,5 +231,35 @@ describe("delegated Owner decisions through the real Control Center path", () =>
     } finally {
       await center?.close();
     }
+  });
+
+  it("resolves multi-grant delegates through the session-bound grant id", async () => {
+    const root = await tempRoot();
+    const waiting = await suspendedFixture(root, "OP-DELEGATED-MULTI-GRANT");
+    const projectId = waiting.candidateRevision!.projectId!;
+    const first = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, { via: "test", allowManagedContext: true });
+    await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, { via: "test", allowManagedContext: true });
+    const ledger = new HumanDecisionLedgerV2(path.join(root, "decisions"));
+    const input = { operationId: waiting.id, requestId: waiting.decisionRequest!.requestId, choiceId: "strict" };
+    // Without an explicit grant the delegate is ambiguous: fail closed.
+    await expect(recordControlCenterDecision(root, ledger, input, DELEGATE))
+      .rejects.toThrow(/DELEGATION_AMBIGUOUS/);
+    // The delegate session's bound grant resolves it with full provenance.
+    const accepted = await recordControlCenterDecision(root, ledger, input, DELEGATE, first.delegationId);
+    expect(accepted).toMatchObject({ accepted: true, delegated: true, delegationId: first.delegationId });
+    // A foreign grant id for the same principal is rejected.
+    const other = await tempRoot();
+    const foreign = await issueDelegatedOwnerGrantV1(other, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, { via: "test", allowManagedContext: true });
+    await expect(recordControlCenterDecision(root, ledger, input, DELEGATE, foreign.delegationId))
+      .rejects.toThrow(/DELEGATION_UNKNOWN/);
   });
 });
