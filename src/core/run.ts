@@ -968,10 +968,19 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     // under the control root (the durable evidence of record, containment
     // checked); repair workspaces receive it through evidence materialization
     // from the state root, so execution-root candidate digests are untouched.
+    // Digest-neutrality guard: when execution shares the control root, the
+    // write lands inside the digested tree, so a digest-visible reports
+    // location is a configuration error (fail-closed with guidance instead
+    // of a later cryptic identity mismatch). The conventional ignored
+    // `.harness/` location always passes; an unresolvable verdict (no git)
+    // only blocks non-conventional locations.
     const repairReportArtifact = `${effectiveConfig.sdd?.reportsDir ?? ".harness/reports"}/${effectiveContract.task.id}.json`;
     if (path.resolve(workspaceRoot) === path.resolve(controlRoot)
-      && await ignoreVerdict(controlRoot, repairReportArtifact).then((verdict) => verdict === "tracked-visible").catch(() => false)) {
-      throw new Error("REPAIR_REPORT_CONFIG_INVALID: the validation report artifact is digest-visible in a local execution root; persisting it after candidate binding would break candidate identity. Configure an ignored reportsDir (for example .harness/reports).");
+      && !(effectiveConfig.sdd?.reportsDir ?? ".harness/reports").startsWith(".harness/")) {
+      const verdict = await ignoreVerdict(controlRoot, repairReportArtifact).catch(() => "unknown" as const);
+      if (verdict !== "ignored") {
+        throw new Error("REPAIR_REPORT_CONFIG_INVALID: the validation report artifact is digest-visible in a local execution root; persisting it after candidate binding would break candidate identity. Configure an ignored reportsDir (for example .harness/reports).");
+      }
     }
     await writeContainedFile(controlRoot, repairReportArtifact, `${JSON.stringify(report, null, 2)}\n`);
     const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction, reportArtifact: repairReportArtifact });
@@ -1181,6 +1190,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             scopeAmendment: secondAmendment,
             prompt: repairPrompt,
             prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+            requireRepairEvidence: true,
             execute: (isolatedRoot, participantId, prompt) => {
             // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity
             // records the prior failed identity as its retry parent, so the deterministic

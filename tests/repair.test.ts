@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { createRepairPacket } from "../src/core/repair.js";
+import { loadProjectConfig } from "../src/core/config.js";
 import type { ValidationReport } from "../src/core/types.js";
 import { buildRepairPrompt, projectRepairFailureEvidence } from "../src/workers/prompt.js";
 
@@ -91,8 +95,7 @@ describe("repair packets", () => {
     expect(prompt).toContain("broke");
   });
 
-  it("holds a hard whole-prompt ceiling under adversarial packet shapes", () => {
-    const big = "X".repeat(50_000);
+  it("holds a hard whole-prompt ceiling under adversarial packet shapes", () => {    const big = "X".repeat(50_000);
     const checks = Array.from({ length: 25 }, (_, index) => ({
       id: `check-${index}-${"i".repeat(1_000)}`, category: `cat-${"c".repeat(1_000)}`,
       status: "FAIL" as const, message: `m-${index}-` + "m".repeat(5_000),
@@ -109,5 +112,19 @@ describe("repair packets", () => {
     expect(prompt.length).toBeLessThan(30_000);
     expect(prompt).toContain("15 more failure(s)");
     expect(prompt).toContain(".harness/reports/T-ADV.json");
+  });
+
+  it("rejects unbounded report directory configuration at the schema boundary", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-config-"));
+    try {
+      await fs.mkdir(path.join(root, ".harness"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, ".harness", "project.yaml"),
+        `version: 1\nproject:\n  name: schema-test\nsdd:\n  reportsDir: "${"r".repeat(600)}"\n`,
+      );
+      await expect(loadProjectConfig(root)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

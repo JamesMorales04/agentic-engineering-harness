@@ -117,7 +117,7 @@ const projectSchema = z.object({
 });
 const requirementSchema = z.object({ id: z.string().min(1), description: z.string().optional(), validator: z.string().optional(), validators: z.array(z.string()).optional(), capabilities: z.array(z.string().min(1)).optional() });
 const taskSchema = z.object({
-  version: z.literal(1), task: z.object({ id: z.string().min(1), title: z.string().min(1) }),
+  version: z.literal(1), task: z.object({ id: z.string().min(1).max(200), title: z.string().min(1) }),
   request: z.string().optional(),
   source: z.object({ proposal: z.string().optional(), spec: z.string().optional(), design: z.string().optional(), tasks: z.string().optional(), acceptance: z.string().optional(), issue: z.string().optional() }).optional(),
   authoring: z.object({ provider: z.string().min(1), change: z.string().min(1), sourceSha256: z.string().regex(/^[a-f0-9]{64}$/) }).optional(),
