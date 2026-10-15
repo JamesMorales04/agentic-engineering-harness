@@ -111,3 +111,11 @@ Within the delegated project, `FULL_PROJECT_OWNER` covers `decision.resolve`,
 Delegations survive agent handoffs and restarts (durable grants, no session
 binding), and every delegated decision remains attributable in the decision
 ledger for Owner review.
+
+Delegations are project-bound, not directory-bound: an isolated target
+worktree inherits the delegation store of its owning controller checkout, so
+one Owner grant covers the controller and its authorized targets, and one
+revocation ends authority everywhere (including deferred effects already
+recorded but not yet applied). A target-local store takes precedence when
+explicitly provisioned. Issuance and revocation always write to the explicit
+root they are invoked with.

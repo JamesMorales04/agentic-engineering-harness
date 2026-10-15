@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -171,6 +172,110 @@ function delegationGrantsDir(root: string): string {
 
 function delegationRevocationsFile(root: string): string {
   return path.join(path.resolve(root), ".harness", "security", "delegated-owner", "revocations.json");
+}
+
+export interface DelegationStoreOptions {
+  /** Explicit authority root (e.g. the controller checkout owning an isolated target). */
+  authorityRoot?: string;
+  /** Test seam: replaces git common-dir resolution. */
+  resolveCommonDir?: (controlRoot: string) => string | undefined;
+}
+
+async function storeHasContent(root: string): Promise<boolean> {
+  try {
+    const entries = await fs.readdir(delegationGrantsDir(root));
+    if (entries.some((entry) => entry.endsWith(".json"))) return true;
+  } catch (error) {
+    // Absence falls through to inheritance; any other I/O failure denies
+    // fail-closed instead of silently treating an unreadable store as empty.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  try {
+    await fs.access(delegationRevocationsFile(root));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return false;
+  }
+}
+
+function defaultCommonDir(controlRoot: string): string | undefined {
+  try {
+    const out = execFileSync("git", ["-C", controlRoot, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 15_000 }).trim();
+    if (!out) return undefined;
+    return path.resolve(controlRoot, out);
+  } catch {
+    return undefined;
+  }
+}
+
+function controllerRootFor(commonDir: string): string {
+  const resolved = path.resolve(commonDir);
+  const dotGit = `${path.sep}.git`;
+  const idx = resolved.indexOf(dotGit);
+  const checkout = idx >= 0 ? resolved.slice(0, idx) : resolved;
+  return checkout || path.sep;
+}
+
+/**
+ * Bidirectional worktree proof (DETERMINISTIC). The target's own
+ * `.git` metadata naming a controller is a self-asserted claim: a target
+ * that rewrites its `.git` pointer could otherwise redirect inheritance to
+ * an unrelated checkout. The controller must acknowledge the target in its
+ * own `git worktree list`; a forged pointer to a repository that never
+ * registered this worktree fails closed (local root, which denies without a
+ * local grant). Any git failure denies inheritance.
+ */
+function controllerAcknowledgesWorktree(controllerRoot: string, targetRootReal: string): boolean {
+  try {
+    const out = execFileSync("git", ["-C", controllerRoot, "worktree", "list", "--porcelain"], { encoding: "utf8", timeout: 15_000 });
+    return out.split("\n").some((line) => line.startsWith("worktree ") && path.resolve(line.slice("worktree ".length).trim()) === targetRootReal);
+  } catch {
+    return false;
+  }
+}
+
+async function realpathOrSelf(value: string): Promise<string> {
+  try {
+    return await fs.realpath(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+/**
+ * Resolve the delegation store root for verification (MECHANISM: DETERMINISTIC).
+ *
+ * Delegations are project-bound, not directory-bound: an isolated target
+ * worktree inherits the delegation store of its owning controller checkout,
+ * so one Owner grant covers the controller and its authorized targets, and
+ * one revocation ends authority everywhere. Inheritance requires a
+ * bidirectional worktree proof (the controller's own `git worktree list`
+ * must acknowledge the target), so a forged `.git` pointer cannot redirect
+ * inheritance to an unrelated checkout. A target-local store takes
+ * precedence when present (explicit provisioning wins); otherwise the
+ * controller store is used when it exists; otherwise the local root stands
+ * alone (fail-closed: no grants verify). Issuance and revocation always
+ * write to the explicit root they are invoked with.
+ */
+export async function resolveDelegationStoreRoot(root: string, options: DelegationStoreOptions = {}): Promise<string> {
+  const absoluteRoot = path.resolve(root);
+  if (options.authorityRoot) return path.resolve(options.authorityRoot);
+  if (await storeHasContent(absoluteRoot)) return absoluteRoot;
+  let commonDir: string | undefined;
+  try {
+    await fs.access(path.join(absoluteRoot, ".git"));
+  } catch {
+    return absoluteRoot;
+  }
+  commonDir = options.resolveCommonDir ? options.resolveCommonDir(absoluteRoot) : defaultCommonDir(absoluteRoot);
+  if (!commonDir) return absoluteRoot;
+  const controllerRoot = controllerRootFor(commonDir);
+  const [rootReal, controllerReal] = await Promise.all([realpathOrSelf(absoluteRoot), realpathOrSelf(controllerRoot)]);
+  if (rootReal === controllerReal) return absoluteRoot;
+  if (!controllerAcknowledgesWorktree(controllerReal, rootReal)) return absoluteRoot;
+  if (await storeHasContent(controllerReal)) return controllerReal;
+  return absoluteRoot;
 }
 
 function grantFile(root: string, delegationId: string): string {
@@ -480,6 +585,8 @@ export interface VerifyDelegationScopeV1 {
   repository?: string;
   requiredCapability?: OwnerCapabilityV1;
   nowMs?: number;
+  /** Authority-root override (explicit controller checkout). Auto-inherited otherwise. */
+  store?: DelegationStoreOptions;
 }
 
 /**
@@ -488,8 +595,9 @@ export interface VerifyDelegationScopeV1 {
  */
 export async function verifyDelegatedOwnerGrantV1(root: string, delegationId: string, scope: VerifyDelegationScopeV1): Promise<DelegatedOwnerGrantV1> {
   if (!DELEGATION_ID_PATTERN.test(delegationId.trim())) throw new Error("DELEGATION_UNKNOWN: delegation id is malformed.");
-  const grant = await loadGrantById(root, delegationId.trim());
-  const key = await readDelegationKey(root);
+  const storeRoot = await resolveDelegationStoreRoot(root, scope.store);
+  const grant = await loadGrantById(storeRoot, delegationId.trim());
+  const key = await readDelegationKey(storeRoot);
   if (!verifyDelegatedOwnerMac(key, grant)) throw new Error("DELEGATION_FORGED: delegation MAC does not verify against the project delegation key.");
   if (grant.projectId !== scope.projectId) throw new Error("DELEGATION_PROJECT_MISMATCH: delegation belongs to another project; cross-project authority is rejected.");
   if (grant.repository && !scope.repository) {
@@ -503,7 +611,7 @@ export async function verifyDelegatedOwnerGrantV1(root: string, delegationId: st
   }
   const nowMs = scope.nowMs ?? Date.now();
   if (Date.parse(grant.expiresAt) <= nowMs) throw new Error("DELEGATION_EXPIRED: delegation has expired; renew with a fresh Owner grant.");
-  const revocations = await readRevocations(root);
+  const revocations = await readRevocations(storeRoot);
   if (revocations.revoked[grant.delegationId]) throw new Error("DELEGATION_REVOKED: delegation was revoked by the Owner; authority ended immediately.");
   return grant;
 }
@@ -539,7 +647,8 @@ export async function resolveOwnerAuthorityV1(root: string, input: ResolveOwnerA
   try {
     let delegationId = input.delegationId?.trim();
     if (!delegationId) {
-      const candidates = (await listGrants(root)).filter((grant) => grant.delegatePrincipalId === actorId);
+      const storeRoot = await resolveDelegationStoreRoot(root, input.store);
+      const candidates = (await listGrants(storeRoot)).filter((grant) => grant.delegatePrincipalId === actorId);
       const nowMs = input.nowMs ?? Date.now();
       const live = candidates.filter((grant) => Date.parse(grant.expiresAt) > nowMs);
       if (live.length !== 1) {
@@ -561,17 +670,18 @@ export async function resolveOwnerAuthorityV1(root: string, input: ResolveOwnerA
 }
 
 /** List delegations with live validity for Owner inspection. No key material. */
-export async function listDelegatedOwnerGrantsV1(root: string, nowMs?: number): Promise<DelegationStatusV1[]> {
+export async function listDelegatedOwnerGrantsV1(root: string, nowMs?: number, store?: DelegationStoreOptions): Promise<DelegationStatusV1[]> {
   const at = nowMs ?? Date.now();
+  const storeRoot = await resolveDelegationStoreRoot(root, store);
   let key: string | undefined;
   try {
-    key = await readDelegationKey(root);
+    key = await readDelegationKey(storeRoot);
   } catch {
     key = undefined;
   }
-  const revocations = await readRevocations(root);
+  const revocations = await readRevocations(storeRoot);
   const out: DelegationStatusV1[] = [];
-  for (const grant of await listGrants(root)) {
+  for (const grant of await listGrants(storeRoot)) {
     const revoked = revocations.revoked[grant.delegationId];
     const macOk = key ? verifyDelegatedOwnerMac(key, grant) : false;
     out.push({
@@ -636,6 +746,7 @@ export interface DelegatedUseVerificationV1 {
   projectId: string;
   repository?: string;
   requiredCapability: OwnerCapabilityV1;
+  store?: DelegationStoreOptions;
 }
 
 /**
@@ -657,6 +768,7 @@ export async function reverifyDelegatedDecisionForUse(
     projectId: input.projectId,
     ...(input.repository ? { repository: input.repository } : {}),
     requiredCapability: input.requiredCapability,
+    ...(input.store ? { store: input.store } : {}),
   });
   if (grant.delegatePrincipalId !== input.actorId) {
     throw new Error("DELEGATION_PRINCIPAL_MISMATCH: stored provenance names a grant bound to another delegated principal.");
