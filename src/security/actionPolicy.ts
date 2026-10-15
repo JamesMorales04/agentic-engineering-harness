@@ -65,7 +65,26 @@ export function configuredExternalEffects(config: HarnessProjectConfig, kind: Op
   return configuredDeliveryPolicy(config, kind).allowedExternalEffects;
 }
 
-/** External publication and non-idempotent creation always need exact human action authorization. */
+/** External publication and non-idempotent creation always need exact human action authorization.
+ *
+ * MERGE_AUTHORIZATION (FAM-MERGE decision (b); see docs/ARCHITECTURE.md delivery section):
+ * `github.pull-request.merge` is intentionally ABSENT from this set. Merge
+ * authorization is the conjunction of (1) frozen-policy authorization —
+ * Owner-delegated policy (`allowedActions` containing
+ * `github.pull-request.merge` + an explicit `mergeMode` of `AUTO_MERGE` /
+ * `RISK_GATED` + `finalizeOnAcceptance`, frozen at operation start and never
+ * widened from live config), (2) a freshness-bound independent ACCEPTED
+ * review (`IndependentPullRequestReview`, exact final head/base/candidate/
+ * policy binding), and (3) live pre-merge revalidation (live PR identity,
+ * branch-protection required checks, and mergeable_state re-observed
+ * immediately before the merge). Per-merge human ACTION_AUTHORIZATION is
+ * intentionally not required: human control is exercised through the
+ * `git.push` + `github.pull-request.create` action authorizations and the
+ * Owner-delegated delivery policy itself. Do NOT add
+ * `github.pull-request.merge` here without an explicit Owner-approved
+ * decision; doing so would silently convert governed autonomous merge into a
+ * per-merge human gate.
+ */
 export function requiredHumanActionAuthorizations(effects: readonly ToolActionKindV1[]): HumanDecisionRequirementV1[] {
   const requiresHuman = new Set<ToolActionKindV1>(["git.push", "github.issue.create", "github.pull-request.create"]);
   return [...new Set(effects)].filter((action) => requiresHuman.has(action)).sort().map((action) => ({ kind: "ACTION_AUTHORIZATION", action }));
