@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runSpecCommand } from "../../src/validators/toolCommand.js";
 import { executePlan } from "../../src/providers/validation/providerUtils.js";
 import { ProjectNativeTestExecutionProvider } from "../../src/providers/validation/testExecution.js";
+import { GenericBddExecutionProvider } from "../../src/providers/validation/bddExecution.js";
 import type { HarnessProjectConfig, TaskContract } from "../../src/core/types.js";
 import type { ProcessOptions } from "../../src/utils/process.js";
 import type { ValidationContext } from "../../src/validators/types.js";
@@ -90,6 +91,32 @@ describe("explicit marking on remaining suite-capable validator paths", () => {
       rawArtifactDirectory: path.join(root, ".harness", "evidence")
     });
     expect(plan.toolchainExtraBinPaths).toEqual([binDir]);
+  });
+
+  it("provider BDD plans carry the workspace pinned bins", async () => {
+    const { root, binDir } = await mkroot();
+    await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture", scripts: { bdd: "exit 0" } }), "utf8");
+    const provider = new GenericBddExecutionProvider();
+    const plan = await provider.plan({
+      root,
+      config,
+      contract,
+      capability: "bdd",
+      rawArtifactDirectory: path.join(root, ".harness", "evidence")
+    });
+    expect(plan.toolchainExtraBinPaths).toEqual([binDir]);
+  });
+
+  it("executePlan falls back to the plan workspace pinned prefix when the plan carries none", async () => {
+    const { root, binDir } = await mkroot();
+    const { executePlan: run } = await import("../../src/providers/validation/providerUtils.js");
+    await run({
+      provider: "test",
+      capability: "unit-test",
+      command: "exit 0",
+      cwd: root
+    });
+    expect(seenExplicitBins).toContainEqual([binDir]);
   });
 
   it("executePlan forwards plan bins to the spawned command", async () => {
