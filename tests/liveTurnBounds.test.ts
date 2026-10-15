@@ -9,6 +9,7 @@ import {
   workerTurnTerminalDetail,
 } from "../src/workers/agentPrompt.js";
 import { classifyReviewerTurnOutcome, reviewerPermissionWaitEvidence, reviewerPermissionWaitMs, awaitReviewerRunWithPermissionWatch } from "../src/agents/reviewLifecycle.js";
+import { __testResetSdkPendingStart, __testSeedSdkPendingStart, earliestTrackedPendingStartMs, hasTrackedPendingPrompt, runPaseoSdkAgentWithClient } from "../src/paseo/sdk.js";
 import { effectivePaseoTurnTimeoutMs } from "../src/paseo/launchSpec.js";
 import { classifyParticipantStall, evaluateOperationWake, operationLivenessPolicy } from "../src/operations/livenessV2.js";
 import type { OperationRecordV2 } from "../src/operations/state.js";
@@ -311,8 +312,105 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
     expect(wallMs).toBeLessThan(5_000);
   });
 
-  it("(P1b) recent heartbeat + expired lease is NOT stalled", () => {
-    const now = Date.now();
+  it("(R4-i) REGRESSION: pending held through the SDK run() path is stamped at first-seen, not conversion", async () => {
+    // The atomic run() path previously never called notePendingStart, so a
+    // prompt pending for the whole run measured ~0ms at conversion. The
+    // pending entry carries no provider waitStartedAt marker: the ONLY
+    // source of the marker is the mid-run poll capture.
+    const pending = [{ name: "shell", input: {}, id: "pending-1" }];
+    const handle = {
+      id: "agent-sdk-run-pending",
+      pendingPermissions: pending,
+      run: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return { status: "failed", final: { pendingPermissions: pending } };
+      },
+    };
+    const client = { agents: { ref: () => handle } };
+    try {
+      const result = await runPaseoSdkAgentWithClient(client as never, "agent-sdk-run-pending", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 10 });
+      const marker = result.permission?.waitStartedAt;
+      expect(marker).toBeDefined();
+      const ageMs = Date.now() - Date.parse(marker!);
+      // First-seen at run start (~150ms before conversion), not ~0ms.
+      expect(ageMs).toBeGreaterThanOrEqual(100);
+    } finally {
+      __testResetSdkPendingStart(handle);
+    }
+  });
+
+  it("(R4-ii) REGRESSION: prompt appearing AFTER first activity is still captured on the waitForFinish path", async () => {
+    // The waitForFinish poll previously stopped after first activity, so a
+    // later-appearing prompt missed capture (marker ~0ms/absent). Timeline
+    // grows early (activity observed), the prompt flips pending afterwards.
+    const pending = [{ name: "shell", input: {}, id: "pending-2" }];
+    const startedAt = Date.now();
+    const handle = {
+      id: "agent-sdk-late-pending",
+      pendingPermissions: [] as unknown[],
+      send: async () => undefined,
+      waitForFinish: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return { status: "failed", final: { pendingPermissions: pending } };
+      },
+      timeline: {
+        refetch: async () => ({
+          entries: Date.now() - startedAt >= 30
+            ? [{ item: { type: "tool_call", status: "running", callId: "late-activity-1", name: "read", detail: { type: "read" } } }]
+            : [],
+        }),
+      },
+    };
+    const client = { agents: { ref: () => handle } };
+    setTimeout(() => { handle.pendingPermissions = pending as unknown[]; }, 60);
+    try {
+      const result = await runPaseoSdkAgentWithClient(client as never, "agent-sdk-late-pending", "work", 10_000, undefined, undefined, { firstActivityMs: 5_000, pollMs: 10 });
+      const marker = result.permission?.waitStartedAt;
+      expect(marker).toBeDefined();
+      const ageMs = Date.now() - Date.parse(marker!);
+      // First-seen at the ~60ms flip, well before the ~250ms conversion.
+      expect(ageMs).toBeGreaterThanOrEqual(100);
+    } finally {
+      __testResetSdkPendingStart(handle);
+    }
+  });
+
+  it("(R4-iii) WIRING: live SDK pending signal + 6-min-old start takes the exhaustion path, cleared signal settles", async () => {
+    // Production wiring: runReviewer arms the watchdog with
+    // isPending: () => hasTrackedPendingPrompt() and the tracked earliest
+    // start. A genuinely pending prompt (6-min-old) must exhaust mid-wait;
+    // a cleared signal must settle normally.
+    const seed = {};
+    __testSeedSdkPendingStart(seed, new Date(Date.now() - 6 * 60_000).toISOString());
+    try {
+      expect(hasTrackedPendingPrompt()).toBe(true);
+      expect(Date.now() - earliestTrackedPendingStartMs()!).toBeGreaterThanOrEqual(6 * 60_000);
+      const hangingRun = new Promise<string>(() => {});
+      const exhausted = await awaitReviewerRunWithPermissionWatch(hangingRun, {
+        permissionTimeoutMs: permissionWaitTimeoutMs(baseConfig),
+        isPending: () => hasTrackedPendingPrompt(),
+        pendingStartedAtMs: earliestTrackedPendingStartMs(),
+        pollMs: 5,
+      });
+      expect(exhausted.kind).toBe("permission-wait-exhausted");
+      if (exhausted.kind === "permission-wait-exhausted") {
+        expect(exhausted.pendingWaitMs).toBeGreaterThanOrEqual(6 * 60_000);
+      }
+    } finally {
+      __testResetSdkPendingStart(seed);
+    }
+    expect(hasTrackedPendingPrompt()).toBe(false);
+    const cleanRun = new Promise<string>((resolve) => setTimeout(() => resolve("review-evidence"), 20));
+    const settled = await awaitReviewerRunWithPermissionWatch(cleanRun, {
+      permissionTimeoutMs: 20,
+      isPending: () => hasTrackedPendingPrompt(),
+      pendingStartedAtMs: earliestTrackedPendingStartMs(),
+      pollMs: 5,
+    });
+    expect(settled).toEqual({ kind: "settled", value: "review-evidence" });
+  });
+
+  it("(P1b) recent heartbeat + expired lease is NOT stalled", () => {    const now = Date.now();
     const policy = operationLivenessPolicy(baseConfig);
     const freshAt = new Date(now - 1_000).toISOString();
     const expiredLeaseAt = new Date(now - 60_000).toISOString();

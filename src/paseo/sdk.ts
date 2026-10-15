@@ -46,10 +46,12 @@ function notePendingStart(handle: object, pending: unknown): string | undefined 
     if (!startedAt) {
       startedAt = new Date().toISOString();
       pendingStartByHandle.set(handle, startedAt);
+      pendingLiveHandles.add(handle);
     }
     return startedAt;
   }
   pendingStartByHandle.delete(handle);
+  pendingLiveHandles.delete(handle);
   return undefined;
 }
 
@@ -57,9 +59,40 @@ function trackedPendingStart(handle: object): string | undefined {
   return pendingStartByHandle.get(handle);
 }
 
+/**
+ * LIVE pending-prompt presence across SDK handles, polled by the reviewer
+ * mid-turn watchdog (reviewLifecycle runReviewer arms its watch ONLY while
+ * this is true). Same underlying signal the terminal diagnostic reads
+ * (first-seen pendingPermissions); clean turns (no pending prompt) stay
+ * disarmed. Mechanism: DETERMINISTIC.
+ */
+const pendingLiveHandles = new Set<object>();
+
+export function hasTrackedPendingPrompt(): boolean {
+  return pendingLiveHandles.size > 0;
+}
+
+/** Earliest first-seen pending-start across live handles (epoch ms), if any. */
+export function earliestTrackedPendingStartMs(): number | undefined {
+  let earliest: number | undefined;
+  for (const handle of pendingLiveHandles) {
+    const iso = pendingStartByHandle.get(handle);
+    const ms = iso === undefined ? Number.NaN : Date.parse(iso);
+    if (Number.isFinite(ms) && (earliest === undefined || (ms as number) < earliest)) earliest = ms as number;
+  }
+  return earliest;
+}
+
+/** Test-only: seed a first-seen pending start for an arbitrary key. */
+export function __testSeedSdkPendingStart(handle: object, startedAtIso: string): void {
+  pendingStartByHandle.set(handle, startedAtIso);
+  pendingLiveHandles.add(handle);
+}
+
 /** Test-only: reset the mid-turn pending-start tracker for a handle. */
 export function __testResetSdkPendingStart(handle: object): void {
   pendingStartByHandle.delete(handle);
+  pendingLiveHandles.delete(handle);
 }
 
 export interface PaseoSdkMcpStdioServer {
@@ -1233,13 +1266,16 @@ async function waitForFinishWithFirstActivityWatch(
   const waitPromise = handle.waitForFinish!(timeoutMs);
   try {
     pollTimer = setInterval(() => {
-      void captureRunActivityBaseline(handle).then((current) => {
-        if (runActivityHasGrown(baseline, current)) {
-          observed = true;
-          if (pollTimer) clearInterval(pollTimer);
-          pollTimer = undefined;
-        }
-      }).catch(() => undefined);
+      // Activity observation stays armed but never stops pending capture:
+      // the poll keeps running after first activity so a later-appearing
+      // prompt is still stamped at first-seen (re-armed, not one-shot).
+      if (!observed) {
+        void captureRunActivityBaseline(handle).then((current) => {
+          if (runActivityHasGrown(baseline, current)) {
+            observed = true;
+          }
+        }).catch(() => undefined);
+      }
       // PENDING-START CAPTURE SITE (waitForFinish poll): the opaque provider
       // wait exposes no mid-turn callback, so each activity poll also records
       // the first-seen pending prompt. turnResult threads the tracked start
@@ -1421,13 +1457,29 @@ async function runWithFirstActivityWatch(
   const runPromise = run();
   try {
     pollTimer = setInterval(() => {
-      void captureRunActivityBaseline(handle).then((current) => {
-        if (hasGrown(current)) {
-          observed = true;
-          if (pollTimer) clearInterval(pollTimer);
-          pollTimer = undefined;
-        }
-      }).catch(() => undefined);
+      // Activity observation never stops pending capture: the poll keeps
+      // running after first activity so a later-appearing prompt is still
+      // stamped at first-seen instead of conversion time.
+      if (!observed) {
+        void captureRunActivityBaseline(handle).then((current) => {
+          if (hasGrown(current)) {
+            observed = true;
+          }
+        }).catch(() => undefined);
+      }
+      // PENDING-START CAPTURE SITE (atomic run() poll): the SDK run()
+      // primitive exposes no interim progress, so each activity poll also
+      // records the first-seen pending prompt — the same signal the
+      // waitForFinish poll and the terminal conversion read. turnResult
+      // threads the tracked start into the diagnostic instead of stamping
+      // conversion time.
+      void Promise.resolve()
+        .then(() => refreshHandle(handle).catch(() => undefined))
+        .then((raw) => {
+          if (raw) notePendingStart(handle, (raw as Record<string, unknown>).pendingPermissions ?? handle.pendingPermissions);
+          else notePendingStart(handle, handle.pendingPermissions);
+        })
+        .catch(() => undefined);
     }, pollMs);
     const outcome = await Promise.race([
       runPromise.then(

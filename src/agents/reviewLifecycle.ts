@@ -18,6 +18,7 @@ import { assertWorkspaceMatchesCandidate, type CandidateWorkspaceIdentityEvidenc
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import { recordEvent } from "../telemetry/events.js";
 import { currentOperationContext, loadOperation, resolveOperationStateRoot } from "../operations/state.js";
+import { earliestTrackedPendingStartMs, hasTrackedPendingPrompt } from "../paseo/sdk.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import type { CandidateImpactAssessmentRuntimeV1, CandidateImpactV1 } from "../candidates/assembler.js";
 import type { CandidateAssuranceCompilationV1, CandidateAssuranceReviewAssignmentV1 } from "../architecture/candidateAssurance.js";
@@ -591,22 +592,26 @@ async function runReviewer(root: string, config: HarnessProjectConfig, contract:
   // the watch fires on elapsed-since-pending-start, never as a blind race on
   // every turn. Live pending observation is owned by the Paseo wait loops
   // (sdk.ts poll loop + native inspect), which stamp the true first-seen
-  // pending-start into the diagnostic; this layer exposes no live provider
-  // handle, so the watch runs deferred-armed (no live probe yet — clean turns
-  // never arm it) and the settled approval-wait gate below stays authoritative:
-  // only a turn stopped on a pending prompt (wait-start evidence from the
-  // mid-turn capture) can exhaust the short timer. A reviewer turn with no
-  // pending prompt never trips this path regardless of elapsed time; only the
-  // reviewer deadline applies. A lost race cannot cancel the provider
-  // (executeIsolatedCandidateMutation keeps awaiting + cleans up after
-  // settle). Mechanism: DETERMINISTIC (watch) + DETERMINISTIC (settled gate).
+  // pending-start into the diagnostic; this layer polls that same LIVE
+  // pending signal (hasTrackedPendingPrompt over the SDK-tracked
+  // first-seen state — the tracked waitStartedAt presence the terminal
+  // diagnostic reads), so a genuinely pending prompt arms the watch in
+  // production while clean turns never arm it. The settled approval-wait
+  // gate below stays authoritative: only a turn stopped on a pending prompt
+  // (wait-start evidence from the mid-turn capture) can exhaust the short
+  // timer. A reviewer turn with no pending prompt never trips this path
+  // regardless of elapsed time; only the reviewer deadline applies. A lost
+  // race cannot cancel the provider (executeIsolatedCandidateMutation keeps
+  // awaiting + cleans up after settle). Mechanism: DETERMINISTIC (watch) +
+  // DETERMINISTIC (settled gate).
   const watched = await awaitReviewerRunWithPermissionWatch(reviewerRun, {
     permissionTimeoutMs,
-    // No live provider pending signal is exposed at this layer (the SDK wait
-    // loops own mid-turn observation): the watch stays disarmed mid-turn and
-    // the settled gate below enforces. The armed path is proven in-flight by
-    // the liveTurnBounds watchdog tests with an injected pending probe.
-    isPending: () => false,
+    // LIVE wiring: armed if and only if the SDK wait loops have observed a
+    // pending approval prompt mid-turn (tracked first-seen state present);
+    // the externally observed start anchors elapsed-since-pending-start, and
+    // a mid-turn first-seen stamp covers prompts that appear after arming.
+    isPending: () => hasTrackedPendingPrompt(),
+    pendingStartedAtMs: earliestTrackedPendingStartMs(),
   });
   // The settled session carries the approval-wait gate: only a turn stopped
   // on a pending prompt (permission-gate wait-start evidence) can exhaust
