@@ -17,6 +17,20 @@ import type { OperationRecordV2 } from "../src/operations/state.js";
 
 const baseConfig = { version: 1, project: { name: "test" } } as never;
 
+// R7: matcher for production __test-hook exports. Must catch multiline forms
+// (e.g. `export {\n  __testHook,\n}`), which a single-line regex misses.
+// Comments are stripped first so commented-out seams do not false-positive.
+function hasTestHookExport(source: string): boolean {
+  const stripped = source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+  return (
+    /export\s+(?:const|let|var|function|async\s+function|class|abstract\s+class|enum|interface|type)\s+__test/.test(
+      stripped,
+    ) || /export\s*\{[^}]*__test/.test(stripped)
+  );
+}
+
 function operationWith(participants: OperationRecordV2["participants"]): OperationRecordV2 {
   const now = new Date().toISOString();
   return {
@@ -538,6 +552,7 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
   it("(R6-ii) BUILD HYGIENE: no production module under src/ exposes __test hooks", async () => {
     // P2 widened: the native.ts seam survived because the assertion checked
     // only the sdk module object. Grep every production source file instead.
+    // R7: the matcher must also catch multiline export forms.
     const { readdirSync, readFileSync, statSync } = await import("node:fs");
     const { fileURLToPath } = await import("node:url");
     const { join } = await import("node:path");
@@ -551,11 +566,21 @@ describe("live turn bounds (FAM-LIVE gaps 1,2,3,5)", () => {
           continue;
         }
         if (!full.endsWith(".ts")) continue;
-        if (/export\s+[^\n]*__test/.test(readFileSync(full, "utf8"))) offenders.push(full);
+        if (hasTestHookExport(readFileSync(full, "utf8"))) offenders.push(full);
       }
     };
     walk(srcRoot);
     expect(offenders).toEqual([]);
+  });
+
+  it("(R7) BUILD HYGIENE matcher catches single-line and multiline __test exports", () => {
+    expect(hasTestHookExport(`export const __testHook = 1;`)).toBe(true);
+    expect(hasTestHookExport(`export function __testHook() {}`)).toBe(true);
+    expect(hasTestHookExport(`export {\n  __testHook,\n};`)).toBe(true);
+    expect(hasTestHookExport(`export\nconst __testHook = 1;`)).toBe(true);
+    expect(hasTestHookExport(`export const hook = 1;\nexport function helper() {}`)).toBe(false);
+    expect(hasTestHookExport(`// export const __testHook = 1;\nexport const hook = 1;`)).toBe(false);
+    expect(hasTestHookExport(`/* export {\n  __testHook,\n} */\nexport const hook = 1;`)).toBe(false);
   });
 
   it("(P1b) recent heartbeat + expired lease is NOT stalled", () => {    const now = Date.now();
