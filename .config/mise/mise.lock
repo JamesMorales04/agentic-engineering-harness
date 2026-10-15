@@ -184,10 +184,10 @@ backend = "npm:@openai/codex"
 specifiers = ["0.156.1"]
 
 [[tools."pipx:headroom-ai"]]
-version = "0.28.0"
+version = "0.35.0"
 backend = "pipx:headroom-ai"
-specifiers = ["0.28.0"]
-uv = { path = "locks/pipx-headroom-ai/0.28.0", digest = "sha256:679f3eda01ad89c115199274fcca901f501f22c1cc2430b22272fa66e8f14c73" }
+specifiers = ["0.35.0"]
+uv = { path = "locks/pipx-headroom-ai/0.35.0", digest = "sha256:1feed8983a67c3c3f01ffa941d5c0e8a16cfef1ebd87a1bb85827196453b5c8b" }
 
 [[tools."pipx:serena-agent"]]
 version = "1.6.1"

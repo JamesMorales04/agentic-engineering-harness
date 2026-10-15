@@ -290,12 +290,37 @@ function assertCandidateImpactBinding(candidate: CandidateRevisionV1, impact: Bo
 
 function verifiedImpactDigest(impact: BoundCandidateImpactV1): string {
   if (typeof impact.version !== "number" || impact.version !== 1) reject("impact.version must be 1.");
-  if (impact.interpretation !== "MODEL" && impact.interpretation !== "BLOCKED") reject("impact.interpretation must be MODEL or BLOCKED.");
+  if (impact.interpretation !== "MODEL" && impact.interpretation !== "BLOCKED" && impact.interpretation !== "NO_CHANGE") reject("impact.interpretation must be MODEL, BLOCKED, or NO_CHANGE.");
   if (typeof impact.requiresIndependentReview !== "boolean") reject("impact.requiresIndependentReview must be a boolean.");
+  if (impact.interpretation === "NO_CHANGE") assertNoChangeImpactShape(impact);
   if (typeof impact.digest !== "string" || !digestPattern.test(impact.digest)) reject("impact digest must be a lowercase SHA-256 digest.");
   const { digest, ...payload } = impact as BoundCandidateImpactV1 & { digest: string };
   if (sha256Canonical(payload) !== digest) reject("impact digest does not match the impact payload.");
   return digest;
+}
+
+/**
+ * Structural enforcement for the deterministic NO_CHANGE interpretation
+ * (MECHANISM: DETERMINISTIC). The gate — not just the synthesizer — must
+ * guarantee that a NO_CHANGE impact carries no changed files, dimensions,
+ * kinds, or unknowns and binds identical candidate/base identity (no patch
+ * lineage to smuggle in). Otherwise a self-digested NO_CHANGE with changed
+ * files but no dimensions would skip per-file impact requirements and the
+ * high-risk BLOCKED rule. Reviewer depth stays policy-driven (the gate
+ * does not force review for nothing-changed); acceptance assertions and
+ * any policy-required reviewers still apply. A forged shape is rejected
+ * here before compilation, never downgraded.
+ */
+function assertNoChangeImpactShape(impact: BoundCandidateImpactV1): void {
+  for (const field of ["changedFiles", "reviewDimensions", "changeKinds", "unknowns"] as const) {
+    const value = field === "unknowns" ? (impact.unknowns ?? []) : impact[field];
+    if (!Array.isArray(value) || value.length !== 0) reject(`NO_CHANGE impact must carry an empty '${field}'.`);
+  }
+  const candidate = impact.candidate;
+  const base = impact.baseCandidate;
+  if (!candidate || !base || candidate.candidateId !== base.candidateId || candidate.revision !== base.revision || candidate.identityDigest !== base.identityDigest) {
+    reject("NO_CHANGE impact candidate and baseCandidate must bind the identical candidate revision.");
+  }
 }
 
 interface EligibleReviewerV1 {
@@ -476,6 +501,10 @@ export function compileCandidateAssuranceV1(input: CandidateAssuranceInputV1): C
   const validationRequirements = [...input.baseValidationRequirements.map(cloneRequirement), ...generatedRequirements];
 
   const blockers: string[] = [];
+  // NO_CHANGE is intentionally not blocked at any risk level: a zero-change
+  // candidate has no risk surface, and the no-op claim itself still flows
+  // through base requirements and independent review below. Whether a
+  // change was required is an acceptance judgment, not an assurance one.
   if (input.risk === "high" && (input.impact.interpretation === "BLOCKED" || unknowns.length > 0)) {
     blockers.push("UNRESOLVED_HIGH_RISK_IMPACT: high-risk candidate impact is BLOCKED or retains unresolved unknowns.");
   }
