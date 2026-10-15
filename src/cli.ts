@@ -144,10 +144,11 @@ delegation.command("grant").requiredOption("--grantor <owner>", "Authenticated h
   // is rejected fail-closed (an unbound grant would leave cross-repository
   // checks unenforced).
   const effectiveProject = options.project ?? config.project.name;
-  if (effectiveProject !== config.project.name && !options.repository) {
+  const explicitRepository = options.repository?.trim() || undefined;
+  if (effectiveProject !== config.project.name && !explicitRepository) {
     throw new Error("--repository is required when --project overrides the checkout's configured project; cross-repository checks must stay enforced.");
   }
-  const repository = options.repository ?? (effectiveProject === config.project.name ? config.delivery?.github?.repository : undefined);
+  const repository = explicitRepository ?? (effectiveProject === config.project.name ? config.delivery?.github?.repository : undefined);
   const grant = await issueDelegatedOwnerGrantV1(root, {
     grantorOwnerId: options.grantor, delegatePrincipalId: options.delegate,
     projectId: effectiveProject,
