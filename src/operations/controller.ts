@@ -128,6 +128,14 @@ export interface OperationControllerDeps {
   runChange?: typeof runChangeOperation;
   runIssueIntake?: typeof prepareGithubIssueTask;
   createSemanticRuntime?: typeof createSemanticAssessmentRuntimeV1;
+  /**
+   * Workspace toolchain provisioning seam. Defaults to the real toolchain
+   * setup (mise-resolved lock state must materialize before candidate
+   * binding). Tests that focus on later pipeline stages inject a no-op so
+   * they never shell real provisioning; provisioning itself is covered by
+   * dedicated toolchain tests.
+   */
+  setupWorkspaceToolchain?: typeof setupToolchain;
   /** Trusted actor from the paired Control Center session; absent callers must present a recorded scoped decision. */
   humanActorId?: string;
   /** Deterministic provider observation seam for cleanup tests and disposable packed fixtures. */
@@ -595,6 +603,7 @@ async function executeOperationWithEnvironment(
         kind: record.kind,
         config,
         trace: (event, detail) => trace(absoluteRoot, event, { operationId, ...detail }),
+        ...(deps.setupWorkspaceToolchain ? { setup: deps.setupWorkspaceToolchain } : {}),
       });
       // Binding a workspace candidate clears the frozen policy; participant launches require
       // a policy that binds the current candidate revision and digest before they can start.
