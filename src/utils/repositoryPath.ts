@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
+import type { Stats } from "node:fs";
 import path from "node:path";
 import type { HarnessProjectConfig } from "../core/types.js";
 
@@ -21,20 +23,56 @@ export async function existingRepositoryPath(root: string, relative: string): Pr
   return candidate;
 }
 
+export type IgnoreVerdict = "ignored" | "tracked-visible" | "unknown";
+
+/**
+ * Git-ignore verdict for a root-relative path (DETERMINISTIC): "ignored" when
+ * git excludes it from the candidate digest file set, "tracked-visible" when
+ * git would include it, "unknown" when git cannot answer (not a repository,
+ * git missing). Used to keep repair-evidence writes digest-neutral: writing
+ * a digest-visible file into the execution root after candidate binding
+ * breaks the verify-time identity check.
+ */
+export async function ignoreVerdict(root: string, relative: string): Promise<IgnoreVerdict> {
+  try {
+    execFileSync("git", ["-C", root, "check-ignore", "-q", relative], { timeout: 15_000, stdio: "ignore" });
+    return "ignored";
+  } catch (error) {
+    const code = (error as { status?: unknown }).status;
+    if (code === 1) return "tracked-visible";
+    return "unknown";
+  }
+}
 /**
  * Write file content contained inside a root (DETERMINISTIC): lexical
- * containment plus a resolved-parent check and a destination-symlink refusal,
- * so a pre-existing symlink at the file or in its parent cannot redirect the
- * write outside the root. Throws fail-closed.
+ * containment plus per-component directory creation that refuses symlinks,
+ * so a pre-existing symlink at the file or in any parent directory can
+ * neither redirect the write outside the root nor cause directory creation
+ * outside the root before detection. Throws fail-closed.
  */
 export async function writeContainedFile(root: string, relative: string, content: string | Buffer): Promise<string> {
   const absoluteRoot = path.resolve(root);
   const destination = repositoryPath(absoluteRoot, relative);
-  await fs.mkdir(path.dirname(destination), { recursive: true });
-  const realParent = await fs.realpath(path.dirname(destination));
-  const parentWithin = path.relative(absoluteRoot, realParent);
-  if (parentWithin.startsWith("..") || path.isAbsolute(parentWithin)) {
-    throw new Error("REPAIR_EVIDENCE_ESCAPE: write destination escapes the isolated workspace.");
+  // Component-wise descent: create each missing level only after proving the
+  // current level is a real directory (never follow a symlink, never create
+  // through one). A recursive mkdir would create descendants outside the root
+  // through a symlinked parent before any check could reject the write.
+  let cursor = path.parse(destination).root;
+  const absoluteParts = destination.split(path.sep);
+  for (let index = 1; index < absoluteParts.length - 1; index += 1) {
+    cursor = path.join(cursor, absoluteParts[index]!);
+    if (cursor.length < absoluteRoot.length) continue;
+    let stat: Stats;
+    try {
+      stat = await fs.lstat(cursor);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await fs.mkdir(cursor);
+      continue;
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error("REPAIR_EVIDENCE_ESCAPE: write path traverses a non-directory or symlink.");
+    }
   }
   try {
     if ((await fs.lstat(destination)).isSymbolicLink()) {

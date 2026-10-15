@@ -98,6 +98,14 @@ export async function executeRepairerCandidateMutation(input: {
   prepareWorkspace?: (isolatedRoot: string) => Promise<void>;
   semanticAssessment?: CandidateImpactAssessmentRuntimeV1;
   /**
+   * Declare a validation-repair turn whose prompt carries a report pointer:
+   * the validation report is then required to materialize (fail-closed on a
+   * dangling pointer). Review remediation and other wrapper callers omit it
+   * and keep prior behavior. Set only by the runTask repair loop, which
+   * persists the augmented report immediately before packet creation.
+   */
+  requireRepairEvidence?: boolean;
+  /**
    * DETERMINISTIC controller-owned exemption for a single lead-approved
    * bounded replan. When present, exactly the amendment-exempted paths are
    * removed from the effective forbidden list for this retry. The amendment
@@ -140,8 +148,7 @@ export async function executeRepairerCandidateMutation(input: {
     contract: input.contract,
     execute: (isolatedRoot) => input.execute(isolatedRoot, participantId, input.prompt),
     prepareWorkspace: input.prepareWorkspace,
-    requireRepairEvidenceFor: input.taskId,
-    evidenceRoot: input.stateRoot,
+    ...(input.requireRepairEvidence ? { requireRepairEvidenceFor: input.taskId, evidenceRoot: input.stateRoot } : {}),
   });
   if (isolated.session.exitCode !== 0) {
     // A runtime failure is not a scope blocker; surface the session unchanged
@@ -326,7 +333,11 @@ export async function executeRepairerCandidateMutation(input: {
         config: input.config,
         contract: input.contract,
         execute: (correctionRoot) => input.execute(correctionRoot, correctionParticipantId, fullCorrectionPrompt),
-        prepareWorkspace: input.prepareWorkspace
+        prepareWorkspace: input.prepareWorkspace,
+        // The correction prompt extends the repair prompt (same report
+        // pointer), so the same evidence requirement travels with it — but
+        // only when this turn declared repair evidence in the first place.
+        ...(input.requireRepairEvidence ? { requireRepairEvidenceFor: input.taskId, evidenceRoot: input.stateRoot } : {}),
       });
       if (!correctionIsolated.changeSet) {
         // Declaration-first BLOCKED routing (same as initial no-mutation path):

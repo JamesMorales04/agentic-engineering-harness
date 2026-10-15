@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { HarnessProjectConfig } from "../src/core/types.js";
-import { materializeRepairEvidence } from "../src/utils/repositoryPath.js";
+import { ignoreVerdict, materializeRepairEvidence, writeContainedFile } from "../src/utils/repositoryPath.js";
 
 const config = { version: 1, project: { name: "repair-evidence-test" } } as HarnessProjectConfig;
 
@@ -42,6 +42,49 @@ describe("materializeRepairEvidence", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
       await fs.rm(target, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses writes through symlinked parents without creating outside the root", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-"));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-outside-"));
+    try {
+      await fs.mkdir(path.join(root, "sub"), { recursive: true });
+      await fs.symlink(outside, path.join(root, "sub", "link"));
+      await expect(writeContainedFile(root, "sub/link/nested/report.json", "{}")).rejects.toThrow(/ESCAPE/);
+      expect(await fs.readdir(outside)).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses writes through a destination symlink", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-"));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-outside-"));
+    try {
+      await fs.mkdir(path.join(root, "reports"), { recursive: true });
+      const outsideFile = path.join(outside, "victim.txt");
+      await fs.writeFile(outsideFile, "victim");
+      await fs.symlink(outsideFile, path.join(root, "reports", "T-1.json"));
+      await expect(writeContainedFile(root, "reports/T-1.json", "{}")).rejects.toThrow(/ESCAPE/);
+      expect(await fs.readFile(outsideFile, "utf8")).toBe("victim");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("reports git-ignore verdicts for digest visibility", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-repair-evidence-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      await fs.writeFile(path.join(root, ".gitignore"), ".harness/\n");
+      expect(await ignoreVerdict(root, ".harness/reports/T-1.json")).toBe("ignored");
+      expect(await ignoreVerdict(root, "reports/T-1.json")).toBe("tracked-visible");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 });

@@ -17,7 +17,7 @@ import { validateSddChange } from "./sdd.js";
 import { sealTask, verifyTaskSeal } from "./seal.js";
 import { verifyTask } from "./verify.js";
 import { createRepairPacket, writeRepairPacket } from "./repair.js";
-import { writeContainedFile } from "../utils/repositoryPath.js";
+import { ignoreVerdict, writeContainedFile } from "../utils/repositoryPath.js";
 import { AehError } from "./errors.js";
 import { createWorkerExecutor } from "../workers/factory.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
@@ -969,6 +969,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     // checked); repair workspaces receive it through evidence materialization
     // from the state root, so execution-root candidate digests are untouched.
     const repairReportArtifact = `${effectiveConfig.sdd?.reportsDir ?? ".harness/reports"}/${effectiveContract.task.id}.json`;
+    if (path.resolve(workspaceRoot) === path.resolve(controlRoot)
+      && await ignoreVerdict(controlRoot, repairReportArtifact).then((verdict) => verdict === "tracked-visible").catch(() => false)) {
+      throw new Error("REPAIR_REPORT_CONFIG_INVALID: the validation report artifact is digest-visible in a local execution root; persisting it after candidate binding would break candidate identity. Configure an ignored reportsDir (for example .harness/reports).");
+    }
     await writeContainedFile(controlRoot, repairReportArtifact, `${JSON.stringify(report, null, 2)}\n`);
     const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction, reportArtifact: repairReportArtifact });
     if (!packet.failures.length) break;
@@ -1007,6 +1011,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         forbiddenScope: [...(effectiveContract.scope?.forbidden ?? []), ...(effectiveContract.scope?.frozen ?? []), ...(effectiveConfig.validation?.frozenPaths ?? [])],
         prompt: repairPrompt,
         prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+        requireRepairEvidence: true,
         execute: (isolatedRoot, participantId, prompt) => {
             // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity
             // records the prior failed identity as its retry parent, so the deterministic
@@ -1098,6 +1103,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           scopeAmendment: amendment,
           prompt: repairPrompt,
           prepareWorkspace: controller ? async (isolatedRoot) => { await materializeControlPlaneSnapshot(controller!, isolatedRoot, effectiveConfig); } : undefined,
+          requireRepairEvidence: true,
           execute: (isolatedRoot, participantId, prompt) => {
             // AEH-V2-0133 P1 (controller-written, fail-closed): the retry replacement identity
             // records the prior failed identity as its retry parent, so the deterministic
