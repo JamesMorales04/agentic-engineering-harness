@@ -290,7 +290,7 @@ function assertCandidateImpactBinding(candidate: CandidateRevisionV1, impact: Bo
 
 function verifiedImpactDigest(impact: BoundCandidateImpactV1): string {
   if (typeof impact.version !== "number" || impact.version !== 1) reject("impact.version must be 1.");
-  if (impact.interpretation !== "MODEL" && impact.interpretation !== "BLOCKED") reject("impact.interpretation must be MODEL or BLOCKED.");
+  if (impact.interpretation !== "MODEL" && impact.interpretation !== "BLOCKED" && impact.interpretation !== "NO_CHANGE") reject("impact.interpretation must be MODEL, BLOCKED, or NO_CHANGE.");
   if (typeof impact.requiresIndependentReview !== "boolean") reject("impact.requiresIndependentReview must be a boolean.");
   if (typeof impact.digest !== "string" || !digestPattern.test(impact.digest)) reject("impact digest must be a lowercase SHA-256 digest.");
   const { digest, ...payload } = impact as BoundCandidateImpactV1 & { digest: string };
@@ -476,6 +476,10 @@ export function compileCandidateAssuranceV1(input: CandidateAssuranceInputV1): C
   const validationRequirements = [...input.baseValidationRequirements.map(cloneRequirement), ...generatedRequirements];
 
   const blockers: string[] = [];
+  // NO_CHANGE is intentionally not blocked at any risk level: a zero-change
+  // candidate has no risk surface, and the no-op claim itself still flows
+  // through base requirements and independent review below. Whether a
+  // change was required is an acceptance judgment, not an assurance one.
   if (input.risk === "high" && (input.impact.interpretation === "BLOCKED" || unknowns.length > 0)) {
     blockers.push("UNRESOLVED_HIGH_RISK_IMPACT: high-risk candidate impact is BLOCKED or retains unresolved unknowns.");
   }

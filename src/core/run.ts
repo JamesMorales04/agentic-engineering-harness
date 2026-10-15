@@ -51,6 +51,7 @@ import { buildAcceptedOperationCandidates } from "../memory/candidates.js";
 import { compileExecutionCatalog, type ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
 import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperationCapabilityRegistryV1, persistOperationCapabilityRegistryV1, type CapabilityRegistryV1 } from "../capabilities/registry.js";
 import type { CandidateImpactAssessmentRuntimeV1, CandidateScopeEscapeV1, ChangeSetV1 } from "../candidates/assembler.js";
+import { synthesizeNoChangeImpactV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { executeRepairerCandidateMutation, partitionRepairScopeBlockerFiles, repairProtectedPaths } from "../candidates/repair.js";
 import {
@@ -898,13 +899,27 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     // from routed + all enabled Reviewers, and run.ts:1495 carries each
     // selection's specializations into reviewerCandidates above.
     const requiredReviewSpecializations = requiredReviewSpecializationsForRoute(route);
+    // DETERMINISTIC no-change path: when no impact was bound and the report
+    // shows zero changed files, synthesize a no-change impact bound to the
+    // current candidate instead of BLOCKING. A zero-change candidate carries
+    // nothing to assure; acceptance assertions and policy-floor reviewers
+    // still apply downstream, so this never silently approves a required
+    // change — it only stops demanding a MODEL judgment about nothing.
+    let effectiveImpact = impact;
+    if (!effectiveImpact && candidateReport.changedFiles.length === 0 && operationId) {
+      const current = (await loadOperation(operationStateRoot, operationId).catch(() => undefined))?.candidateRevision;
+      if (current && candidateReport.candidate && current.candidateId === candidateReport.candidate.candidateId && current.revision === candidateReport.candidate.revision && current.identityDigest === candidateReport.candidate.identityDigest) {
+        const binding = { candidateId: current.candidateId, revision: current.revision, identityDigest: current.identityDigest };
+        effectiveImpact = synthesizeNoChangeImpactV1({ candidate: binding, baseCandidate: binding, patchDigest: sha256Utf8("") });
+      }
+    }
     const result = await recompileCandidateAssurance({
       root: workspaceRoot,
       stateRoot: controlRoot,
       config: effectiveConfig,
       contract: effectiveContract,
       operationId,
-      impact,
+      impact: effectiveImpact,
       report: candidateReport,
       policySource: assurancePolicySource,
       reviewerSelections: executionBoundary.reviewerSelections ?? {},

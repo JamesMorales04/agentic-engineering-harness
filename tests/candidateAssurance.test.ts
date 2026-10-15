@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { compileCandidateAssuranceV1, candidateImpactValidationRequirementsV1, candidateAssuranceProviderAdapterV1 } from "../src/architecture/candidateAssurance.js";
 import type { CandidateImpactV1 } from "../src/candidates/assembler.js";
+import { synthesizeNoChangeImpactV1 } from "../src/candidates/assembler.js";
 import type { CandidateRevisionV1 } from "../src/operations/v2Contracts.js";
 import type { ValidationRequirementV1, ValidationResolutionV1 } from "../src/architecture/validationRequirements.js";
 import { createCandidateRevisionV1 } from "../src/operations/v2Contracts.js";
-import { sha256Canonical } from "../src/core/digest.js";
+import { sha256Canonical, sha256Utf8 } from "../src/core/digest.js";
 
 const digest = (label: string) => sha256Canonical(label);
 
@@ -143,6 +144,26 @@ describe("candidate impact assurance recompilation", () => {
 
   it("rejects missing impact instead of falling back to weaker assurance", () => {
     expect(() => compileCandidateAssuranceV1({ ...input(), impact: undefined as unknown as CandidateImpactV1 })).toThrow(/candidate impact/i);
+  });
+
+  it("compiles READY for a deterministic NO_CHANGE impact on a zero-change candidate", () => {
+    const candidateValue = candidate();
+    const binding = { candidateId: candidateValue.candidateId, revision: candidateValue.revision, identityDigest: candidateValue.identityDigest };
+    const impact = synthesizeNoChangeImpactV1({ candidate: binding, baseCandidate: binding, patchDigest: sha256Utf8("") });
+    expect(impact.interpretation).toBe("NO_CHANGE");
+    expect(impact.changedFiles).toEqual([]);
+    const result = compileCandidateAssuranceV1(input({ impact }));
+    expect(result.status).toBe("READY");
+    expect(result.blockers).toEqual([]);
+    expect(result.reviewAssignments.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not apply the high-risk BLOCKED-impact rule to a NO_CHANGE impact", () => {
+    const candidateValue = candidate();
+    const binding = { candidateId: candidateValue.candidateId, revision: candidateValue.revision, identityDigest: candidateValue.identityDigest };
+    const impact = synthesizeNoChangeImpactV1({ candidate: binding, baseCandidate: binding, patchDigest: sha256Utf8("") });
+    const result = compileCandidateAssuranceV1(input({ impact, risk: "high" }));
+    expect(result.blockers.join(" ")).not.toMatch(/UNRESOLVED_HIGH_RISK_IMPACT/);
   });
 
   it("assigns configured read-only independent reviewers to every required dimension", () => {

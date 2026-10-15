@@ -58,7 +58,7 @@ export interface CandidateImpactV1 {
   changeKinds: string[];
   reviewDimensions: string[];
   requiresIndependentReview: boolean;
-  interpretation: "MODEL" | "BLOCKED";
+  interpretation: "MODEL" | "BLOCKED" | "NO_CHANGE";
   unknowns?: string[];
   semanticAssessmentDigest?: string;
   digest: string;
@@ -1108,6 +1108,22 @@ async function pathsTouchedByPatch(root: string, patch: string): Promise<string[
 function candidateImpactProjectionDigest(assessment: Omit<CandidateImpactProjectionV1, "assessmentDigest">): string {
   const { assessmentDigest: _ignored, ...digestInput } = assessment as CandidateImpactProjectionV1;
   return sha256Canonical(digestInput);
+}
+
+/**
+ * Deterministic no-change impact for zero-change candidates (MECHANISM:
+ * DETERMINISTIC). A candidate with no changed files carries nothing to
+ * assure, so no MODEL CANDIDATE_IMPACT judgment is required or even
+ * possible (assessment requires evidence per changed file). The
+ * `NO_CHANGE` interpretation keeps the normal assurance compilation
+ * (base requirements, policy-floor independent review) so the no-op claim
+ * itself is still reviewed; acceptance assertions separately judge whether
+ * a change was required. Callers must only synthesize when the report
+ * shows zero changed files.
+ */
+export function synthesizeNoChangeImpactV1(binding: Pick<CandidateImpactV1, "candidate" | "baseCandidate" | "patchDigest">): CandidateImpactV1 {
+  const payload = { version: 1 as const, ...binding, changedFiles: [], changeKinds: [], reviewDimensions: [], requiresIndependentReview: true, interpretation: "NO_CHANGE" as const, unknowns: [] as string[] };
+  return { ...payload, digest: sha256Canonical(payload) };
 }
 
 function projectCandidateImpact(changedFiles: readonly string[], assessment: CandidateImpactProjectionV1 | undefined, binding: Pick<CandidateImpactV1, "candidate" | "baseCandidate" | "patchDigest">): CandidateImpactV1 {
