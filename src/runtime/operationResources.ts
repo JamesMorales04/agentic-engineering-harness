@@ -1789,12 +1789,26 @@ async function releaseResource(
       const observed = await inspect(root, resource.identity).catch(() => undefined);
       const status = observed?.status?.toLowerCase();
       if (status === "archived") return { action: "already-archived", status };
-      await archive(root, resource.identity).catch(async (error) => {
-        // Archive can fail for an already-removed session; re-observe before failing.
+      try {
+        await archive(root, resource.identity);
+      } catch (error) {
+        // A handle whose agent is absent both before the archive attempt and
+        // after it already holds the desired end-state (nothing running,
+        // nothing to archive): reconcile as already-absent instead of
+        // failing forever on phantom registrations (e.g. handles recorded
+        // for workers that never spawned, which otherwise strand the failed
+        // chain with zero live resources but an incomplete receipt).
+        // Corroborated absence only — any observed presence still throws and
+        // stays visible in the receipt. Mirrors the ESRCH already-exited
+        // precedent for managed processes below.
         const after = await inspect(root, resource.identity).catch(() => undefined);
-        if (after?.status?.toLowerCase() === "archived") return;
+        if (observed === undefined && after === undefined) {
+          return { action: "already-absent", agentId: resource.identity, observedStatus: null };
+        }
+        // Archive can fail for an already-removed session; re-observe before failing.
+        if (after?.status?.toLowerCase() === "archived") return { action: "already-archived", status: after.status };
         throw error;
-      });
+      }
       return { action: "paseo.agent.archive", agentId: resource.identity, observedStatus: status ?? null };
     }
     case "managed-process": {

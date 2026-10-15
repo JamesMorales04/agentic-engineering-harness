@@ -389,4 +389,42 @@ describe("operation resource ownership and terminal/recovery reconciliation", ()
     await expect(fs.access(unknown)).resolves.toBeUndefined();
     expect(receipt.dispositions).toEqual([expect.objectContaining({ identity: owned, kind: "staging-root", classification: "TERMINAL_ORPHAN", outcome: "reconciled" })]);
   });
+
+  it("N. phantom paseo-agent handle (absent before and after the archive attempt) reconciles as already-absent", async () => {
+    const root = await makeRoot();
+    const id = "AUDIT-N";
+    await forceTerminal(root, id, "FAILED");
+    await registerOperationResource(root, id, { kind: "paseo-agent", identity: "participant:phantom-wu" });
+    const deps = {
+      ...passThroughDeps(),
+      inspectAgent: vi.fn(async (_root: string, _agentId: string) => undefined),
+      archiveAgent: vi.fn(async (_root: string, agentId: string) => { throw new Error(`Agent not found: ${agentId}`); })
+    };
+    const receipt = await reconcileOperationResources(root, id, deps);
+    // The archive attempt is never skipped: absence is only concluded from
+    // corroborated probe results around a failed archive.
+    expect(deps.archiveAgent).toHaveBeenCalledWith(root, "participant:phantom-wu");
+    expect(receipt.errors).toEqual([]);
+    expect(receipt.cleanupComplete).toBe(true);
+    expect(receipt.dispositions).toEqual([expect.objectContaining({ kind: "paseo-agent", identity: "participant:phantom-wu", classification: "TERMINAL_ORPHAN", outcome: "reconciled" })]);
+    const resources = await listOperationResources(root, id);
+    expect(resources[0]?.releaseEvidence).toMatchObject({ action: "already-absent" });
+  });
+
+  it("O. present-then-absent paseo-agent (observed before, gone after failed archive) still fails loud", async () => {
+    const root = await makeRoot();
+    const id = "AUDIT-O";
+    await forceTerminal(root, id, "FAILED");
+    await registerOperationResource(root, id, { kind: "paseo-agent", identity: "participant:flaky-wu" });
+    let calls = 0;
+    const deps = {
+      ...passThroughDeps(),
+      inspectAgent: vi.fn(async (_root: string, _agentId: string) => (++calls === 1 ? { status: "idle" } : undefined)),
+      archiveAgent: vi.fn(async (_root: string, agentId: string) => { throw new Error(`Agent not found: ${agentId}`); })
+    };
+    const receipt = await reconcileOperationResources(root, id, deps);
+    expect(receipt.cleanupComplete).toBe(false);
+    expect(receipt.errors.length).toBe(1);
+    expect(receipt.dispositions).toEqual([expect.objectContaining({ kind: "paseo-agent", identity: "participant:flaky-wu", outcome: "failed" })]);
+  });
 });

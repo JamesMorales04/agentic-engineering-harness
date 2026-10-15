@@ -2160,9 +2160,28 @@ function bindingForSelection(selection: AgentExecutionSelection) {
   };
 }
 
+/**
+ * Failure summary for the `agent.execution` validation check. The wave
+ * aggregate session is synthetic: its exit code mirrors the deterministic
+ * barrier outcome, not an agent runtime crash (stderr is empty when every
+ * real worker session exited 0). Reporting it as an agent runtime exit
+ * misattributes barrier failures and has caused repair misdiagnosis, so the
+ * aggregate outcome is attributed accurately. Exported for regression
+ * coverage (MECHANISM: DETERMINISTIC).
+ */
+export function workerExecutionCheckMessage(worker: WorkerSession): string {
+  if (worker.exitCode === 0) return `Agent ${worker.logicalAgent ?? worker.provider} completed successfully.`;
+  if (worker.provider === "multi-worker") {
+    return `Wave execution aggregate exited with code ${worker.exitCode}: ${(worker.stdout || "no aggregate detail").split("\n")[0].slice(0, 300)}`;
+  }
+  return `Agent runtime exited with code ${worker.exitCode}.`;
+}
+
 function withWorkerExecutionCheck(report: ValidationReport, worker: WorkerSession): ValidationReport {
   const checks = report.checks.filter((check) => check.id !== "agent.execution");
-  checks.unshift({ id: "agent.execution", category: "agent-runtime", status: worker.exitCode === 0 ? "PASS" : "FAIL", message: worker.exitCode === 0 ? `Agent ${worker.logicalAgent ?? worker.provider} completed successfully.` : `Agent runtime exited with code ${worker.exitCode}.`, details: worker.exitCode === 0 ? undefined : { stderr: worker.stderr.slice(-4000), stdout: worker.stdout.slice(-4000), logicalAgent: worker.logicalAgent, runtime: worker.runtime, model: worker.model } });
+  const passed = worker.exitCode === 0;
+  const summary = workerExecutionCheckMessage(worker);
+  checks.unshift({ id: "agent.execution", category: "agent-runtime", status: passed ? "PASS" : "FAIL", message: summary, details: passed ? undefined : { stderr: worker.stderr.slice(-4000), stdout: worker.stdout.slice(-4000), logicalAgent: worker.logicalAgent, runtime: worker.runtime, model: worker.model } });
   return { ...report, checks, status: checks.some((check) => check.status === "FAIL") ? "FAIL" : "PASS" };
 }
 
