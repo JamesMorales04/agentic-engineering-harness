@@ -1738,7 +1738,14 @@ export function selectionForParticipant(base: AgentExecutionSelection, assignmen
     transport: binding.transport,
     outputContract: binding.outputContract ?? base.outputContract,
     args: binding.args ? [...binding.args] : [...base.args],
-    mcps: [...exposedTools].sort(),
+    // MCP/toolPack namespace separation (DETERMINISTIC): `mcps` names
+    // configured MCP servers from the reviewed topology selection; the
+    // assignment toolPack governs the permission projection below, never the
+    // MCP namespace. Copying tool identifiers (repository-write,
+    // command-execute, …) into `mcps` made launch fail closed with
+    // MCP_SERVER_UNCONFIGURED for ordinary tool-using participants, since no
+    // project configures an MCP server by a tool name.
+    mcps: [...new Set(base.mcps ?? [])].sort(),
     skills: [...assignment.skills],
     permissions,
     runtimeCapabilities: { ...runtime.capabilities }
