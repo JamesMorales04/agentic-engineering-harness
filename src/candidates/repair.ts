@@ -141,6 +141,7 @@ export async function executeRepairerCandidateMutation(input: {
     execute: (isolatedRoot) => input.execute(isolatedRoot, participantId, input.prompt),
     prepareWorkspace: input.prepareWorkspace,
     requireRepairEvidenceFor: input.taskId,
+    evidenceRoot: input.stateRoot,
   });
   if (isolated.session.exitCode !== 0) {
     // A runtime failure is not a scope blocker; surface the session unchanged

@@ -90,4 +90,24 @@ describe("repair packets", () => {
     expect(prompt).not.toContain("c".repeat(600));
     expect(prompt).toContain("broke");
   });
+
+  it("holds a hard whole-prompt ceiling under adversarial packet shapes", () => {
+    const big = "X".repeat(50_000);
+    const checks = Array.from({ length: 25 }, (_, index) => ({
+      id: `check-${index}-${"i".repeat(1_000)}`, category: `cat-${"c".repeat(1_000)}`,
+      status: "FAIL" as const, message: `m-${index}-` + "m".repeat(5_000),
+      details: { stdout: big, nested: { deep: [big, big] } },
+    }));
+    const packet = createRepairPacket({
+      version: 1, taskId: `T-ADV-${"t".repeat(1_000)}`, status: "FAIL",
+      startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z",
+      changedFiles: [], metadata: {}, checks,
+    }, 3, { reportArtifact: ".harness/reports/T-ADV.json" });
+    const prompt = buildRepairPrompt(packet);
+    // Worst case: 10 failures x (200 id + 200 cat + 500 msg + ~1500 evidence)
+    // plus header/pointer — must stay far below participant budgets.
+    expect(prompt.length).toBeLessThan(30_000);
+    expect(prompt).toContain("15 more failure(s)");
+    expect(prompt).toContain(".harness/reports/T-ADV.json");
+  });
 });

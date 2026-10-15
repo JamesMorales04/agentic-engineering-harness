@@ -17,7 +17,7 @@ import { validateSddChange } from "./sdd.js";
 import { sealTask, verifyTaskSeal } from "./seal.js";
 import { verifyTask } from "./verify.js";
 import { createRepairPacket, writeRepairPacket } from "./repair.js";
-import { repositoryPath } from "../utils/repositoryPath.js";
+import { writeContainedFile } from "../utils/repositoryPath.js";
 import { AehError } from "./errors.js";
 import { createWorkerExecutor } from "../workers/factory.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
@@ -964,17 +964,12 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     // Persist the augmented report BEFORE building the packet: worker-execution
     // and assurance checks merged above postdate the verify-time artifact, and
     // the packet's report pointer must resolve to evidence covering exactly
-    // the failures it names (a stale artifact would omit them). The repairer
-    // mutation runs from the execution workspace, so the augmented report is
-    // persisted there (its read root) as well as under the control root
-    // (the durable evidence of record); containment-checked in both cases.
+    // the failures it names (a stale artifact would omit them). Persisted
+    // under the control root (the durable evidence of record, containment
+    // checked); repair workspaces receive it through evidence materialization
+    // from the state root, so execution-root candidate digests are untouched.
     const repairReportArtifact = `${effectiveConfig.sdd?.reportsDir ?? ".harness/reports"}/${effectiveContract.task.id}.json`;
-    const repairReportPayload = `${JSON.stringify(report, null, 2)}\n`;
-    for (const persistRoot of [...new Set([controlRoot, workspaceRoot])]) {
-      const repairReportFile = repositoryPath(persistRoot, repairReportArtifact);
-      await fs.mkdir(path.dirname(repairReportFile), { recursive: true });
-      await fs.writeFile(repairReportFile, repairReportPayload);
-    }
+    await writeContainedFile(controlRoot, repairReportArtifact, `${JSON.stringify(report, null, 2)}\n`);
     const packet = createRepairPacket(report, attempts, { failureType, failedAgent: selection?.logicalAgent, recoveryAction, reportArtifact: repairReportArtifact });
     if (!packet.failures.length) break;
     await writeRepairPacket(controlRoot, effectiveConfig, packet);

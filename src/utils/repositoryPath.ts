@@ -22,6 +22,32 @@ export async function existingRepositoryPath(root: string, relative: string): Pr
 }
 
 /**
+ * Write file content contained inside a root (DETERMINISTIC): lexical
+ * containment plus a resolved-parent check and a destination-symlink refusal,
+ * so a pre-existing symlink at the file or in its parent cannot redirect the
+ * write outside the root. Throws fail-closed.
+ */
+export async function writeContainedFile(root: string, relative: string, content: string | Buffer): Promise<string> {
+  const absoluteRoot = path.resolve(root);
+  const destination = repositoryPath(absoluteRoot, relative);
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  const realParent = await fs.realpath(path.dirname(destination));
+  const parentWithin = path.relative(absoluteRoot, realParent);
+  if (parentWithin.startsWith("..") || path.isAbsolute(parentWithin)) {
+    throw new Error("REPAIR_EVIDENCE_ESCAPE: write destination escapes the isolated workspace.");
+  }
+  try {
+    if ((await fs.lstat(destination)).isSymbolicLink()) {
+      throw new Error("REPAIR_EVIDENCE_ESCAPE: write destination is a symlink.");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || String((error as Error).message).startsWith("REPAIR_EVIDENCE_ESCAPE")) throw error;
+  }
+  await fs.writeFile(destination, content);
+  return destination;
+}
+
+/**
  * Materialize repair evidence into an isolated task workspace
  * (DETERMINISTIC): the validation report artifact a repair prompt points at
  * must resolve where the Repairer runs. Copies
@@ -45,23 +71,6 @@ export async function materializeRepairEvidence(
   });
   if (!source) return false;
   const absoluteTarget = path.resolve(target);
-  const destination = repositoryPath(absoluteTarget, relative);
-  await fs.mkdir(path.dirname(destination), { recursive: true });
-  // Destination symlink defense: a pre-existing symlink at the destination
-  // (or in its resolved parent) would redirect the copy outside the isolated
-  // workspace. Resolve the real parent and re-check containment, and refuse
-  // to copy through a destination symlink.
-  const realParent = await fs.realpath(path.dirname(destination));
-  const parentWithin = path.relative(absoluteTarget, realParent);
-  if (parentWithin.startsWith("..") || path.isAbsolute(parentWithin)) {
-    throw new Error("REPAIR_EVIDENCE_ESCAPE: repair evidence destination escapes the isolated workspace.");
-  }
-  try {
-    const existing = await fs.lstat(destination);
-    if (existing.isSymbolicLink()) throw new Error("REPAIR_EVIDENCE_ESCAPE: repair evidence destination is a symlink.");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || String((error as Error).message).startsWith("REPAIR_EVIDENCE_ESCAPE")) throw error;
-  }
-  await fs.copyFile(source, destination);
+  await writeContainedFile(absoluteTarget, relative, await fs.readFile(source));
   return true;
 }

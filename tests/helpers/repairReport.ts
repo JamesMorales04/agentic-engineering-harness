@@ -24,6 +24,7 @@ export async function persistValidationReportForRepair(
     checks: [{ id: "fixture-check", category: "fixture", status: "FAIL", message: "fixture failure" }],
     changedFiles: [],
     findings: [],
+    metadata: { project: "fixture", baseRef: "main" },
   };
   await fs.writeFile(file, `${JSON.stringify(report, null, 2)}\n`);
   return file;

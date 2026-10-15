@@ -145,8 +145,13 @@ export async function executeIsolatedCandidateMutation(input: {
    * Repair task id requiring evidence: when set, the validation report for
    * this task id must materialize into the isolated root (fail-closed
    * otherwise). Repair callers set it; planning/rollback mutations omit it.
+   * Materialization reads from `evidenceRoot` (the state root carrying the
+   * persisted augmented report) instead of the execution root, so split-root
+   * runs cannot copy a stale report and execution-root candidate digests are
+   * never touched by evidence writes.
    */
   requireRepairEvidenceFor?: string;
+  evidenceRoot?: string;
 }): Promise<IsolatedCandidateExecutionV1> {
   if (input.candidate.operationId !== input.operationId) throw new AehError("CANDIDATE_STALE", "DIRECT execution candidate belongs to another operation.");
   if (input.candidate.taskId && input.candidate.taskId !== input.taskId) throw new AehError("CANDIDATE_STALE", "DIRECT execution candidate belongs to another task.");
@@ -185,7 +190,7 @@ export async function executeIsolatedCandidateMutation(input: {
     // mutations; repair callers declare the task id and get a fail-closed
     // assertion against dangling pointers.
     if (input.requireRepairEvidenceFor !== undefined) {
-      if (!(await materializeRepairEvidence(input.root, isolatedRoot, input.config, input.requireRepairEvidenceFor))) {
+      if (!(await materializeRepairEvidence(input.evidenceRoot ?? input.root, isolatedRoot, input.config, input.requireRepairEvidenceFor))) {
         throw new Error("REPAIR_EVIDENCE_MISSING: validation report artifact is absent for isolated repair; refusing a dangling evidence pointer.");
       }
     } else {
