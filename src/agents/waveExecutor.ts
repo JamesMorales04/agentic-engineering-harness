@@ -1046,7 +1046,7 @@ export async function executeDelegation(input: { root: string; stateRoot: string
       if (!roleInvocationPolicy) throw new Error("EXECUTION_BINDING_REQUIRED: blueprint has no RoleInvocationPolicy for the distributed participant.");
       const identity = await prepareAgentExecutionIdentity(input.root, input.config, input.contract, selection, prompt, { participantId, phase: "distributed", operationKind: currentOperationContext().kind, executionBlueprint: input.executionBlueprint, executionBlueprintDigest: input.executionBlueprint.digest, roleInvocationPolicy, skillManifest: input.participantAssignment.skillManifest });
       const remote = await dispatchDistributedDelegation({ root: input.root, config: input.config, contract: input.contract, task: input.task, participantId, selection, controller: input.controller, waveBase: input.waveBase, identity });
-      const violations = remote.changedFiles.filter((file) => !matchesAny(file, input.task.scope));
+      const violations = remote.changedFiles.filter((file) => !isWaveWorktreeExcludedV1(file) && !matchesAny(file, input.task.scope));
       if (violations.length) {
         // Distributed scope-escape ONE-correction turn (same bound/guard as
         // the local path above; re-dispatch once with the diagnostic prompt,
@@ -1086,7 +1086,7 @@ export async function executeDelegation(input: { root: string; stateRoot: string
             (correctionRemote.session as { status?: string }).status === "timeout" ||
             (correctionRemote.session as { killReason?: string }).killReason === "STALLED_FIRST_ACTIVITY" ||
             (correctionRemote.session as { killReason?: string }).killReason === "DEADLINE";
-          const reviolations = correctionRemote.changedFiles.filter((file) => !matchesAny(file, input.task.scope));
+          const reviolations = correctionRemote.changedFiles.filter((file) => !isWaveWorktreeExcludedV1(file) && !matchesAny(file, input.task.scope));
           if (correctionTimeout || correctionRemote.session.exitCode !== 0) {
             // Correction timeout or correction worker failure → ORIGINAL
             // terminal FAIL (exactly one correction).
@@ -1277,7 +1277,7 @@ export async function executeDelegation(input: { root: string; stateRoot: string
       return { task: input.task, session, changedFiles: [], patch: "", status: "FAIL", message: `OFF_PATCH_WRITE_DENIED: per-unit live scope gate unverifiable (fail-closed).` };
     }
     const status = await runExecutable("git", ["status", "--porcelain"], { cwd: worktree, timeoutMs: 30_000 }); const untracked = status.stdout.split(/\r?\n/).filter((line) => line.startsWith("?? ")).map((line) => line.slice(3).trim()).filter(Boolean); if (untracked.length) await runExecutable("git", ["add", "-N", "--", ...untracked], { cwd: worktree, timeoutMs: 30_000 });
-    const names = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 }); const changedFiles = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const violations = changedFiles.filter((file) => !matchesAny(file, input.task.scope));
+    const names = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 }); const changedFiles = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const violations = changedFiles.filter((file) => !isWaveWorktreeExcludedV1(file) && !matchesAny(file, input.task.scope));
     if (violations.length) {
       // Scope-escape ONE-correction turn (wave pre-check; same (b) pattern:
       // FAIL with patch "" is protection, FAIL wave is punishment).
@@ -1424,7 +1424,7 @@ export async function executeDelegation(input: { root: string; stateRoot: string
       if (reuntracked.length) await runExecutable("git", ["add", "-N", "--", ...reuntracked], { cwd: worktree, timeoutMs: 30_000 });
       const renames = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 });
       const rechangedFiles = renames.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-      const reviolations = rechangedFiles.filter((file) => !matchesAny(file, input.task.scope));
+      const reviolations = rechangedFiles.filter((file) => !isWaveWorktreeExcludedV1(file) && !matchesAny(file, input.task.scope));
       // Turn-3: declaration check FIRST — a correction carrying
       // filesNeededOutsideScope routes to BLOCKED with scopeBlocker
       // REGARDLESS of remaining violations (same semantics as DIRECT/repair —
