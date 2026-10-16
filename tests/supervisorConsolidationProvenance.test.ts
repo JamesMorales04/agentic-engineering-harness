@@ -32,6 +32,51 @@ describe("AEH-V2-0120 supervisor candidate rotation", () => {
     expect(supervisorGenerationCandidateCurrentV1({ status: "UNSUPPORTED" }, operation)).toBe(true);
     expect(supervisorGenerationCandidateCurrentV1({ status: "BOUND", candidate: { identityDigest: "candidate-r2" } }, { candidateRevision: undefined } as never)).toBe(false);
   });
+
+  it("rotates on execution-envelope drift even when the candidate is unchanged", () => {
+    const current = {
+      candidateRevision: { identityDigest: "candidate-r3" },
+      operationExecutionRevision: 3,
+      resolvedOperationPolicy: { digest: "policy-new" },
+      controller: { epoch: 1 }
+    } as never;
+    const bound = (overrides: Record<string, unknown> = {}) => ({
+      status: "BOUND",
+      candidate: { identityDigest: "candidate-r3" },
+      executionBinding: {
+        operationExecutionRevision: 3,
+        candidateDigest: "candidate-r3",
+        operationPolicyDigest: "policy-new",
+        controllerEpoch: 1,
+        ...overrides
+      }
+    });
+    expect(supervisorGenerationCandidateCurrentV1(bound(), current)).toBe(true);
+    expect(supervisorGenerationCandidateCurrentV1(bound({ operationExecutionRevision: 2 }), current)).toBe(false);
+    expect(supervisorGenerationCandidateCurrentV1(bound({ operationPolicyDigest: "policy-old" }), current)).toBe(false);
+    expect(supervisorGenerationCandidateCurrentV1(bound({ controllerEpoch: 0 }), current)).toBe(false);
+    expect(supervisorGenerationCandidateCurrentV1(bound({ candidateDigest: "candidate-r2" }), current)).toBe(false);
+  });
+
+  it("treats a bound channel without a current policy as stale (gates require policy agreement)", () => {
+    const current = {
+      candidateRevision: { identityDigest: "candidate-r3" },
+      operationExecutionRevision: 3,
+      resolvedOperationPolicy: undefined,
+      controller: { epoch: 1 }
+    } as never;
+    const bound = {
+      status: "BOUND",
+      candidate: { identityDigest: "candidate-r3" },
+      executionBinding: {
+        operationExecutionRevision: 3,
+        candidateDigest: "candidate-r3",
+        operationPolicyDigest: "policy-new",
+        controllerEpoch: 1
+      }
+    };
+    expect(supervisorGenerationCandidateCurrentV1(bound, current)).toBe(false);
+  });
 });
 
 describe("AEH-V2-0102/0105 supervisor consolidation correction", () => {
