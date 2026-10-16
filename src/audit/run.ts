@@ -314,12 +314,12 @@ export function classifyAuditFailure(check: ValidationCheck): AuditFailureClass 
   return "TOOL_FAILURE";
 }
 
-function auditContract(auditId: string, input: AuditRequest, baseRef: string): TaskContract {
+export function auditContract(auditId: string, input: AuditRequest, baseRef: string): TaskContract {
   return {
     version: 1,
     task: { id: auditId, title: `Audit: ${input.request.slice(0, 120)}` },
     git: { baseRef },
-    scope: { allowed: input.files ?? [] },
+    scope: { allowed: [...new Set(input.files?.length ? input.files : ["**"])] },
     routing: {
       intent: "audit",
       domains: input.domains ?? [],
