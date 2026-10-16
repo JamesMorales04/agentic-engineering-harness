@@ -79,7 +79,7 @@ import {
   type ProviderLeaseQueuedV1
 } from "../runtime/supervisorV2.js";
 import { frozenOperationHardDeadlineAt } from "../operations/state.js";
-import { isManagedProvisionedPath } from "../core/git.js";
+import { isProvisionedToolchainPath } from "../core/git.js";
 import { isProviderRateLimited, parseProviderRateLimitDetail } from "../paseo/sdk.js";
 
 export interface DelegationExecutionResult { task: WorkUnitOutput; session: WorkerSession; changedFiles: string[]; patch: string; status: "PASS" | "FAIL"; message?: string; distributed?: boolean; candidate?: CandidateRevisionV1; impact?: CandidateImpactV1; changeSet?: ChangeSetV1; escapeCorrectionUsed?: boolean; escapeCorrectionSessions?: WorkerSession[]; scopeBlocker?: RepairScopeBlockerReceiptV1; }
@@ -257,16 +257,21 @@ export interface WaveWorktreeSnapshotEntryV1 {
 
 /**
  * Harness-owned paths that are never product source and never scope
- * evidence: the owner heartbeat file (root-only) plus the canonical
- * managed-provisioned set in src/core/git.ts (`isManagedProvisionedPath`:
- * `.serena`, `graphify-out`, `.config/mise` — toolchain-provisioned
- * machine files, excluded from ChangeSet accounting by the assembler
- * gates). Applied to the unit-worktree walker AND the off-patch matcher
- * so heartbeat liveness refreshes and toolchain droppings can never read
- * as off-patch writes.
+ * evidence: the owner heartbeat file (root-only), pure provider scratch
+ * (`.serena`, `graphify-out` — exact or descendant, uncontested), plus
+ * the NARROW toolchain-provisioned set in src/core/git.ts
+ * (`isProvisionedToolchainPath`: exact `.config/mise/conf.d/aeh.toml`,
+ * exact `.config/mise/mise.lock`, `.config/mise/locks/` descendants).
+ * Deliberately NOT the BROAD accounting predicate
+ * (`isManagedProvisionedPath`, D22): accounting-exclusion must not equal
+ * enforcement-blindness, so project-authored files such as
+ * `.config/mise/config.toml` stay enforced here. Applied to the
+ * unit-worktree walker AND the off-patch matcher so heartbeat liveness
+ * refreshes and toolchain droppings can never read as off-patch writes.
  *
  * MECHANISM: DETERMINISTIC (fixed name/prefix match; no model).
  */
+const WAVE_WORKTREE_SCRATCH_PREFIXES_V1 = [".serena", "graphify-out"];
 export function isWaveWorktreeExcludedV1(file: string): boolean {
   const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
   const segments = normalized.split("/");
@@ -275,7 +280,9 @@ export function isWaveWorktreeExcludedV1(file: string): boolean {
   // (e.g. outside/.aeh-direct-heartbeat.json) is an ordinary off-patch write
   // and must not be excluded at any depth.
   if (segments.length === 1 && segments[0] === DIRECT_STAGING_HEARTBEAT_FILENAME) return true;
-  return isManagedProvisionedPath(normalized);
+  const first = segments[0] ?? normalized;
+  if (WAVE_WORKTREE_SCRATCH_PREFIXES_V1.some((prefix) => first === prefix)) return true;
+  return isProvisionedToolchainPath(normalized);
 }
 
 export interface WaveOffPatchDenialV1 {
