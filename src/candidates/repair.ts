@@ -944,6 +944,7 @@ export async function verifiedOwnerExemptionForRetry(
       neededPaths: [...amendment.exemptedPaths],
       grant,
       ledger,
+      root: stateRoot,
     });
     const liveCandidate = operation.candidateRevision;
     const livePolicy = operation.resolvedOperationPolicy;

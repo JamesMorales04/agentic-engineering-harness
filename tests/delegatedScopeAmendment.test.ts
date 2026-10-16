@@ -10,8 +10,10 @@ import {
   applyRepairScopeAmendment,
   assertRepairScopeAmendment,
   createRepairScopeBlockerReceipt,
+  listRepairScopeAmendments,
   mintOwnerHardProtectionExemptionFromProductChoice,
   resolveRepairScopeBlockerViaProductChoice,
+  verifyOwnerHardProtectionExemption,
   writeRepairScopeBlockerReceipt,
 } from "../src/candidates/repairScope.js";
 import { recordControlCenterDecision } from "../src/control-center/decision.js";
@@ -494,6 +496,171 @@ describe("delegated Owner scope amendments (D1)", () => {
       ledger,
     })).rejects.toThrow(/DELEGATION_PROJECT_MISMATCH/);
   });
+
+  it("honor fails closed after delegation revocation (mint-then-revoke)", async () => {
+    const root = await createRepo();
+    const operationId = "OP-DELEGATE-HONOR-REVOKE-1";
+    const task = contract("DELEGATE-SCOPE");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+    const specPath = "specs/changes/DELEGATE-SCOPE/spec.md";
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId,
+      taskId: task.task.id,
+      workUnitId: "validation-repair:delegate-honor-revoke",
+      filesNeededOutsideScope: [{ path: specPath, reason: "spec must be regenerated" }],
+    });
+    await writeRepairScopeBlockerReceipt(root, config, blocker);
+    const grant = await issueScopeGrant(root);
+    const ledger = testLedger(root);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker,
+    });
+    const approve = (async () => {
+      for (let i = 0; i < 200; i += 1) {
+        const current = await loadOperation(root, operationId);
+        if (current.phase === "HUMAN_REQUIRED" && current.decisionRequest) {
+          await recordControlCenterDecision(root, ledger, {
+            operationId, requestId: current.decisionRequest.requestId,
+            choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID, reason: "delegate approves exact hard set",
+          }, DELEGATE, grant.delegationId);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error("suspension never appeared for delegate honor-revoke");
+    })();
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
+    expect(resolved.status).toBe("AMENDED");
+    if (resolved.status !== "AMENDED" || !resolved.ownerExemption) throw new Error("expected AMENDED with grant");
+    const anchored = (await loadOperation(root, operationId)).ownerExemptions?.[resolved.ownerExemption.exemptionId];
+    expect(anchored).toBeDefined();
+    await revokeDelegatedOwnerGrantV1(root, grant.delegationId, { revokedBy: GRANTOR }, TEST_CTX);
+    const operation = await loadOperation(root, operationId);
+    await expect(verifyOwnerHardProtectionExemption({
+      operation, neededPaths: [specPath], grant: anchored!, ledger, root,
+    })).rejects.toThrow(/REVOKED/);
+  }, 30000);
+
+  it("honor fails closed after delegation expiry (mint-then-expire)", async () => {
+    const root = await createRepo();
+    const operationId = "OP-DELEGATE-HONOR-EXPIRE-1";
+    const task = contract("DELEGATE-SCOPE");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+    const specPath = "specs/changes/DELEGATE-SCOPE/spec.md";
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId,
+      taskId: task.task.id,
+      workUnitId: "validation-repair:delegate-honor-expire",
+      filesNeededOutsideScope: [{ path: specPath, reason: "spec must be regenerated" }],
+    });
+    await writeRepairScopeBlockerReceipt(root, config, blocker);
+    const scope = await resolveDelegationProjectScope(root);
+    const grant = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR,
+      delegatePrincipalId: DELEGATE,
+      projectId: scope.projectId,
+      expiresAt: new Date(Date.now() + 1500).toISOString(),
+    }, TEST_CTX);
+    const ledger = testLedger(root);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker,
+    });
+    const approve = (async () => {
+      for (let i = 0; i < 200; i += 1) {
+        const current = await loadOperation(root, operationId);
+        if (current.phase === "HUMAN_REQUIRED" && current.decisionRequest) {
+          await recordControlCenterDecision(root, ledger, {
+            operationId, requestId: current.decisionRequest.requestId,
+            choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID, reason: "delegate approves exact hard set",
+          }, DELEGATE, grant.delegationId);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error("suspension never appeared for delegate honor-expire");
+    })();
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
+    expect(resolved.status).toBe("AMENDED");
+    if (resolved.status !== "AMENDED" || !resolved.ownerExemption) throw new Error("expected AMENDED with grant");
+    const anchored = (await loadOperation(root, operationId)).ownerExemptions?.[resolved.ownerExemption.exemptionId];
+    expect(anchored).toBeDefined();
+    await new Promise((r) => setTimeout(r, 1700));
+    const operation = await loadOperation(root, operationId);
+    await expect(verifyOwnerHardProtectionExemption({
+      operation, neededPaths: [specPath], grant: anchored!, ledger, root,
+    })).rejects.toThrow(/EXPIRED/);
+  }, 30000);
+
+  it("second blocker after revocation stays BLOCKED (no reuse of dead-delegation amendment)", async () => {
+    const root = await createRepo();
+    const operationId = "OP-DELEGATE-REUSE-REVOKE-1";
+    const task = contract("DELEGATE-SCOPE");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+    const specPath = "specs/changes/DELEGATE-SCOPE/spec.md";
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId,
+      taskId: task.task.id,
+      workUnitId: "validation-repair:delegate-reuse-revoke",
+      filesNeededOutsideScope: [{ path: specPath, reason: "spec must be regenerated" }],
+    });
+    await writeRepairScopeBlockerReceipt(root, config, blocker);
+    const grant = await issueScopeGrant(root);
+    const ledger = testLedger(root);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker,
+    });
+    const approve = (async () => {
+      for (let i = 0; i < 200; i += 1) {
+        const current = await loadOperation(root, operationId);
+        if (current.phase === "HUMAN_REQUIRED" && current.decisionRequest) {
+          await recordControlCenterDecision(root, ledger, {
+            operationId, requestId: current.decisionRequest.requestId,
+            choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID, reason: "delegate approves exact hard set",
+          }, DELEGATE, grant.delegationId);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error("suspension never appeared for delegate reuse-revoke");
+    })();
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
+    expect(resolved.status).toBe("AMENDED");
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(1);
+    await revokeDelegatedOwnerGrantV1(root, grant.delegationId, { revokedBy: GRANTOR }, TEST_CTX);
+    const blocker2 = createRepairScopeBlockerReceipt({
+      operationId,
+      taskId: task.task.id,
+      workUnitId: "validation-repair:delegate-reuse-revoke-2",
+      filesNeededOutsideScope: [{ path: specPath, reason: "spec still needed" }],
+    });
+    await writeRepairScopeBlockerReceipt(root, config, blocker2);
+    const resolved2 = await resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker: blocker2,
+    });
+    expect(resolved2.status).toBe("BLOCKED");
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(1);
+  }, 30000);
 });
 
 async function issueScopeGrant(root: string) {
