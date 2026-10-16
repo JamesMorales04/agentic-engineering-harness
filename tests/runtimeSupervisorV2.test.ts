@@ -147,13 +147,15 @@ describe("RuntimeSupervisorV1", () => {
       const newLease = await second.acquireProviderLease({ provider: "paseo", workspaceId: "operation-ws", mode: "write" });
       expect(newLease.ownerId).toBe("controller-new");
       expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([newLease.leaseId]);
-      // Past the TTL the taken-over lease expires deterministically: renewal
-      // is refused and the snapshot omits it, so a fresh writer acquires.
+      // Past the TTL the taken-over WRITE lease expires but is RETAINED as a
+      // fencing marker (Luna D6 P1: expiry never proves the session stopped):
+      // renewal is refused, the snapshot keeps the marker, and the same owner
+      // re-acquires alongside it (same owner never conflicts with itself).
       now = new Date("2026-01-01T00:01:00.001Z");
       await expect(second.renewProviderLease(newLease.leaseId)).rejects.toThrow(RuntimeOwnershipError);
-      expect((await second.snapshot()).providerLeases).toEqual([]);
+      expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([newLease.leaseId]);
       const revived = await second.acquireProviderLease({ provider: "paseo", workspaceId: "operation-ws", mode: "write" });
-      expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([revived.leaseId]);
+      expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([newLease.leaseId, revived.leaseId]);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -197,7 +199,7 @@ describe("RuntimeSupervisorV1", () => {
     }
   });
 
-  it("drops expired leases on snapshot restore so they never fence live owners", async () => {
+  it("retains expired writer markers on snapshot restore while readers bypass them (Luna D6 P1)", async () => {
     const supervisor = new RuntimeSupervisorV1({ leaseTtlMs: 60_000 });
     const now = new Date().toISOString();
     const expiredAt = new Date(Date.now() - 1_000).toISOString();
@@ -207,20 +209,22 @@ describe("RuntimeSupervisorV1", () => {
       capturedAt: now,
       services: [],
       providerLeases: [
+        { version: 1, leaseId: "lease:expired-reader", provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "read", ownerId: "stale-reader", acquiredAt: now, expiresAt: expiredAt },
         { version: 1, leaseId: "lease:expired-writer", provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "stale-owner", acquiredAt: now, expiresAt: expiredAt },
         { version: 1, leaseId: "lease:live-reader", provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "read", ownerId: "reader", acquiredAt: now, expiresAt: liveUntil }
       ]
     });
-    // The expired write lease is purged: it is omitted from the snapshot and
-    // no longer fences anyone, while the live read lease is retained (a new
-    // reader acquires; a writer is still fenced by the live reader).
-    expect(supervisor.snapshot().providerLeases.map((lease) => lease.leaseId)).toEqual(["lease:live-reader"]);
+    // Expired reads purge; the expired writer is RETAINED as a fencing marker
+    // (expiry never proves the session stopped) without tripping the live-only
+    // coherence scan. Readers bypass the expired marker; a new writer is still
+    // fenced into the quiescence-gated takeover path.
+    expect(supervisor.snapshot().providerLeases.map((lease) => lease.leaseId).sort()).toEqual(["lease:expired-writer", "lease:live-reader"]);
     const fellow = supervisor.acquireProviderLease({ provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "read", ownerId: "fellow-reader" });
     expect(fellow.mode).toBe("read");
     expect(() => supervisor.acquireProviderLease({ provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "writer" })).toThrow(RuntimeOwnershipError);
   });
 
-  it("omits expired durable leases when reloading the persisted runtime snapshot", async () => {
+  it("omits expired read leases but retains expired writer markers when reloading the persisted runtime snapshot", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-managed-runtime-expiry-"));
     try {
       const now = new Date().toISOString();
@@ -231,11 +235,12 @@ describe("RuntimeSupervisorV1", () => {
         capturedAt: now,
         services: [],
         providerLeases: [
-          { version: 1, leaseId: "lease:expired", provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "stale-owner", acquiredAt: now, expiresAt: new Date(Date.now() - 1_000).toISOString() }
+          { version: 1, leaseId: "lease:expired-read", provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "read", ownerId: "stale-reader", acquiredAt: now, expiresAt: new Date(Date.now() - 1_000).toISOString() },
+          { version: 1, leaseId: "lease:expired-write", provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "stale-owner", acquiredAt: now, expiresAt: new Date(Date.now() - 1_000).toISOString() }
         ]
       }));
       const snapshot = await readManagedRuntimeSnapshot(root);
-      expect(snapshot.providerLeases).toEqual([]);
+      expect(snapshot.providerLeases.map((lease) => lease.leaseId)).toEqual(["lease:expired-write"]);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

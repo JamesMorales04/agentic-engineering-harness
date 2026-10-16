@@ -279,10 +279,16 @@ export class RuntimeSupervisorV1 {
     const now = this.clock();
     this.expireLeases(now);
     const root = normalizeRoot(input.canonicalRoot);
-    const leaseKey = key(input.provider, input.projectId, root, input.workspaceId);
-    const active = [...this.leases.values()].filter((lease) => key(lease.provider, lease.projectId, lease.canonicalRoot, lease.workspaceId) === leaseKey);
-    const conflicting = active.find((lease) => lease.ownerId !== input.ownerId && (lease.mode === "write" || input.mode === "write"));
-    if (conflicting) throw new RuntimeOwnershipError(`provider ${input.provider} is already leased in ${input.workspaceId} by ${conflicting.ownerId}.`);
+    // Single shared predicate (Luna F2): acquire and tryAcquire never diverge.
+    const conflicting = findConflictingProviderLeases([...this.leases.values()], {
+      provider: input.provider,
+      projectId: input.projectId,
+      canonicalRoot: root,
+      workspaceId: input.workspaceId,
+      ownerId: input.ownerId,
+      mode: input.mode,
+    }, now.getTime());
+    if (conflicting.length) throw new RuntimeOwnershipError(`provider ${input.provider} is already leased in ${input.workspaceId} by ${conflicting[0]!.ownerId}.`);
     const ttlMs = input.ttlMs ?? this.leaseTtlMs;
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new RuntimeOwnershipError("provider lease ttl must be a positive integer.");
     const lease: ProviderLeaseV1 = {
@@ -325,7 +331,7 @@ export class RuntimeSupervisorV1 {
       workspaceId: input.workspaceId,
       ownerId: input.ownerId,
       mode: input.mode,
-    });
+    }, now.getTime());
     if (conflicting.length) {
       return queuedForConflictingLeases(input.provider, input.workspaceId, conflicting, now.getTime());
     }
@@ -428,13 +434,24 @@ export class RuntimeSupervisorV1 {
         throw new RuntimeOwnershipError("INVALID_RUNTIME_SNAPSHOT: provider leases must have unique ids and current version 1.");
       }
       if (lease.lifecycle !== undefined) validateProviderLeaseLifecycle(lease.lifecycle);
-      // Expired leases are purged on load, never restored: they must not
-      // persist in the durable snapshot nor fence the conflict scan below.
-      if (Date.parse(lease.expiresAt) <= this.clock().getTime()) continue;
+      // Expired READ leases are purged on load and never restored. Expired
+      // WRITE leases are RETAINED as fencing markers (Luna D6 P1): expiry
+      // never proves the external provider session stopped, so a new writer
+      // must still pass the quiescence-gated takeover path instead of
+      // silently overlapping a possibly-live prior session. Readers are never
+      // fenced by expired leases (conflict predicate).
+      if (Date.parse(lease.expiresAt) <= this.clock().getTime() && lease.mode === "read") continue;
       this.leases.set(lease.leaseId, clone(lease));
     }
+    // Coherence scan over LIVE leases only: two live different-owner
+    // either-side-write holders in one scope is corrupt state and fails
+    // closed. Expired markers (writes retained above) are validated shape but
+    // never trip the scan — writer waiters meet them through the
+    // quiescence-gated takeover path, readers ignore them by rule.
+    const nowMs = this.clock().getTime();
     const leasesByScope = new Map<string, ProviderLeaseV1[]>();
     for (const lease of this.leases.values()) {
+      if (Date.parse(lease.expiresAt) <= nowMs) continue;
       const scope = key(lease.provider, lease.projectId, lease.canonicalRoot, lease.workspaceId);
       const scoped = leasesByScope.get(scope) ?? [];
       if (scoped.some((existing) => existing.ownerId !== lease.ownerId && (existing.mode === "write" || lease.mode === "write"))) {
@@ -453,14 +470,16 @@ export class RuntimeSupervisorV1 {
   }
 
   private expireLeases(now: Date): void {
-    // Expiry deletes the lease record: an expired lease never conflicts, is
-    // never renewable, and is omitted from snapshots. It does NOT prove the
-    // external provider session stopped (quiescence still requires observed
-    // idle/terminal status before takeover of a live lease). Deterministic:
-    // callers pass this.clock(), which tests inject.
+    // Purge expired READ leases only. Expired WRITE leases are retained as
+    // fencing markers (Luna D6 P1): expiry proves renewal stopped, never that
+    // the external provider session stopped — a new writer must observe
+    // quiescence through the takeover path before proceeding, and must never
+    // silently overlap a possibly-live prior session. Readers bypass expired
+    // markers via the conflict predicate. Deterministic: callers pass
+    // this.clock(), which tests inject.
     const nowMs = now.getTime();
     for (const [leaseId, lease] of this.leases) {
-      if (Date.parse(lease.expiresAt) <= nowMs) this.leases.delete(leaseId);
+      if (lease.mode === "read" && Date.parse(lease.expiresAt) <= nowMs) this.leases.delete(leaseId);
     }
   }
 }
@@ -548,18 +567,30 @@ export function providerLeaseQueueWaitMs(queued: ProviderLeaseQueuedV1 | undefin
 /**
  * Shared durable-lease conflict predicate (Luna F2).
  *
- * MECHANISM: DETERMINISTIC. This is the exact write-write conflict predicate
- * that `acquireProviderLease`/`tryAcquireProviderLease` enforce: same
- * provider/project/normalized-root/workspace scope, different owner, and at
- * least one side holds write. Both the in-memory supervisor and the durable
+ * MECHANISM: DETERMINISTIC. The exact conflict predicate that
+ * `acquireProviderLease`/`tryAcquireProviderLease` enforce: same
+ * provider/project/normalized-root/workspace scope, different owner, plus a
+ * liveness-aware mode rule. Both the in-memory supervisor and the durable
  * snapshot gate (operationResources provider-session leases persisted via the
  * managed runtime snapshot — the same lease store `acquireProviderLease`
  * persists to) must evaluate this predicate, never a divergent local rule.
- * Expired leases never conflict; empty identity never matches.
+ *
+ * Liveness rule (Luna D6 P1: expiry never proves the external session
+ * stopped, so an expired WRITER still fences writers until quiescence-observed
+ * takeover or explicit release — while readers are never fenced by anything
+ * expired):
+ * - live lease + either-side-write waiters conflict (unchanged);
+ * - expired READ leases never conflict with anyone (purged on sight);
+ * - expired WRITE leases conflict ONLY with WRITE waiters (the waiter enters
+ *   the quiescence-gated takeover path); READ waiters proceed (torn-read risk
+ *   accepted and documented: expiry means renewal stopped, i.e. the owner is
+ *   dead or fenced, and reads never mutate).
+ * Empty identity never matches.
  */
 export function findConflictingProviderLeases(
   leases: readonly ProviderLeaseV1[],
-  input: { provider: string; projectId: string; canonicalRoot: string; workspaceId: string; ownerId: string; mode: ProviderLeaseModeV1 }
+  input: { provider: string; projectId: string; canonicalRoot: string; workspaceId: string; ownerId: string; mode: ProviderLeaseModeV1 },
+  nowMs: number
 ): ProviderLeaseV1[] {
   if (!input.provider.trim() || !input.projectId.trim() || !input.ownerId.trim() || !input.workspaceId.trim()) return [];
   let root: string;
@@ -569,12 +600,15 @@ export function findConflictingProviderLeases(
     return [];
   }
   const wanted = key(input.provider, input.projectId, root, input.workspaceId);
-  return leases.filter(
-    (lease) =>
-      key(lease.provider, lease.projectId, lease.canonicalRoot, lease.workspaceId) === wanted &&
-      lease.ownerId !== input.ownerId &&
-      (lease.mode === "write" || input.mode === "write")
-  );
+  return leases.filter((lease) => {
+    if (key(lease.provider, lease.projectId, lease.canonicalRoot, lease.workspaceId) !== wanted) return false;
+    if (lease.ownerId === input.ownerId) return false;
+    const leaseExpired = Date.parse(lease.expiresAt) <= nowMs;
+    // Expired reads never fence anyone; expired writers fence writers only
+    // (quiescence-gated takeover), never readers.
+    if (leaseExpired && (lease.mode === "read" || input.mode === "read")) return false;
+    return lease.mode === "write" || input.mode === "write";
+  });
 }
 
 /**

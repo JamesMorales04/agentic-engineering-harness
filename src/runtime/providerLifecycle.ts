@@ -66,7 +66,16 @@ export async function runWithOperationProviderLease<T>(
   const ownerId = `provider-controller:${initial.id}:${epoch}:${operationProviderReservationId()}`;
   const runtime = await createManagedRuntime({ root: operationRoot, projectId: runtimeProjectId(operationRoot), ownerId, leaseTtlMs: input.ttlMs });
   const identity = lifecycleIdentity(initial, input, input.sessionId);
-  await takeOverPriorLeaseIfQuiescent(runtime, input, identity, ownerId);
+  // Takeover replaces a prior WRITE lease with the caller's lifecycle: only
+  // writers ever need it. Read turns never replace leases — a LIVE writer
+  // still fences them at acquire time (torn-read protection), while EXPIRED
+  // writer markers are bypassed by the conflict predicate (renewal stopped).
+  // Skipping the gate for reads is what lets concurrent audit reviewers share
+  // one workspace; entering it would wrongly demand takeover (same-participant
+  // identity can never hold across distinct readers). DETERMINISTIC.
+  if ((input.mode ?? "write") === "write") {
+    await takeOverPriorLeaseIfQuiescent(runtime, input, identity, ownerId);
+  }
   // Generic policy-driven backpressure: an operation cannot widen its concurrent
   // provider-session ceiling through model output; exhaustion is a typed failure.
   await assertProviderSessionCapacity(operationRoot, initial.id);

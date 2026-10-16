@@ -176,6 +176,7 @@ async function seedPriorLease(fixture: LeaseFixture, options: {
   ownerEpoch: number;
   lifecycleEpoch: number;
   sessionId: string;
+  ttlMs?: number;
   lifecycle?: Partial<ProviderLeaseLifecycleIdentityV1>;
 }): Promise<ProviderLeaseV1> {
   const operation = await loadOperation(fixture.root, fixture.operationId);
@@ -188,6 +189,7 @@ async function seedPriorLease(fixture: LeaseFixture, options: {
     provider: fixture.provider,
     workspaceId: fixture.workspaceId,
     mode: "write",
+    ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
     lifecycle: {
       operationId: fixture.operationId,
       candidateDigest: operation.candidateRevision!.identityDigest,
@@ -568,6 +570,42 @@ describe("runWithOperationProviderLease fault-injection", () => {
     expect(takeoverLifecycle).toMatchObject({ sessionId: "prior-session", controllerEpoch: currentEpoch });
     expect(quiescence).toMatchObject({ sessionId: "prior-session", status });
     expect((await readManagedRuntimeSnapshot(fixture.root)).providerLeases).toEqual([]);
+  });
+
+  it("keeps an expired writer fenced for writers (quiescence-gated takeover) while letting readers bypass (Luna D6 P1)", async () => {
+    const fixture = await createFixture({ sessionId: "prior-session" });
+    const { priorEpoch } = await claimNewEpoch(fixture);
+    const prior = await seedPriorLease(fixture, { ownerEpoch: priorEpoch, lifecycleEpoch: priorEpoch, sessionId: "prior-session", ttlMs: 10 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Reader bypass: no takeover, no inspection of the prior session, action runs.
+    const readerInspections: string[] = [];
+    const readerOutcome = await settle(runWithOperationProviderLease(leaseInput(fixture, {
+      mode: "read",
+      sessionId: "reader-session",
+      renewEveryMs: 3_600_000,
+      inspect: async (sessionId) => { readerInspections.push(sessionId); return { status: "idle" }; },
+      stop: async () => undefined
+    }), async () => ({ value: "reader-turn", sessionId: "reader-session" })));
+    expect(readerOutcome).toEqual({ ok: true, value: "reader-turn" });
+    // Only the reader's OWN session is observed post-turn (quiescence of its
+    // own call); the prior expired writer's session is never touched — no
+    // takeover, no stop, no interference.
+    expect(readerInspections).toEqual(["reader-session"]);
+
+    // Writer fencing preserved: the expired marker forces the
+    // quiescence-gated takeover path (dead session observed -> succeeds, no silent overlap).
+    const writerInspections: string[] = [];
+    const writerOutcome = await settle(runWithOperationProviderLease(leaseInput(fixture, {
+      sessionId: "prior-session",
+      renewEveryMs: 3_600_000,
+      inspect: async (sessionId) => { writerInspections.push(sessionId); return { status: "idle" }; },
+      stop: async () => undefined
+    }), async () => ({ value: "writer-turn", sessionId: "prior-session" })));
+    expect(writerOutcome).toEqual({ ok: true, value: "writer-turn" });
+    expect(writerInspections).toEqual(["prior-session", "prior-session"]);
+    expect((await readManagedRuntimeSnapshot(fixture.root)).providerLeases).toEqual([]);
+    expect(prior.leaseId).toBeTruthy();
   });
 
   it("rejects a stale ExecutionBinding before any lease is written", async () => {
