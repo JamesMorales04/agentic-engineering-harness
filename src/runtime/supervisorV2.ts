@@ -428,6 +428,9 @@ export class RuntimeSupervisorV1 {
         throw new RuntimeOwnershipError("INVALID_RUNTIME_SNAPSHOT: provider leases must have unique ids and current version 1.");
       }
       if (lease.lifecycle !== undefined) validateProviderLeaseLifecycle(lease.lifecycle);
+      // Expired leases are purged on load, never restored: they must not
+      // persist in the durable snapshot nor fence the conflict scan below.
+      if (Date.parse(lease.expiresAt) <= this.clock().getTime()) continue;
       this.leases.set(lease.leaseId, clone(lease));
     }
     const leasesByScope = new Map<string, ProviderLeaseV1[]>();
@@ -450,8 +453,15 @@ export class RuntimeSupervisorV1 {
   }
 
   private expireLeases(now: Date): void {
-    // Expiry fences renewal. It does not prove an external provider session stopped.
-    void now;
+    // Expiry deletes the lease record: an expired lease never conflicts, is
+    // never renewable, and is omitted from snapshots. It does NOT prove the
+    // external provider session stopped (quiescence still requires observed
+    // idle/terminal status before takeover of a live lease). Deterministic:
+    // callers pass this.clock(), which tests inject.
+    const nowMs = now.getTime();
+    for (const [leaseId, lease] of this.leases) {
+      if (Date.parse(lease.expiresAt) <= nowMs) this.leases.delete(leaseId);
+    }
   }
 }
 

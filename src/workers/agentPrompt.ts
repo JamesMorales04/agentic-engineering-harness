@@ -560,7 +560,7 @@ export async function dispatchMaterializedAgentPrompt(
   // `response_format` (no root anyOf), so serve the strict-channel
   // projection. Zod remains authoritative on receipt via repair turns.
   const schema = effectiveOptions.outputContract ? outputStrictChannelSchema(effectiveOptions.outputContract) : undefined;
-  const executionLabels = boundPaseoExecutionLabels(effectiveOptions, selection.role, materialized.structuredResultChannelId);
+  const executionLabels = boundPaseoExecutionLabels(effectiveOptions, selection.role, materialized.structuredResultChannelId, selection.permissions?.write);
   const continued = schema
     ? await continueWithDurableResultReconciliation(root, config, materialized, selection, effectivePrompt, timeout, schema, effectiveOptions, executionLabels)
     : await continueManagedPaseoAgent(root, materialized.id, effectivePrompt, timeout, undefined, schema, executionLabels);
@@ -2281,7 +2281,7 @@ function attachStructuredResultProvenance(labels: Record<string, string>, proven
   if (provenance.skillManifestDigest) labels["aeh.skill.manifest.digest"] = provenance.skillManifestDigest;
 }
 
-function boundPaseoExecutionLabels(options: AgentPromptOptions, role: string, channelId?: string): Record<string, string> | undefined {
+function boundPaseoExecutionLabels(options: AgentPromptOptions, role: string, channelId?: string, permissionsWrite?: string): Record<string, string> | undefined {
   const binding = options.executionBinding;
   if (!binding) return undefined;
   const labels: Record<string, string> = {
@@ -2298,6 +2298,10 @@ function boundPaseoExecutionLabels(options: AgentPromptOptions, role: string, ch
   };
   if (options.participantId) labels["aeh.participant"] = options.participantId;
   if (options.supervisorAgent) labels["aeh.supervisor"] = "true";
+  // D6: same frozen write authority as the launch-spec labels (see
+  // compilePaseoAgentLaunchSpec); the materialized-turn path never passes
+  // through launchSpec, so it carries the signal here.
+  if (permissionsWrite) labels["aeh.permissions.write"] = permissionsWrite;
   if (channelId) labels["aeh.result.channel"] = channelId;
   if (options.structuredResultProvenance) labels["aeh.result.provenance"] = JSON.stringify(options.structuredResultProvenance);
   return labels;

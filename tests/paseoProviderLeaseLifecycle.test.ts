@@ -233,6 +233,48 @@ describe("runWithOperationProviderLease fault-injection", () => {
     expect(await readManagedRuntimeSnapshot(fixture.root)).toMatchObject({ providerLeases: [] });
   });
 
+  it("allows two concurrent read-only reviewer turns on one shared workspace", async () => {
+    const fixture = await createFixture({ sessionId: "reviewer-a-session" });
+    // Two frozen read-only audit reviewers share one operation workspace but
+    // hold distinct participant identities (hence distinct lease ownerIds).
+    for (const reviewer of ["participant:reviewer-a", "participant:reviewer-b"]) {
+      await registerOperationAgent(fixture.root, fixture.operationId, { id: reviewer, logicalAgent: reviewer, role: "Reviewer", phase: "review" });
+    }
+    const startedA = Promise.withResolvers<void>();
+    const gateA = Promise.withResolvers<{ value: string; sessionId?: string }>();
+    const startedB = Promise.withResolvers<void>();
+    const gateB = Promise.withResolvers<{ value: string; sessionId?: string }>();
+    const seenModes: string[] = [];
+    const runReviewer = (
+      participantId: string,
+      sessionId: string,
+      started: PromiseWithResolvers<void>,
+      gate: PromiseWithResolvers<{ value: string; sessionId?: string }>
+    ) => settle(runWithOperationProviderLease(leaseInput(fixture, {
+      participantId,
+      sessionId,
+      mode: "read",
+      renewEveryMs: 3_600_000,
+      inspect: async () => ({ status: "idle" }),
+      stop: vi.fn(async () => undefined)
+    }), async () => {
+      const snapshot = await readManagedRuntimeSnapshot(fixture.root);
+      seenModes.push(snapshot.providerLeases.find((lease) => lease.lifecycle?.participantId === participantId)?.mode ?? "missing");
+      started.resolve();
+      return gate.promise;
+    }));
+    const reviewerA = runReviewer("participant:reviewer-a", "reviewer-a-session", startedA, gateA);
+    await startedA.promise;
+    const reviewerB = runReviewer("participant:reviewer-b", "reviewer-b-session", startedB, gateB);
+    await startedB.promise;
+    gateA.resolve({ value: "reviewer-a-done", sessionId: "reviewer-a-session" });
+    gateB.resolve({ value: "reviewer-b-done", sessionId: "reviewer-b-session" });
+    await expect(reviewerA).resolves.toMatchObject({ ok: true, value: "reviewer-a-done" });
+    await expect(reviewerB).resolves.toMatchObject({ ok: true, value: "reviewer-b-done" });
+    expect(seenModes).toEqual(["read", "read"]);
+    expect(await readManagedRuntimeSnapshot(fixture.root)).toMatchObject({ providerLeases: [] });
+  });
+
   it("binds an operation-owned Lead turn to the current Lead generation and rejects stale generations", async () => {
     const fixture = await createFixture({ sessionId: "lead-session" });
     const lead = await bindOperationLead(fixture.root, fixture.operationId, "lead-agent-1", "packed-lifecycle-test");

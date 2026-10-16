@@ -14,18 +14,26 @@ describe("RuntimeSupervisorV1", () => {
     expect(() => supervisor.updateService("paseo:project-a", "other", { status: "FAILED" })).toThrow(RuntimeOwnershipError);
   });
 
-  it("keeps expired provider leases fenced until explicit owner release", () => {
+  it("expires provider leases deterministically and omits them from snapshots", () => {
     let now = new Date("2026-01-01T00:00:00.000Z");
     const supervisor = new RuntimeSupervisorV1({ clock: () => now, leaseTtlMs: 100 });
     const first = supervisor.acquireProviderLease({ provider: "serena", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "read", ownerId: "a" });
     const second = supervisor.acquireProviderLease({ provider: "serena", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "read", ownerId: "b" });
     expect(supervisor.snapshot().providerLeases).toHaveLength(2);
     now = new Date("2026-01-01T00:00:00.101Z");
-    expect(supervisor.snapshot().providerLeases).toHaveLength(2);
-    expect(() => supervisor.acquireProviderLease({ provider: "serena", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "writer" })).toThrow(RuntimeOwnershipError);
+    // Both reads expired: the snapshot omits them and a new writer acquires cleanly.
+    expect(supervisor.snapshot().providerLeases).toEqual([]);
+    const writer = supervisor.acquireProviderLease({ provider: "serena", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "writer" });
+    expect(writer.mode).toBe("write");
+    expect(supervisor.snapshot().providerLeases.map((lease) => lease.leaseId)).toEqual([writer.leaseId]);
+    // A live conflicting writer still fences a second writer and a reader.
+    expect(() => supervisor.acquireProviderLease({ provider: "serena", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "other" })).toThrow(RuntimeOwnershipError);
+    expect(() => supervisor.acquireProviderLease({ provider: "serena", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "read", ownerId: "other" })).toThrow(RuntimeOwnershipError);
     expect(() => supervisor.renewProviderLease(first.leaseId, "a")).toThrow(RuntimeOwnershipError);
     expect(() => supervisor.releaseProviderLease(first.leaseId, "a")).not.toThrow();
     expect(() => supervisor.releaseProviderLease(second.leaseId, "b")).not.toThrow();
+    expect(() => supervisor.releaseProviderLease(writer.leaseId, "writer")).not.toThrow();
+    expect(supervisor.snapshot().providerLeases).toEqual([]);
   });
 
   it("merges durable service projections from independent runtime owners", async () => {
@@ -128,18 +136,24 @@ describe("RuntimeSupervisorV1", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-managed-runtime-takeover-"));
     try {
       let now = new Date("2026-01-01T00:00:00.000Z");
-      const first = await createManagedRuntime({ root, ownerId: "controller-old", clock: () => now, leaseTtlMs: 100 });
-      const second = await createManagedRuntime({ root, ownerId: "controller-new", clock: () => now, leaseTtlMs: 100 });
+      const first = await createManagedRuntime({ root, ownerId: "controller-old", clock: () => now, leaseTtlMs: 60_000 });
+      const second = await createManagedRuntime({ root, ownerId: "controller-new", clock: () => now, leaseTtlMs: 60_000 });
       const priorIdentity = { operationId: "op-a", candidateDigest: "a".repeat(64), operationExecutionRevision: 2, policyDigest: "b".repeat(64), controllerTokenDigest: "c".repeat(64), controllerEpoch: 3, participantId: "participant-a", sessionId: "agent-a", providerStatus: "ACTIVE" as const };
       const oldLease = await first.acquireProviderLease({ provider: "paseo", workspaceId: "operation-ws", mode: "write", lifecycle: priorIdentity });
-      now = new Date("2026-01-01T00:00:00.101Z");
-      await expect(first.renewProviderLease(oldLease.leaseId)).rejects.toThrow(RuntimeOwnershipError);
+      // The prior write lease is still live, so a competing writer is fenced.
       await expect(second.acquireProviderLease({ provider: "paseo", workspaceId: "operation-ws", mode: "write" })).rejects.toThrow(RuntimeOwnershipError);
       const currentIdentity = { ...priorIdentity, policyDigest: "d".repeat(64), controllerTokenDigest: "e".repeat(64), controllerEpoch: 4 };
       await expect(second.completeProviderLeaseTakeover(oldLease.leaseId, currentIdentity, { sessionId: "agent-a", status: "idle", observedAt: now.toISOString() })).resolves.toBeUndefined();
       const newLease = await second.acquireProviderLease({ provider: "paseo", workspaceId: "operation-ws", mode: "write" });
       expect(newLease.ownerId).toBe("controller-new");
       expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([newLease.leaseId]);
+      // Past the TTL the taken-over lease expires deterministically: renewal
+      // is refused and the snapshot omits it, so a fresh writer acquires.
+      now = new Date("2026-01-01T00:01:00.001Z");
+      await expect(second.renewProviderLease(newLease.leaseId)).rejects.toThrow(RuntimeOwnershipError);
+      expect((await second.snapshot()).providerLeases).toEqual([]);
+      const revived = await second.acquireProviderLease({ provider: "paseo", workspaceId: "operation-ws", mode: "write" });
+      expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([revived.leaseId]);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -178,6 +192,50 @@ describe("RuntimeSupervisorV1", () => {
         providerLeases: ["owner-a", "owner-b"].map((ownerId, index) => ({ version: 1, leaseId: `lease:${index}`, provider: "serena", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId, acquiredAt: now, expiresAt }))
       }));
       await expect(createManagedRuntime({ root, statePath, ownerId: "controller" })).rejects.toThrow("conflicting active owners");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("drops expired leases on snapshot restore so they never fence live owners", async () => {
+    const supervisor = new RuntimeSupervisorV1({ leaseTtlMs: 60_000 });
+    const now = new Date().toISOString();
+    const expiredAt = new Date(Date.now() - 1_000).toISOString();
+    const liveUntil = new Date(Date.now() + 60_000).toISOString();
+    supervisor.restoreSnapshot({
+      version: 1,
+      capturedAt: now,
+      services: [],
+      providerLeases: [
+        { version: 1, leaseId: "lease:expired-writer", provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "stale-owner", acquiredAt: now, expiresAt: expiredAt },
+        { version: 1, leaseId: "lease:live-reader", provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "read", ownerId: "reader", acquiredAt: now, expiresAt: liveUntil }
+      ]
+    });
+    // The expired write lease is purged: it is omitted from the snapshot and
+    // no longer fences anyone, while the live read lease is retained (a new
+    // reader acquires; a writer is still fenced by the live reader).
+    expect(supervisor.snapshot().providerLeases.map((lease) => lease.leaseId)).toEqual(["lease:live-reader"]);
+    const fellow = supervisor.acquireProviderLease({ provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "read", ownerId: "fellow-reader" });
+    expect(fellow.mode).toBe("read");
+    expect(() => supervisor.acquireProviderLease({ provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "writer" })).toThrow(RuntimeOwnershipError);
+  });
+
+  it("omits expired durable leases when reloading the persisted runtime snapshot", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-managed-runtime-expiry-"));
+    try {
+      const now = new Date().toISOString();
+      const statePath = path.join(root, ".harness", "runtime", "snapshot.json");
+      await fs.mkdir(path.dirname(statePath), { recursive: true });
+      await fs.writeFile(statePath, JSON.stringify({
+        version: 1,
+        capturedAt: now,
+        services: [],
+        providerLeases: [
+          { version: 1, leaseId: "lease:expired", provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "stale-owner", acquiredAt: now, expiresAt: new Date(Date.now() - 1_000).toISOString() }
+        ]
+      }));
+      const snapshot = await readManagedRuntimeSnapshot(root);
+      expect(snapshot.providerLeases).toEqual([]);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

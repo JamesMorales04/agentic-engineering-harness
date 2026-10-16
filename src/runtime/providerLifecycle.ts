@@ -12,7 +12,7 @@ import {
 } from "../operations/state.js";
 import { createManagedRuntime, runtimeProjectId } from "./managed.js";
 import { assertProviderSessionCapacity } from "./operationResources.js";
-import type { ProviderLeaseLifecycleIdentityV1, ProviderLeaseQuiescenceV1 } from "./supervisorV2.js";
+import type { ProviderLeaseLifecycleIdentityV1, ProviderLeaseModeV1, ProviderLeaseQuiescenceV1 } from "./supervisorV2.js";
 
 export interface ProviderSessionObservationV1 {
   status?: string;
@@ -29,6 +29,13 @@ export interface OperationProviderLifecycleInputV1 {
   leadGeneration?: number;
   sessionId?: string;
   executionBinding?: ExecutionBindingV3;
+  /**
+   * Lease mode for this turn. Read-only turns (frozen write-deny roles such
+   * as audit Reviewers) acquire "read" so concurrent readers on one shared
+   * workspace never conflict (either-side-write predicate); writers keep the
+   * default "write". Fail-closed default: absent means "write".
+   */
+  mode?: ProviderLeaseModeV1;
   ttlMs?: number;
   renewEveryMs?: number;
   inspect(sessionId: string): Promise<ProviderSessionObservationV1 | undefined>;
@@ -44,7 +51,10 @@ export interface OperationProviderActionResultV1<T> {
 /**
  * Runs one real Paseo materialize/turn call under the current durable operation
  * owner. The managed lease serializes current-epoch writers and remains fenced
- * until the exact external session is observed idle or terminal.
+ * until the exact external session is observed idle or terminal. A caller that
+ * passes mode "read" takes a read lease instead: read+read never conflicts, so
+ * concurrent read-only turns (audit reviewers on one shared workspace) proceed
+ * while any either-side-write combination still serializes and fences.
  */
 export async function runWithOperationProviderLease<T>(
   input: OperationProviderLifecycleInputV1,
@@ -60,7 +70,7 @@ export async function runWithOperationProviderLease<T>(
   // Generic policy-driven backpressure: an operation cannot widen its concurrent
   // provider-session ceiling through model output; exhaustion is a typed failure.
   await assertProviderSessionCapacity(operationRoot, initial.id);
-  const lease = await runtime.acquireProviderLease({ provider: input.provider, workspaceId: input.workspaceId, mode: "write", ttlMs: input.ttlMs, lifecycle: identity });
+  const lease = await runtime.acquireProviderLease({ provider: input.provider, workspaceId: input.workspaceId, mode: input.mode ?? "write", ttlMs: input.ttlMs, lifecycle: identity });
 
   let renewalError: unknown;
   let renewalInFlight: Promise<void> | undefined;
