@@ -213,7 +213,7 @@ describe("AEH-V2-0100 reviewer acceptance provenance", () => {
     expect(["COMPLETED", "FAILED", "CANCELLED"]).not.toContain(authority.status);
     expect(after.participantReceipts?.[`receipt:${authorityId}:${now}`]?.participantId).toBe(authorityId);
 
-    const oracle = evaluateAcceptanceOracleV1(bundleFor(after, current), reviewCompilation(current).evidenceStrength);
+    const oracle = evaluateAcceptanceOracleV1(bundleFor(after, current), reviewCompilation(current).evidenceStrength, undefined, []);
     expect(oracle.disposition).toBe("ACCEPTED");
     expect(oracle.coveredAssertionIds).toEqual(["AC-1"]);
   });
@@ -225,7 +225,7 @@ describe("AEH-V2-0100 reviewer acceptance provenance", () => {
       [authorityId]: reviewerParticipant(binding),
       "reviewer-session-1": { id: "reviewer-session-1", status: "COMPLETED", registeredAt: "2026-01-01T00:00:00.000Z", resultArtifact: ".harness/operations/x/results/reviewer/0001.json" }
     }, current);
-    const oracle = evaluateAcceptanceOracleV1(bundleFor(operation, current), reviewCompilation(current).evidenceStrength);
+    const oracle = evaluateAcceptanceOracleV1(bundleFor(operation, current), reviewCompilation(current).evidenceStrength, undefined, []);
     expect(oracle.disposition).toBe("REJECTED");
     expect(oracle.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
   });
@@ -235,7 +235,7 @@ describe("AEH-V2-0100 reviewer acceptance provenance", () => {
     const operation = operationWith({
       "reviewer-session-1": { id: "reviewer-session-1", logicalAgent: "reviewer", role: "Reviewer", status: "COMPLETED", registeredAt: "2026-01-01T00:00:00.000Z", resultArtifact: ".harness/operations/x/results/reviewer/0001.json" }
     }, current);
-    const oracle = evaluateAcceptanceOracleV1(bundleFor(operation, current), reviewCompilation(current).evidenceStrength);
+    const oracle = evaluateAcceptanceOracleV1(bundleFor(operation, current), reviewCompilation(current).evidenceStrength, undefined, []);
     expect(oracle.disposition).toBe("REJECTED");
     expect(oracle.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
   });
@@ -244,7 +244,7 @@ describe("AEH-V2-0100 reviewer acceptance provenance", () => {
     const current = candidate();
     const stale = bindingFor(current, "reviewer-session-1", { candidateDigest: digest("stale-candidate"), operationPolicyDigest: policy(current).digest });
     const operation = operationWith({ [authorityId]: reviewerParticipant(stale, ".harness/operations/x/results/reviewer/0001.json") }, current);
-    const oracle = evaluateAcceptanceOracleV1(bundleFor(operation, current), reviewCompilation(current).evidenceStrength);
+    const oracle = evaluateAcceptanceOracleV1(bundleFor(operation, current), reviewCompilation(current).evidenceStrength, undefined, []);
     expect(oracle.disposition).toBe("REJECTED");
     expect(oracle.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
   });
@@ -263,7 +263,7 @@ describe("AEH-V2-0100 reviewer acceptance provenance", () => {
     const reviewItems = bundle.evidence.filter((item) => item.assertionId === "AC-1" && item.kind === "REVIEW");
     expect(reviewItems).toHaveLength(1);
     expect(reviewItems[0]?.status).toBe("PASS");
-    const oracle = evaluateAcceptanceOracleV1(bundle, reviewCompilation(current).evidenceStrength);
+    const oracle = evaluateAcceptanceOracleV1(bundle, reviewCompilation(current).evidenceStrength, undefined, []);
     expect(oracle.blockers.map((item) => item.code)).not.toContain("EVIDENCE_ITEM_INVALID");
     expect(oracle.disposition).toBe("ACCEPTED");
   });
@@ -280,7 +280,7 @@ describe("AEH-V2-0100 reviewer acceptance provenance", () => {
     const reviewItems = bundle.evidence.filter((item) => item.assertionId === "AC-1" && item.kind === "REVIEW");
     expect(reviewItems).toHaveLength(1);
     expect(reviewItems[0]?.status).toBe("FAIL");
-    const oracle = evaluateAcceptanceOracleV1(bundle, reviewCompilation(current).evidenceStrength);
+    const oracle = evaluateAcceptanceOracleV1(bundle, reviewCompilation(current).evidenceStrength, undefined, []);
     expect(oracle.disposition).toBe("REJECTED");
     expect(oracle.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
   });
@@ -291,13 +291,13 @@ describe("AEH-V2-0100 reviewer acceptance provenance", () => {
     const secondBinding = bindingFor(current, "reviewer-session-2", { participantGeneration: "generation:2" });
     const operation = operationWith({ [authorityId]: reviewerParticipant(secondBinding, ".harness/operations/x/results/reviewer/0002.json") }, current);
     expect(operation.participants[authorityId]).toMatchObject({ logicalAgent: "reviewer", role: "Reviewer", resultArtifact: ".harness/operations/x/results/reviewer/0002.json" });
-    const freshOracle = evaluateAcceptanceOracleV1(bundleFor(operation, current, "reviewer-session-2"), reviewCompilation(current).evidenceStrength);
+    const freshOracle = evaluateAcceptanceOracleV1(bundleFor(operation, current, "reviewer-session-2"), reviewCompilation(current).evidenceStrength, undefined, []);
     expect(freshOracle.disposition).toBe("ACCEPTED");
 
     const supersededReport = reportFor(current, "reviewer-session-1");
     void firstBinding;
     const supersededBundle = buildAcceptanceEvidenceBundleV1({ operation, compilation: reviewCompilation(current), report: supersededReport, implementationIdentity: "implementer" });
-    const supersededOracle = evaluateAcceptanceOracleV1(supersededBundle, reviewCompilation(current).evidenceStrength);
+    const supersededOracle = evaluateAcceptanceOracleV1(supersededBundle, reviewCompilation(current).evidenceStrength, undefined, []);
     expect(supersededOracle.disposition).toBe("REJECTED");
     expect(supersededOracle.blockers.map((item) => item.code)).toContain("VERIFICATION_REVIEW_STRENGTH_INSUFFICIENT");
   });

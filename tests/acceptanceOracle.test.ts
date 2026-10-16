@@ -81,7 +81,7 @@ describe("S6 AcceptanceOracle identity and evidence", () => {
     const evidence = [{ version: 1 as const, id: "validation:REQ-S6:ASSERT-S6", assertionId: "ASSERT-S6", kind: "VALIDATION" as const, status: "PASS" as const, identity: priorIdentity, strength: "STANDARD" as const, provenance: { sourceId: "REQ-S6", digest: digest("prior-validation") } }];
     const bundleBody = { version: 1 as const, identity: currentIdentity, candidate: currentCandidate, impactDigest: digest("impact"), compilationDigest: digest("compilation"), requirements, evidence };
     const bundle: EvidenceBundleV1 = { ...bundleBody, digest: digest(bundleBody) };
-    const oracle = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "STANDARD", minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] });
+    const oracle = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "STANDARD", minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] }, undefined, []);
     expect(oracle.disposition).toBe("REJECTED");
     expect(oracle.blockers.map((item) => item.code)).toContain("EVIDENCE_IDENTITY_STALE");
 
@@ -101,5 +101,20 @@ describe("S6 AcceptanceOracle identity and evidence", () => {
     });
     expect(completion.complete).toBe(false);
     expect(completion.blockers.map((item) => item.code)).toContain("TERMINAL_IDENTITY_MISMATCH");
+  });
+
+  it("rejects vacuous acceptance of a changed candidate and accepts legitimate no-change", () => {
+    const current = operation(0);
+    const currentIdentity = currentObjectiveIdentityV1(current);
+    const currentCandidate = current.candidateRevision!;
+    const bundleBody = { version: 1 as const, identity: currentIdentity, candidate: currentCandidate, impactDigest: digest("impact"), compilationDigest: digest("compilation"), requirements: [], evidence: [] };
+    const bundle: EvidenceBundleV1 = { ...bundleBody, digest: digest(bundleBody) };
+    const strength = { minimumAssurance: "STANDARD" as const, minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] as string[] };
+    const changed = evaluateAcceptanceOracleV1(bundle, strength, undefined, ["src/app.ts"]);
+    expect(changed.disposition).toBe("REJECTED");
+    expect(changed.blockers.map((item) => item.code)).toContain("ACCEPTANCE_ASSERTIONS_ABSENT");
+    const clean = evaluateAcceptanceOracleV1(bundle, strength, undefined, []);
+    expect(clean.disposition).toBe("ACCEPTED");
+    expect(clean.coveredAssertionIds).toEqual([]);
   });
 });

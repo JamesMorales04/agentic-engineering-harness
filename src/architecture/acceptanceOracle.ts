@@ -331,7 +331,12 @@ function makeEvidence(input: { id: string; assertionId: string; kind: Acceptance
   return { version: 1, id: input.id, assertionId: input.assertionId, kind: input.kind, status: input.status, identity: input.identity, strength: input.strength, provenance: { sourceId: input.sourceId, digest: input.sourceDigest, ...(input.artifact ? { artifact: input.artifact } : {}), ...(input.executionBindingDigest ? { executionBindingDigest: input.executionBindingDigest } : {}), ...(input.actorId ? { actorId: input.actorId } : {}), ...(input.actorGeneration !== undefined ? { actorGeneration: input.actorGeneration } : {}), ...(input.promptDigest ? { promptDigest: input.promptDigest } : {}), ...(input.assessment ? { assessment: input.assessment } : {}) }, ...(input.dimension ? { dimension: input.dimension } : {}), ...(input.reviewerIdentity ? { reviewerIdentity: input.reviewerIdentity } : {}), ...(input.provider ? { provider: input.provider } : {}) };
 }
 
-export function evaluateAcceptanceOracleV1(bundle: EvidenceBundleV1, evidenceStrength: CandidateAssuranceCompilationV1["evidenceStrength"], certification?: AcceptanceOracleDispositionV1["certification"]): AcceptanceOracleDispositionV1 {
+/**
+ * changedFiles declares the candidate's changed files for the vacuous-acceptance
+ * gate below. It has no default: every caller must declare the candidate
+ * shape explicitly (MECHANISM: DETERMINISTIC).
+ */
+export function evaluateAcceptanceOracleV1(bundle: EvidenceBundleV1, evidenceStrength: CandidateAssuranceCompilationV1["evidenceStrength"], certification: AcceptanceOracleDispositionV1["certification"] | undefined, candidateChangedFiles: readonly string[]): AcceptanceOracleDispositionV1 {
   const blockers: Array<{ code: string; message: string }> = [];
   if (!bundle || bundle.version !== 1 || !bundle.identity || !Array.isArray(bundle.requirements) || !Array.isArray(bundle.evidence)) {
     blockers.push(blocker("EVIDENCE_BUNDLE_INVALID", "EvidenceBundle must have version 1 identity, requirements, and evidence arrays."));
@@ -340,6 +345,14 @@ export function evaluateAcceptanceOracleV1(bundle: EvidenceBundleV1, evidenceStr
   if (digest !== sha256Canonical(body)) blockers.push(blocker("EVIDENCE_BUNDLE_DIGEST_INVALID", "EvidenceBundle digest does not match its content."));
   const assertionIds = bundle.requirements.map((item) => item.assertionId).sort();
   if (new Set(assertionIds).size !== assertionIds.length) blockers.push(blocker("VERIFICATION_REQUIREMENT_DUPLICATE", "each AcceptanceAssertion must have exactly one VerificationRequirement."));
+  // Vacuous-acceptance gate (DETERMINISTIC): an empty assertion set with a
+  // changed candidate would certify substantive work against nothing, so it
+  // is REJECTED. Empty assertions with zero changed files is the legitimate
+  // no-change case (vacuously satisfied; recorded as no-change downstream
+  // via delivery/DoD, never as improvement proof).
+  if (assertionIds.length === 0 && candidateChangedFiles.length > 0) {
+    blockers.push(blocker("ACCEPTANCE_ASSERTIONS_ABSENT", "substantive candidate changes require at least one AcceptanceAssertion; vacuous acceptance cannot certify changed code."));
+  }
   const evidenceIds = new Set<string>();
   for (const item of bundle.evidence) {
     if (!item || item.version !== 1 || !item.id || evidenceIds.has(item.id)) blockers.push(blocker("EVIDENCE_ITEM_INVALID", `Evidence item '${String(item?.id)}' is invalid or duplicated.`));
