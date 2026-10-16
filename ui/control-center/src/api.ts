@@ -316,3 +316,46 @@ export class ControlCenterApi {
     return this.request<SessionInfo>("/api/v1/delegate-session", { method: "POST", body: JSON.stringify({ delegationId, delegatePrincipalId }) }, undefined, ["version", "csrfToken"]).then(withSessionIdentity);
   }
 }
+
+/** Grants expiring sooner than this render with urgency. */
+export const DELEGATION_EXPIRING_SOON_MS = 24 * 60 * 60_000;
+
+export type DelegationExpiryTone = "normal" | "expiring-soon" | "expired" | "revoked" | "unknown";
+
+export interface DelegationExpiry {
+  text: string;
+  tone: DelegationExpiryTone;
+}
+
+/**
+ * Relative expiry countdown for an Owner delegation grant (pure,
+ * deterministic, unit-covered). Durations render in the largest whole
+ * unit below a day (Xd, Xh, Xm); sub-minute differences render as
+ * "just now". The `nowMs` parameter exists for deterministic tests;
+ * production callers omit it.
+ */
+export function formatDelegationCountdown(expiresAt: string | undefined, nowMs: number = Date.now()): string {
+  const expires = typeof expiresAt === "string" ? Date.parse(expiresAt) : NaN;
+  if (!Number.isFinite(expires)) return "expiry unknown";
+  const diffMs = expires - nowMs;
+  if (diffMs <= 0) {
+    const agoMs = -diffMs;
+    if (agoMs < 60_000) return "expired just now";
+    if (agoMs < 3_600_000) return `expired ${Math.floor(agoMs / 60_000)}m ago`;
+    if (agoMs < 86_400_000) return `expired ${Math.floor(agoMs / 3_600_000)}h ago`;
+    return `expired ${Math.floor(agoMs / 86_400_000)}d ago`;
+  }
+  if (diffMs < 60_000) return "expires in <1m";
+  if (diffMs < 3_600_000) return `expires in ${Math.floor(diffMs / 60_000)}m`;
+  if (diffMs < 86_400_000) return `expires in ${Math.floor(diffMs / 3_600_000)}h`;
+  return `expires in ${Math.floor(diffMs / 86_400_000)}d`;
+}
+
+/** Urgency classification for a delegation grant (pure, deterministic). */
+export function describeDelegationExpiry(item: Pick<DelegationStatus, "expiresAt" | "revoked" | "validNow">, nowMs: number = Date.now()): DelegationExpiry {
+  if (item.revoked) return { text: "revoked", tone: "revoked" };
+  const expires = typeof item.expiresAt === "string" ? Date.parse(item.expiresAt) : NaN;
+  if (!Number.isFinite(expires)) return { text: "expiry unknown", tone: "unknown" };
+  const tone: DelegationExpiryTone = expires <= nowMs ? "expired" : expires - nowMs < DELEGATION_EXPIRING_SOON_MS ? "expiring-soon" : "normal";
+  return { text: formatDelegationCountdown(item.expiresAt, nowMs), tone };
+}

@@ -27,3 +27,8 @@ input, select, textarea { background: #0e151e; border: 1px solid #354658; border
 .decision-scope { background: #0e151e; border: 1px solid #2c3b4a; border-radius: .6rem; margin: 1rem 0; padding: .8rem; }.decision-scope h3 { color: #d7e1eb; font-size: .86rem; margin: 0 0 .65rem; }.decision-scope-grid { display: grid; gap: .65rem 1rem; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }.decision-scope-grid dt { color: #9fb0c0; font-size: .68rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }.decision-scope-grid dd { margin: .2rem 0 0; overflow-wrap: anywhere; }.decision-scope-grid code { color: #e4edf6; font-size: .76rem; }
 @media (prefers-color-scheme: light) { .decision-scope { background: #f5f7fa; border-color: #c8d3dd; }.decision-scope h3, .decision-scope-grid code { color: #202a36; }.decision-scope-grid dt { color: #607080; } }
 @media (max-width: 820px) { .decision-scope-grid { grid-template-columns: 1fr; } }
+.delegation-expiry { font-weight: 700; white-space: nowrap; }
+.delegation-expiry-normal { color: #a8e7af; }
+.delegation-expiry-expiring-soon { color: #f0d889; }
+.delegation-expiry-expired, .delegation-expiry-revoked { color: #ffb3b8; }
+.delegation-expiry-unknown { color: #8795a5; }
