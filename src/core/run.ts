@@ -62,6 +62,7 @@ import {
   isNewTestCreationTierPath,
   isSafeRepairScopePath,
   listRepairScopeAmendments,
+  loadCurrentTaskAmendmentForAssembly,
   normalizeRepairScopePath,
   parseRepairScopeBlockerFromSession,
   repairScopeBlockerValidationCheck,
@@ -906,8 +907,41 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           2;
         const allowDirectCorrection =
           Boolean(selection) && directMaxRepairsForCorrection >= 1 && !directEscapeCorrectionUsed;
-        const assembleDirectChangeSet = (changeSet: ChangeSetV1, exactScopeExemptions?: readonly string[]) =>
-          assembleAndBindCandidateChangeSet({
+        // D15 durable-amendment threading for DIRECT initial assemblies
+        // (DETERMINISTIC consult-only fallback): the INITIAL post-approval
+        // assembly enforces hard-protection beyond allowlist membership and
+        // needs the amendment object for carve-outs (live: planning-phase
+        // delegated new-test amendment for tests/range.spec.js propagated as
+        // a contract but the initial DIRECT assembly received no amendment
+        // and threw terminal escape). When the caller passes no fresher
+        // exemptions, load the latest durable amendment for this op+task and
+        // derive exact carve-outs via the same verified gate as the retry
+        // path (deriveDirectRetryExemptionsV1: owner re-verification,
+        // lead-amendable shape, amended-allowlist membership re-validated by
+        // the assembler). Explicitly-passed exemptions ALWAYS win (newer by
+        // construction). Re-resolved per assembly call so amendments landing
+        // mid-loop are honored on the next attempt. Loading consumes no cap;
+        // uncovered silent ChangeSets stay terminal.
+        const assembleDirectChangeSet = async (changeSet: ChangeSetV1, exactScopeExemptions?: readonly string[]) => {
+          let effectiveExemptions = exactScopeExemptions;
+          if (!effectiveExemptions?.length && operationId) {
+            try {
+              const durable = await loadCurrentTaskAmendmentForAssembly(workspaceRoot, effectiveConfig, operationId, effectiveContract.task.id);
+              if (durable) {
+                const liveOperation = await loadOperation(operationStateRoot, operationId).catch(() => undefined);
+                if (liveOperation) {
+                  effectiveExemptions = await deriveDirectRetryExemptionsV1({
+                    stateRoot: controlRoot,
+                    operation: liveOperation,
+                    amendment: durable,
+                  });
+                }
+              }
+            } catch {
+              effectiveExemptions = exactScopeExemptions;
+            }
+          }
+          return assembleAndBindCandidateChangeSet({
             root: workspaceRoot,
             stateRoot: controlRoot,
             operationId,
@@ -921,9 +955,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             workspace: currentCandidate.workspace,
             worktree: workspaceRoot,
             semanticAssessment: impactAssessmentRuntime,
-            ...(exactScopeExemptions?.length ? { exactScopeExemptions } : {}),
+            ...(effectiveExemptions?.length ? { exactScopeExemptions: effectiveExemptions } : {}),
             onScopeEscape,
           });
+        };
         const initialChangeSet = isolated.changeSet;
         if (!allowDirectCorrection) {
           const assembled = await assembleDirectChangeSet(initialChangeSet);

@@ -30,6 +30,7 @@ import {
   writeRepairScopeBlockerReceipt,
   filterForbiddenScopeForAmendment,
   assertRepairScopeAmendment,
+  loadCurrentTaskAmendmentForAssembly,
   repairHardProtectedPaths,
   normalizeRepairScopePath,
   isNewTestCreationTierPath,
@@ -223,6 +224,20 @@ export async function executeRepairerCandidateMutation(input: {
   }
   const initialChangeSet: ChangeSetV1 = isolated.changeSet;
 
+  // D15 durable-amendment threading for initial assemblies (consult-only
+  // fallback, DETERMINISTIC): initial repair turns holding a pre-existing
+  // durable amendment arrived here with scopeAmendment: none (live:
+  // planning-phase delegated new-test amendment for tests/range.spec.js) and
+  // threw terminal escape even though the amended contract allowlist had
+  // propagated. When the caller has no fresher amendment in hand, load the
+  // latest durable one for this op+task. Explicitly-passed amendment ALWAYS
+  // wins (it is newer by construction — a retry amendment is minted after
+  // any durable this loader could see). Re-resolved per call so amendments
+  // landing mid-loop are honored on the next attempt. Loading consumes no
+  // cap; verification below (NOT_SEALED, owner re-verification, lead shape,
+  // digests) runs unchanged; uncovered silent ChangeSets stay terminal.
+  const effectiveScopeAmendment = input.scopeAmendment
+    ?? await loadCurrentTaskAmendmentForAssembly(input.root, input.config, input.operationId, input.taskId).catch(() => undefined);
   // Amendment-path exact carve-out for subtree denies (see assembler field
   // docs): only the amendment-exempted exact files, only when they were just
   // re-verified against the durable MAC grant in this same controller tick —
@@ -233,14 +248,14 @@ export async function executeRepairerCandidateMutation(input: {
   // (fail closed when stale); lead-amendable paths are never taken from an
   // owner amendment. Direct writes and non-amended retries pass nothing
   // (behavior unchanged).
-  const ownerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, operation, input.scopeAmendment);
-  const leadAmendableNewTestPaths = input.scopeAmendment && !input.scopeAmendment.ownerExemption
-    ? input.scopeAmendment.exemptedPaths.filter((filePath) =>
+  const ownerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, operation, effectiveScopeAmendment);
+  const leadAmendableNewTestPaths = effectiveScopeAmendment && !effectiveScopeAmendment.ownerExemption
+    ? effectiveScopeAmendment.exemptedPaths.filter((filePath) =>
       isNewTestCreationTierPath(normalizeRepairScopePath(String(filePath ?? "").trim())),
     )
     : [];
-  const { allowedScope, forbiddenScope } = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment, ownerScope, leadAmendableNewTestPaths.length ? leadAmendableNewTestPaths : undefined);
-  const exactFromOwner = ownerScope && input.scopeAmendment ? [...input.scopeAmendment.exemptedPaths] : [];
+  const { allowedScope, forbiddenScope } = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, effectiveScopeAmendment, ownerScope, leadAmendableNewTestPaths.length ? leadAmendableNewTestPaths : undefined);
+  const exactFromOwner = ownerScope && effectiveScopeAmendment ? [...effectiveScopeAmendment.exemptedPaths] : [];
   const mergedExactExemptions = [...new Set([...exactFromOwner, ...leadAmendableNewTestPaths])];
   const exactScopeExemptions = mergedExactExemptions.length ? mergedExactExemptions : undefined;
   // Serialized under the per-operation coordination lock (re-validated inside):
@@ -626,18 +641,25 @@ export async function rejectRepairCandidateChangeSet(input: {
     prepareWorkspace: input.prepareWorkspace
   });
   if (!inverse) throw new AehError("CANDIDATE_STALE", "Rejected repair has no reversible source changes.");
-  const rejectedOwnerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, operation, input.scopeAmendment);
+  // D15 symmetric threading for the rollback inverse (same fallback as the
+  // apply path): the inverse touches the same amended paths, so an initial
+  // reject holding a pre-existing durable amendment must honor it. Explicit
+  // wins (newer by construction); re-resolved per call; consumes no cap;
+  // verification unchanged; uncovered inverses stay terminal.
+  const effectiveRejectedAmendment = input.scopeAmendment
+    ?? await loadCurrentTaskAmendmentForAssembly(input.root, input.config, input.operationId, input.taskId).catch(() => undefined);
+  const rejectedOwnerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, operation, effectiveRejectedAmendment);
   // H-NEW-13 symmetric tier: the rollback inverse touches the same amended
   // paths, so it needs the same lead-amendable carve-out as the apply path.
   // Owner amendments rely solely on the grant (fail closed when stale);
   // lead-amendable paths are never taken from an owner amendment.
-  const rejectedLeadAmendable = input.scopeAmendment && !input.scopeAmendment.ownerExemption
-    ? input.scopeAmendment.exemptedPaths.filter((filePath) =>
+  const rejectedLeadAmendable = effectiveRejectedAmendment && !effectiveRejectedAmendment.ownerExemption
+    ? effectiveRejectedAmendment.exemptedPaths.filter((filePath) =>
       isNewTestCreationTierPath(normalizeRepairScopePath(String(filePath ?? "").trim())),
     )
     : [];
-  const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, input.scopeAmendment, rejectedOwnerScope, rejectedLeadAmendable.length ? rejectedLeadAmendable : undefined);
-  const rejectedFromOwner = rejectedOwnerScope && input.scopeAmendment ? [...input.scopeAmendment.exemptedPaths] : [];
+  const rejectedScope = effectiveRepairScope(input.allowedScope, [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)], input.config, input.contract, effectiveRejectedAmendment, rejectedOwnerScope, rejectedLeadAmendable.length ? rejectedLeadAmendable : undefined);
+  const rejectedFromOwner = rejectedOwnerScope && effectiveRejectedAmendment ? [...effectiveRejectedAmendment.exemptedPaths] : [];
   const rejectedMergedExemptions = [...new Set([...rejectedFromOwner, ...rejectedLeadAmendable])];
   const rejectedExactExemptions = rejectedMergedExemptions.length ? rejectedMergedExemptions : undefined;
   // Same per-operation serialization as the apply path above.
