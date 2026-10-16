@@ -304,13 +304,18 @@ export async function finalizeAcceptedChange(root: string, config: HarnessProjec
   const baseCommit = initialRecord?.github?.branchSha ?? await revParse(root, "HEAD");
   const branchValidation = await runExecutable("git", ["check-ref-format", "--branch", branch], { cwd: root, timeoutMs: 10_000 });
   if (branchValidation.exitCode !== 0) throw new Error(`DELIVERY_BRANCH_INVALID: configured branch pattern produced an invalid ref '${branch}'.`);
-  const token = allowPullRequest ? resolveGithubToken(github.tokenEnv) : undefined;
 
   const status = await runExecutable("git", ["status", "--porcelain"], { cwd: root, timeoutMs: 30_000 });
   if (status.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: cannot inspect final Git state: ${status.stderr || status.stdout}`);
   if (!status.stdout.trim() && (await revParse(root, "HEAD")) === baseCommit) {
     return { status: "NO_CHANGES", humanRequired: false, committed: false, pushed: false, candidate: boundCandidate, message: "Accepted CHANGE candidate has no Git changes; no branch or pull request was published." };
   }
+
+  // Credentials resolve only when something must be delivered: a no-change
+  // candidate takes the NO_CHANGES path above without requiring a GitHub
+  // token (observed terminal-failing tokenless no-op probes that had
+  // nothing to push). The token is used solely for push/PR API calls below.
+  const token = allowPullRequest ? resolveGithubToken(github.tokenEnv) : undefined;
 
   const actor = controllerActorId(operationId);
   const authority: ToolActionAuthorityEvidenceV1 = { kind: "controller-authority", operationId, controllerEpoch };

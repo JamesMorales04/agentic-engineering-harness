@@ -236,6 +236,19 @@ describe("accepted no-Issue CHANGE delivery", () => {
     expect(context.requests).toHaveLength(0);
     expect(await git(context.repo, "branch", "--show-current")).toBe("aeh/op-change-selfhost");
   });
+
+  it("finalizes an accepted no-change candidate without requiring a GitHub token", async () => {
+    const context = await createFinalizeFixture({ taskId: "CHANGE-NO-CHANGES", issueDerived: false });
+    // Settle the fixture's working-tree edit into a commit so the tree is
+    // clean at the bound content: committing preserves file bytes, so the
+    // bound candidate digest still matches while HEAD equals the base.
+    await git(context.repo, "add", "-A");
+    await git(context.repo, "commit", "-m", "accepted no-op");
+    delete process.env.GH_TOKEN;
+    const result = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
+    expect(result).toMatchObject({ status: "NO_CHANGES", committed: false, pushed: false });
+    expect(context.requests).toHaveLength(0);
+  });
 });
 
 describe("controller-owned SDD handoff delivery gates", () => {
