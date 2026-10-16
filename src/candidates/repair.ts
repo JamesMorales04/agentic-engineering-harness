@@ -18,10 +18,12 @@ import { captureInverseCandidateChangeSet, executeIsolatedCandidateMutation } fr
 import { assembleAndBindCandidateChangeSet } from "./binding.js";
 import {
   buildScopeEscapeCorrectionPrompt,
+  getScopeEscapeDetails,
   isScopeCorrectionTimeoutError,
   withOneScopeEscapeCorrectionTurnV1,
 } from "./scopeEscapeCorrection.js";
 import {
+  applyAnchoredCoveringGrantForBlocker,
   assertRepairScopeBlockerReceipt,
   createRepairScopeBlockerReceipt,
   parseRepairScopeBlockerFromSession,
@@ -267,7 +269,11 @@ export async function executeRepairerCandidateMutation(input: {
     impact?: import("./assembler.js").CandidateImpactV1;
     scopeBlocker?: RepairScopeBlockerReceiptV1;
   };
-  const assembleRepairChangeSet = (changeSet: ChangeSetV1) =>
+  const assembleRepairChangeSetWithScopes = (
+    changeSet: ChangeSetV1,
+    scopes: { allowedScope: readonly string[]; forbiddenScope: readonly string[] },
+    scopeExemptions: readonly string[] | undefined,
+  ) =>
     assembleAndBindCandidateChangeSet({
       root: input.root,
       stateRoot: input.stateRoot,
@@ -276,15 +282,176 @@ export async function executeRepairerCandidateMutation(input: {
       taskId: input.taskId,
       baseCandidate: currentCandidate,
       changeSet,
-      allowedScope,
-      forbiddenScope,
+      allowedScope: scopes.allowedScope,
+      forbiddenScope: scopes.forbiddenScope,
       candidateId: `candidate:${input.operationId}:r${currentCandidate.revision + 1}`,
       workspace: currentCandidate.workspace,
       worktree: input.root,
       semanticAssessment: input.semanticAssessment,
-      ...(exactScopeExemptions ? { exactScopeExemptions } : {}),
+      ...(scopeExemptions?.length ? { exactScopeExemptions: scopeExemptions } : {}),
       ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
     });
+  /**
+   * DETERMINISTIC D4 anchored-grant honor for silent later-phase ChangeSets
+   * (consult-only, reassemble-ONCE, fail-closed).
+   *
+   * Defect: an Owner-approved (incl. delegated) hard-protection scope widening
+   * dies on the NEXT phase. Later-phase assemblies (remediation fresh repair
+   * turns, review remediation, wave repairers) arrive here with NO
+   * scopeAmendment (callers pass none) and NO scopeBlocker (blockers only
+   * arise from no-mutation declarations), so neither the suspend/mint channel
+   * (resolveRepairScopeBlockerViaProductChoice) nor the anchored-grant honor
+   * channel (applyAnchoredCoveringGrantForBlocker) ever runs for them — the
+   * durable anchored grant is never consulted and the exact-covered path stays
+   * terminal across the escape-correction turn.
+   *
+   * Honor rule: when assembly throws a scope-escape whose escaped files are
+   * EXACTLY covered by an anchored, fully-verifying owner grant, honor it via
+   * the existing cap-stable reuse/apply path
+   * (applyAnchoredCoveringGrantForBlocker: reusable durable amendment reuse
+   * when one already covers, else a new owner-exempted amendment subject to
+   * the per-task cap), derive exact exemptions through the same verified gate
+   * as the scopeAmendment path (verifiedOwnerExemptionForRetry, re-verified
+   * against the LIVE operation in this same tick — TOCTOU-safe), and
+   * reassemble ONCE against the honored scopes. Anything uncovered or
+   * unverified returns undefined and the caller rethrows the ORIGINAL escape
+   * terminal fail-closed.
+   *
+   * Preserved invariants (no new gates, no reimplemented checks):
+   * - exact-paths-only: the synthesized probe blocker is built by
+   *   createRepairScopeBlockerReceipt (exact-path + size gates); the honored
+   *   amendment projects only its exact exemptedPaths as assembler carve-outs.
+   * - MAC/lineage/stable/ledger/epoch/terminal/expiry/coverage gates: enforced
+   *   inside verifyOwnerHardProtectionExemption (via applyAnchored... and the
+   *   retry re-verification), never reimplemented here.
+   * - per-task cap semantics for NON-granted paths: reuse consumes no cap
+   *   (durable amendment already counted); the apply sub-path enforces
+   *   MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1 exactly as before.
+   * - no silent pass without a verified grant: the honored reassembly fully
+   *   re-validates (assembler + candidate binding); a failed reassembly keeps
+   *   the original terminal kill.
+   * - no new suspend without a blocker: applyAnchoredCoveringGrantForBlocker
+   *   is consult-only (never suspends, never mints, never consumes a receipt);
+   *   the probe blocker is in-memory only (never persisted, never routed to
+   *   the product-choice channel).
+   * - reassemble-ONCE is structural: the honored path calls the raw assembler
+   *   directly (never this wrapper), so no loop or second honor is possible.
+   *
+   * Mechanism: DETERMINISTIC throughout (escape-detail extraction, verified
+   * grant consultation, scope projection, single reassembly). No MODEL call.
+   */
+  const tryHonorAnchoredCoveringGrantForEscape = async (
+    escapeError: unknown,
+    changeSet: ChangeSetV1,
+  ): Promise<{ candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1 } | undefined> => {
+    const details = getScopeEscapeDetails(escapeError);
+    const escaped = details ? [...new Set(details.escapedFiles)] : [];
+    if (!escaped.length) return undefined;
+    // In-memory probe blocker for the consult-only honor channel (never
+    // persisted, never routed to suspension): exact-path/size gates enforced
+    // by construction; any violation yields undefined (original rethrow).
+    let probe: RepairScopeBlockerReceiptV1;
+    try {
+      probe = createRepairScopeBlockerReceipt({
+        operationId: input.operationId,
+        taskId: input.taskId,
+        workUnitId: input.workUnitId,
+        participantId,
+        filesNeededOutsideScope: escaped.map((filePath) => ({
+          path: filePath,
+          reason: "D4 anchored-grant honor probe: silent ChangeSet escaped scope; consult-only reuse of an anchored owner grant, no new suspension.",
+        })),
+      });
+    } catch {
+      return undefined;
+    }
+    let honored: Awaited<ReturnType<typeof applyAnchoredCoveringGrantForBlocker>> | undefined;
+    try {
+      honored = await applyAnchoredCoveringGrantForBlocker({
+        root: input.root,
+        controlRoot: input.stateRoot,
+        config: input.config,
+        contract: input.contract,
+        blocker: probe,
+      });
+    } catch {
+      return undefined;
+    }
+    if (!honored || honored.status !== "AMENDED") return undefined;
+    const amendment = honored.amendment;
+    // Owner channel only: reuse/apply never produce non-owner amendments, and
+    // a non-owner amendment must never authorize hard paths (it stays on the
+    // product-choice channel). Enforced explicitly, fail-closed.
+    if (!amendment.ownerExemption) return undefined;
+    // TOCTOU-safe re-verification against the LIVE durable operation in this
+    // same tick (mirrors the scopeAmendment path above): only a MAC-verified
+    // durable grant authorizes the projection.
+    let liveOperation: Awaited<ReturnType<typeof loadOperation>>;
+    try {
+      liveOperation = await loadOperation(input.stateRoot, input.operationId);
+    } catch {
+      return undefined;
+    }
+    const honoredOwnerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, liveOperation, amendment);
+    if (!honoredOwnerScope) return undefined;
+    const honoredExact = [...new Set([...amendment.exemptedPaths])];
+    if (!honoredExact.length) return undefined;
+    // Luna D4 re-review (P2): the honored scopes must use the AMENDED
+    // contract's allowlist as their base. In the fresh-apply sub-path,
+    // honored.contract carries the newly amended allowlist (original +
+    // exempted); projecting from the caller's original allowedScope would
+    // leave the granted path unallowed and the assembler would reject the
+    // exact carve-out (allowedScope membership is required). Union is
+    // identity in the reuse sub-path (honored.contract == caller contract).
+    const honoredAllowedBase = [
+      ...new Set([...input.allowedScope, ...(honored.contract.scope?.allowed ?? [])]),
+    ];
+    let honoredScopes: { allowedScope: readonly string[]; forbiddenScope: readonly string[] };
+    try {
+      honoredScopes = effectiveRepairScope(
+        honoredAllowedBase,
+        [...input.forbiddenScope, ...repairProtectedPaths(input.config, input.contract)],
+        input.config,
+        honored.contract,
+        amendment,
+        honoredOwnerScope,
+        undefined,
+      );
+    } catch {
+      return undefined;
+    }
+    // Reassemble ONCE against the honored scopes (full re-validation + candidate
+    // binding; any failure keeps the original terminal kill — no silent pass).
+    let reassembled: { candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1 };
+    try {
+      reassembled = await assembleRepairChangeSetWithScopes(changeSet, honoredScopes, honoredExact);
+    } catch {
+      return undefined;
+    }
+    await recordEvent(input.stateRoot, input.config, "harness.candidate.repair-scope-grant-honored", {
+      taskId: input.taskId,
+      workUnitId: input.workUnitId,
+      participantId,
+      role: selection.role,
+      mechanism: "DETERMINISTIC",
+      escapedFiles: escaped,
+      exemptedPaths: amendment.exemptedPaths,
+      decisionId: amendment.decisionId,
+      requestId: amendment.requestId,
+      decidedActor: amendment.decidedActor,
+      reused: honored.reused,
+    }).catch(() => undefined);
+    return reassembled;
+  };
+  const assembleRepairChangeSet = async (changeSet: ChangeSetV1) => {
+    try {
+      return await assembleRepairChangeSetWithScopes(changeSet, { allowedScope, forbiddenScope }, exactScopeExemptions);
+    } catch (error) {
+      const honored = await tryHonorAnchoredCoveringGrantForEscape(error, changeSet);
+      if (!honored) throw error;
+      return honored;
+    }
+  };
   const repairMaxAttempts =
     (typeof (input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts === "number" &&
     Number.isSafeInteger((input.contract as { repair?: { maxAttempts?: unknown } }).repair?.maxAttempts) &&
