@@ -177,7 +177,9 @@ export async function integrateWaveChangeSets(input: {
         semanticAssessment: input.semanticAssessment,
         ...(input.onScopeEscape ? { onScopeEscape: input.onScopeEscape } : {})
       });
-      assembled = { changeSet: effective, candidate: locked.candidate, impact: locked.impact };
+      // D22 lineage: record the assembled (managed-provisioned-stripped)
+      // ChangeSet so integration receipts describe exactly what was applied.
+      assembled = { changeSet: locked.changeSet, candidate: locked.candidate, impact: locked.impact };
       activeCandidate = locked.candidate;
     } catch (error) {
       // Rollback holds the coordination lock: the reverse + post-check run
@@ -215,7 +217,7 @@ export async function integrateWaveChangeSets(input: {
       reconciliationRequired.push({ workUnitId: submission.workUnitId, reason: `assembly-failed:${firstLine(error instanceof Error ? error.message : String(error))}`, observedBaseRevision: original.baseCandidateRevision, observedBaseDigest: original.baseCandidateDigest });
       continue;
     }
-    integrated.push({ workUnitId: submission.workUnitId, changeSet: effective, candidate: assembled.candidate, impact: assembled.impact, derived: integrated.length > 0 });
+    integrated.push({ workUnitId: submission.workUnitId, changeSet: assembled.changeSet, candidate: assembled.candidate, impact: assembled.impact, derived: integrated.length > 0 });
   }
 
   const body = { version: 1 as const, wave: input.wave, integrated, reconciliationRequired };

@@ -977,14 +977,16 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           type DirectCorrectionOutcome = {
             session: WorkerSession;
             changeSet?: ChangeSetV1;
-            assembled?: { candidate: CandidateRevisionV1; impact: CandidateImpactV1 };
+            assembled?: { candidate: CandidateRevisionV1; impact: CandidateImpactV1; changeSet: ChangeSetV1 };
           };
           let outcome: { result: DirectCorrectionOutcome; correctionUsed: boolean } | undefined;
           try {
             outcome = await withOneScopeEscapeCorrectionTurnV1<DirectCorrectionOutcome>({
             attempt: async () => {
               const assembled = await assembleDirectChangeSet(initialChangeSet);
-              return { session: worker, changeSet: initialChangeSet, assembled };
+              // D22 lineage: forensics and downstream rejection inverses use
+              // the assembled (managed-provisioned-stripped) ChangeSet.
+              return { session: worker, changeSet: assembled.changeSet, assembled };
             },
             buildCorrectionPrompt: (details) => buildScopeEscapeCorrectionPrompt(details),
             executeCorrection: async (diagnostic) => {
@@ -1103,7 +1105,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
                       amendment: routing.amendment,
                     });
                     correctionAssembled = await assembleDirectChangeSet(correctionIsolated.changeSet, retryExemptions);
-                    return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, assembled: correctionAssembled };
+                    return { session: correctionIsolated.session, changeSet: correctionAssembled.changeSet, assembled: correctionAssembled };
                   }
                   if (routing.status === "BLOCKED") {
                     throw new DirectCorrectionScopeBlockedError(routing.check, correctionIsolated.session);
@@ -1111,7 +1113,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
                 }
                 throw error;
               }
-              return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, assembled: correctionAssembled };
+              return { session: correctionIsolated.session, changeSet: correctionAssembled.changeSet, assembled: correctionAssembled };
             },
             isTimeoutResult: (result) => isRepairStallKill(undefined, result.session),
           });

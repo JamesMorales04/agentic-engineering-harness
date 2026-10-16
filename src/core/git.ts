@@ -73,17 +73,38 @@ export async function getChangedFiles(cwd: string, baseRef: string, options: Git
  * source, must not become scope or change evidence, and must not destabilize a bound candidate
  * digest. Tracked files always contribute, so a repository that deliberately versions provider
  * configuration keeps its normal change detection.
+ *
+ * D22: toolchain provisioning writes machine state under `.config/mise`
+ * (generated config `conf.d/aeh.toml`, `mise.lock`, per-tool `locks/**`
+ * droppings) inside isolated execution roots while a worker runs. That state
+ * is owned by toolchain setup, never by the worker, so it joins the same
+ * managed-provisioned set: excluded from ChangeSet accounting, never
+ * worker-attributable, never deliverable. Owner policy lanes
+ * (`toolchain.configPath` / `toolchain.lockPath`, i.e. `.harness/toolchain.*`)
+ * are separate paths and are unaffected.
+ *
+ * This class is EXCLUDE-from-accounting (silently dropped), which is distinct
+ * from the D8 protected-manifest class (`.harness/managed-assets.json`,
+ * seals, contracts: hard-DENY at scope gates, Owner-exemptible). The two
+ * classes must never be merged: weakening one must not weaken the other.
  */
-const PROVIDER_GENERATED_PREFIXES = [".serena", "graphify-out"];
+const MANAGED_PROVISIONED_PREFIXES = [".serena", "graphify-out", ".config/mise"];
 
 /** Git pathspec exclusions for provider-owned scratch that must never enter a candidate ChangeSet. */
 export function providerGeneratedPathspecExcludes(): string[] {
-  return PROVIDER_GENERATED_PREFIXES.flatMap((prefix) => [`:(exclude)${prefix}`, `:(exclude)${prefix}/**`]);
+  return MANAGED_PROVISIONED_PREFIXES.flatMap((prefix) => [`:(exclude)${prefix}`, `:(exclude)${prefix}/**`]);
 }
 
-function isProviderGeneratedPath(file: string): boolean {
+/**
+ * D22 managed-provisioned predicate (DETERMINISTIC, pure): true for harness/
+ * toolchain-provisioned machine paths (`.serena`, `graphify-out`,
+ * `.config/mise`, exact or descendant) that must never be worker-attributed.
+ * Explicitly NOT covering the D8 protected-manifest class
+ * (`.harness/managed-assets.json`, seals, contracts), which stays hard-deny.
+ */
+export function isManagedProvisionedPath(file: string): boolean {
   const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
-  return PROVIDER_GENERATED_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`));
+  return MANAGED_PROVISIONED_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`));
 }
 
 /** Digest the actual current source tree, including unstaged and untracked files.
@@ -340,8 +361,8 @@ export async function listWorktreeDigestPaths(cwd: string): Promise<string[]> {
     listIntentToAddPaths(cwd)
   ]);
   if (trackedResult.exitCode !== 0 || untrackedResult.exitCode !== 0) throw new Error("Git could not enumerate the worktree digest file set.");
-  const tracked = trackedResult.stdout.split("\0").filter(Boolean).filter((file) => !(intentToAdd.has(file) && isProviderGeneratedPath(file)));
-  const untracked = untrackedResult.stdout.split("\0").filter(Boolean).filter((file) => !isProviderGeneratedPath(file));
+  const tracked = trackedResult.stdout.split("\0").filter(Boolean).filter((file) => !(intentToAdd.has(file) && isManagedProvisionedPath(file)));
+  const untracked = untrackedResult.stdout.split("\0").filter(Boolean).filter((file) => !isManagedProvisionedPath(file));
   return [...new Set([...tracked, ...untracked])].sort();
 }
 

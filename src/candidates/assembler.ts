@@ -6,7 +6,7 @@ import { minimatch } from "minimatch";
 import { z } from "zod";
 import { sha256Canonical, sha256Utf8 } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
-import { computeWorktreeDigest, providerGeneratedPathspecExcludes } from "../core/git.js";
+import { computeWorktreeDigest, isManagedProvisionedPath, providerGeneratedPathspecExcludes } from "../core/git.js";
 import { createCandidateRevisionV1, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
 import { assertWorkspaceMatchesCandidate } from "./identity.js";
 import { runExecutable } from "../utils/process.js";
@@ -331,8 +331,70 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
   if (input.currentCandidate.operationId !== input.operationId) throw new AehError("CANDIDATE_STALE", "Current candidate belongs to another operation.");
   await assertWorkspaceMatchesCandidate(input.root, input.currentCandidate);
   if (sha256Utf8(changeSet.patch) !== changeSet.patchDigest) throw new AehError("CANDIDATE_STALE", "ChangeSet patch digest does not match its content.");
-  const changedFiles = [...new Set(changeSet.changedFiles.map(normalizePath))].sort();
-  const patchFiles = await pathsTouchedByPatch(input.root, changeSet.patch);
+  // Amendment-path exact carve-out (see field docs): exact files only, and
+  // the allowed-scope check below still applies to them unchanged. Validated
+  // FIRST (before managed-provisioned stripping) so an explicitly exempted
+  // file is honored exactly as today: explicit Owner/lead authority wins over
+  // the silent managed-droppings filter, which must never discard a file the
+  // exemption names. A malformed exemption still throws fail-closed here.
+  const exactExempt = new Set<string>();
+  for (const entry of input.exactScopeExemptions ?? []) {
+    const file = normalizePath(String(entry ?? "").trim());
+    if (!file || file === "**" || file.endsWith("/**") || /[*?[\]{}!()+@]/.test(file)) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", `REPAIR_SCOPE_AMENDMENT_INVALID: exact scope exemption '${String(entry)}' is not an exact file path.`);
+    }
+    exactExempt.add(file);
+  }
+  // D22 managed-provisioned hygiene (DETERMINISTIC): worker-declared
+  // ChangeSets bypass the git-pathspec excludes that only cover
+  // controller-computed diffs, so toolchain/provider droppings
+  // (`.serena`, `graphify-out`, `.config/mise`) arrive in declared
+  // `changedFiles` AND in the patch. Strip them from BOTH here — before the
+  // declared==observed equality check — so every downstream gate (equality,
+  // scope, symlink, apply, impact, delivery) observes one consistent
+  // filtered ChangeSet with a recomputed digest. Exempted files are never
+  // stripped (ordering above). The D8 protected-manifest class
+  // (`.harness/managed-assets.json`, seals, contracts) is NOT in the managed
+  // set and still fails the scope gates below unchanged.
+  const declaredFiles = [...new Set(changeSet.changedFiles.map(normalizePath))].sort();
+  const managedDropped = new Set(declaredFiles.filter((file) => isManagedProvisionedPath(file) && !exactExempt.has(file)));
+  let effectivePatch = managedDropped.size ? stripManagedProvisionedPathsFromPatch(changeSet.patch, managedDropped) : changeSet.patch;
+  // A droppings-only ChangeSet strips to an empty patch: fail here with the
+  // pre-existing empty-patch terminal (no new states, no correction turn —
+  // `isScopeEscapeError` stays false for it). Droppings-only turns from
+  // controller-computed creation sites never reach here (they return
+  // `{ session }` no-change at capture, e.g. direct.ts). Checked before
+  // `pathsTouchedByPatch` because `git apply` rejects empty stdin (exit
+  // 128), which would otherwise surface as CANDIDATE_STALE.
+  if (!effectivePatch.trim()) throw new AehError("PARTICIPANT_PLAN_INVALID", "ChangeSet patch is empty.");
+  // D22-P1 undeclared-managed sweep (DETERMINISTIC): the declared-derived
+  // strip above cannot see patch hunks the worker did NOT declare, and the
+  // filtered `pathsTouchedByPatch` call below excludes managed paths — so an
+  // undeclared managed hunk is invisible to the declared==observed equality
+  // gate yet still applied and delivered (pre-existing blindness). Observe
+  // the effective patch UNFILTERED (same isolated-index technique, no
+  // pathspec excludes), fold every observed non-exempt managed path into the
+  // drop set, re-strip and recompute the digest. Exempt-managed observed
+  // paths keep today's observed-only re-add behavior downstream, so an
+  // observed-but-undeclared exempt file still fails equality (declaration
+  // discipline preserved).
+  const observedUnfiltered = await unfilteredPathsTouchedByPatch(input.root, effectivePatch);
+  const patchManaged = observedUnfiltered.filter((file) => isManagedProvisionedPath(file) && !exactExempt.has(file));
+  if (patchManaged.length > 0) {
+    for (const file of patchManaged) managedDropped.add(file);
+    effectivePatch = stripManagedProvisionedPathsFromPatch(effectivePatch, managedDropped);
+    if (!effectivePatch.trim()) throw new AehError("PARTICIPANT_PLAN_INVALID", "ChangeSet patch is empty.");
+  }
+  const effective: ChangeSetV1 = managedDropped.size
+    ? {
+      ...changeSet,
+      changedFiles: declaredFiles.filter((file) => !managedDropped.has(file)),
+      patch: effectivePatch,
+      patchDigest: sha256Utf8(effectivePatch)
+    }
+    : { ...changeSet, changedFiles: declaredFiles };
+  const changedFiles = effective.changedFiles;
+  const patchFiles = await pathsTouchedByPatch(input.root, effective.patch, exactExempt);
   if (JSON.stringify(changedFiles) !== JSON.stringify(patchFiles)) {
     throw new AehError("CANDIDATE_STALE", "ChangeSet changedFiles do not exactly match the paths touched by its patch.", { details: { declared: changedFiles, observed: patchFiles } });
   }
@@ -346,17 +408,7 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
   // worker off-patch filesystem writes are live-gated per-unit in waveExecutor
   // (OFF_PATCH_WRITE_DENIED, snapshot at unit launch); this diff gate stays as
   // defense-in-depth.
-  await assertPatchSymlinksContained(input.root, changeSet.patch);
-  // Amendment-path exact carve-out (see field docs): exact files only, and
-  // the allowed-scope check below still applies to them unchanged.
-  const exactExempt = new Set<string>();
-  for (const entry of input.exactScopeExemptions ?? []) {
-    const file = normalizePath(String(entry ?? "").trim());
-    if (!file || file === "**" || file.endsWith("/**") || /[*?[\]{}!()+@]/.test(file)) {
-      throw new AehError("PARTICIPANT_PLAN_INVALID", `REPAIR_SCOPE_AMENDMENT_INVALID: exact scope exemption '${String(entry)}' is not an exact file path.`);
-    }
-    exactExempt.add(file);
-  }
+  await assertPatchSymlinksContained(input.root, effective.patch);
   const outOfScope = changedFiles.filter((file) => !matchesAny(file, input.allowedScope));
   const forbidden = changedFiles.filter((file) => matchesAny(file, input.forbiddenScope ?? []) && !exactExempt.has(file));
   if (outOfScope.length || forbidden.length) {
@@ -382,12 +434,10 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
     });
     throw error;
   }
-  if (!changeSet.patch.trim()) throw new AehError("PARTICIPANT_PLAN_INVALID", "ChangeSet patch is empty.");
-
   await assertWorkspaceMatchesCandidate(input.root, input.currentCandidate);
-  const check = await runExecutable("git", ["apply", "--check", "--binary", "-"], { cwd: input.root, timeoutMs: 60_000, stdin: changeSet.patch });
+  const check = await runExecutable("git", ["apply", "--check", "--binary", "-"], { cwd: input.root, timeoutMs: 60_000, stdin: effective.patch });
   if (check.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `ChangeSet cannot apply to the current candidate: ${check.stderr || check.stdout}`);
-  const apply = await runExecutable("git", ["apply", "--binary", "-"], { cwd: input.root, timeoutMs: 60_000, stdin: changeSet.patch });
+  const apply = await runExecutable("git", ["apply", "--binary", "-"], { cwd: input.root, timeoutMs: 60_000, stdin: effective.patch });
   if (apply.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `ChangeSet application failed: ${apply.stderr || apply.stdout}`);
   try {
     const sourceDigest = await computeWorktreeDigest(input.root);
@@ -403,15 +453,15 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
       worktree: input.worktree ?? input.root,
       createdAt: new Date().toISOString()
     });
-    const semanticImpact = input.semanticAssessment ? await assessCandidateImpact(input.root, changeSet, changedFiles, candidate, input.semanticAssessment) : undefined;
+    const semanticImpact = input.semanticAssessment ? await assessCandidateImpact(input.root, effective, changedFiles, candidate, input.semanticAssessment) : undefined;
     const impact = projectCandidateImpact(changedFiles, semanticImpact, {
       candidate: { candidateId: candidate.candidateId, revision: candidate.revision, identityDigest: candidate.identityDigest },
       baseCandidate: { candidateId: input.currentCandidate.candidateId, revision: input.currentCandidate.revision, identityDigest: input.currentCandidate.identityDigest },
-      patchDigest: changeSet.patchDigest
+      patchDigest: effective.patchDigest
     });
-    return { version: 1, changeSet: { ...changeSet, changedFiles }, candidate, impact };
+    return { version: 1, changeSet: effective, candidate, impact };
   } catch (error) {
-    const reverse = await runExecutable("git", ["apply", "--reverse", "--binary", "-"], { cwd: input.root, timeoutMs: 60_000, stdin: changeSet.patch });
+    const reverse = await runExecutable("git", ["apply", "--reverse", "--binary", "-"], { cwd: input.root, timeoutMs: 60_000, stdin: effective.patch });
     if (reverse.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `candidate assembly failed and the unbound ChangeSet could not be reverted: ${reverse.stderr || reverse.stdout}`, { cause: error });
     await assertWorkspaceMatchesCandidate(input.root, input.currentCandidate).catch((rollbackError) => {
       throw new AehError("CANDIDATE_STALE", "candidate assembly failed and the reverted workspace no longer matches its base CandidateRevision.", { cause: rollbackError });
@@ -1081,7 +1131,36 @@ function decodeCQuotedPathInner(inner: string): string {
   return Buffer.from(bytes).toString("utf8");
 }
 
-async function pathsTouchedByPatch(root: string, patch: string): Promise<string[]> {
+/**
+ * D22-P1 unfiltered twin of `pathsTouchedByPatch`: the SAME isolated-index
+ * technique (read-tree HEAD, stage worktree, write base tree, apply patch to
+ * the index) but WITHOUT pathspec excludes, so EVERY path the patch touches
+ * is observed — including managed-provisioned hunks the filtered call hides.
+ * The filtered call below is untouched (byte-identical for the common path);
+ * this runs once per assembly as the undeclared-managed sweep.
+ */
+async function unfilteredPathsTouchedByPatch(root: string, patch: string): Promise<string[]> {
+  const validationRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-candidate-index-"));
+  const indexFile = path.join(validationRoot, "index");
+  const env = { GIT_INDEX_FILE: indexFile };
+  try {
+    const readTree = await runExecutable("git", ["read-tree", "HEAD"], { cwd: root, timeoutMs: 30_000, env });
+    if (readTree.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to prepare isolated patch validation: ${readTree.stderr || readTree.stdout}`);
+    const stageCurrent = await runExecutable("git", ["add", "-A"], { cwd: root, timeoutMs: 60_000, env });
+    if (stageCurrent.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to snapshot the bound candidate for patch validation: ${stageCurrent.stderr || stageCurrent.stdout}`);
+    const baseTree = await runExecutable("git", ["write-tree"], { cwd: root, timeoutMs: 30_000, env });
+    if (baseTree.exitCode !== 0 || !baseTree.stdout.trim()) throw new AehError("CANDIDATE_STALE", `Unable to identify the patch validation base: ${baseTree.stderr || baseTree.stdout}`);
+    const applied = await runExecutable("git", ["apply", "--cached", "--binary", "-"], { cwd: root, timeoutMs: 60_000, stdin: patch, env });
+    if (applied.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `ChangeSet patch cannot be applied to the current candidate: ${applied.stderr || applied.stdout}`);
+    const changed = await runExecutable("git", ["diff", "--cached", "--name-only", "--no-renames", "-z", baseTree.stdout.trim(), "--"], { cwd: root, timeoutMs: 30_000, env });
+    if (changed.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to derive paths touched by ChangeSet patch: ${changed.stderr || changed.stdout}`);
+    return [...new Set(changed.stdout.split("\0").filter(Boolean).map(normalizePath))].sort();
+  } finally {
+    await fs.rm(validationRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function pathsTouchedByPatch(root: string, patch: string, keepManaged: ReadonlySet<string> = new Set()): Promise<string[]> {
   const validationRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-candidate-index-"));
   const indexFile = path.join(validationRoot, "index");
   const env = { GIT_INDEX_FILE: indexFile };
@@ -1099,10 +1178,98 @@ async function pathsTouchedByPatch(root: string, patch: string): Promise<string[
     // ChangeSets, so both assembly paths observe identical patch paths.
     const changed = await runExecutable("git", ["diff", "--cached", "--name-only", "--no-renames", "-z", baseTree.stdout.trim(), "--", ...providerGeneratedPathspecExcludes()], { cwd: root, timeoutMs: 30_000, env });
     if (changed.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to derive paths touched by ChangeSet patch: ${changed.stderr || changed.stdout}`);
-    return [...new Set(changed.stdout.split("\0").filter(Boolean).map(normalizePath))].sort();
+    const files = new Set(changed.stdout.split("\0").filter(Boolean).map(normalizePath));
+    // D22 exemption ordering: an explicitly exempted file is honored as
+    // today, so any exempt managed path the patch OBSERVEDLY touches is
+    // re-added (observed-only: a declared-but-untouched exemption still
+    // fails the equality gate below). Runs only on the exemption path, so
+    // the common no-exemption call is byte-identical to before.
+    if (keepManaged.size > 0) {
+      const unfiltered = await runExecutable("git", ["diff", "--cached", "--name-only", "--no-renames", "-z", baseTree.stdout.trim(), "--"], { cwd: root, timeoutMs: 30_000, env });
+      if (unfiltered.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to derive paths touched by ChangeSet patch: ${unfiltered.stderr || unfiltered.stdout}`);
+      for (const file of unfiltered.stdout.split("\0").filter(Boolean).map(normalizePath)) {
+        if (keepManaged.has(file)) files.add(file);
+      }
+    }
+    return [...files].sort();
   } finally {
     await fs.rm(validationRoot, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+/**
+ * D22 patch hygiene (DETERMINISTIC, pure): drop unified-patch file blocks
+ * whose every touched path is in `dropped` (managed-provisioned, never
+ * explicitly exempted). Delivery must never commit droppings, and the
+ * recorded patchDigest must describe exactly what `git apply` consumed, so
+ * the caller recomputes the digest over the stripped patch.
+ *
+ * Fail-closed block handling: a block yielding NO parseable path is KEPT
+ * (unverifiable content is never silently discarded — the
+ * declared==observed/scope gates below dispose of it as today). A block
+ * touching any kept path is KEPT in full (e.g. a rename from a dropping to
+ * a real file still delivers the real file). Only blocks exclusively naming
+ * dropped paths are removed.
+ */
+function stripManagedProvisionedPathsFromPatch(patch: string, dropped: ReadonlySet<string>): string {
+  if (!dropped.size) return patch;
+  const blocks = patch.split(/^diff --git /m);
+  const head = blocks.shift() ?? "";
+  const kept: string[] = [];
+  for (const block of blocks) {
+    const paths = patchBlockTouchedPaths(block);
+    if (paths.length > 0 && paths.every((file) => dropped.has(file))) continue;
+    kept.push(block);
+  }
+  if (kept.length === blocks.length) return patch;
+  return head + kept.map((block) => `diff --git ${block}`).join("");
+}
+
+/**
+ * Paths a unified file block touches (DETERMINISTIC, pure): the `diff --git`
+ * `a/`/`b/` pair plus `rename from/to` and `---`/`+++` sides. Only the
+ * header region (lines before the first `@@` hunk) is scanned, so removed
+ * content lines that mimic `--- ` headers can never be mistaken for file
+ * sides. Quote-aware (`"..."` C-quoting via the shared `unquoteDiffPath`);
+ * `/dev/null` sides are skipped.
+ */
+function patchBlockTouchedPaths(block: string): string[] {
+  const files = new Set<string>();
+  const add = (raw: string | undefined): void => {
+    if (raw === undefined) return;
+    const unquoted = unquoteDiffPath(raw);
+    if (!unquoted || unquoted === "/dev/null") return;
+    // Both git prefixes are stripped: `diff --git` pairs and `---` sides use
+    // `a/`, `+++` sides use `b/` (the shared `stripDiffPathPrefix` only
+    // covers the post-image `b/` form).
+    const stripped = unquoted.startsWith("a/") || unquoted.startsWith("b/") ? unquoted.slice(2) : unquoted;
+    if (!stripped || stripped === "/dev/null") return;
+    files.add(normalizePath(stripped));
+  };
+  const lines = block.split("\n");
+  const pair = matchDiffGitPair(lines[0] ?? "");
+  if (pair) {
+    add(pair[0]);
+    add(pair[1]);
+  }
+  for (const line of lines.slice(1)) {
+    if (line.startsWith("@@ ")) break;
+    if (line.startsWith("rename from ")) add(line.slice("rename from ".length));
+    else if (line.startsWith("rename to ")) add(line.slice("rename to ".length));
+    else if (line.startsWith("--- ")) add(line.slice("--- ".length).split("\t")[0]);
+    else if (line.startsWith("+++ ")) add(line.slice("+++ ".length).split("\t")[0]);
+  }
+  return [...files];
+}
+
+/** Quote-aware `a/.. b/..` pair split for a post-`diff --git ` header line. */
+function matchDiffGitPair(header: string): [string, string] | undefined {
+  const tokens: string[] = [];
+  const tokenPattern = /"(?:[^"\\]|\\.)*"|\S+/g;
+  let match: RegExpExecArray | null;
+  while ((match = tokenPattern.exec(header)) !== null) tokens.push(match[0]);
+  if (tokens.length < 2) return undefined;
+  return [tokens[0]!, tokens[1]!];
 }
 
 function candidateImpactProjectionDigest(assessment: Omit<CandidateImpactProjectionV1, "assessmentDigest">): string {

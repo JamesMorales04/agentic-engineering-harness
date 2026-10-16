@@ -1,5 +1,6 @@
 import { minimatch } from "minimatch";
 import type { TaskContract, ValidationCheck } from "../core/types.js";
+import { isManagedProvisionedPath } from "../core/git.js";
 import { isSafeRepairScopePath, normalizeRepairScopePath } from "../candidates/repairScope.js";
 
 function matches(file: string, patterns: string[]): boolean {
@@ -40,6 +41,19 @@ export function validateDiffScope(changedFiles: string[], contract: TaskContract
   const forbidden = contract.scope?.forbidden ?? [];
   const frozen = [...globalFrozen, ...(contract.scope?.frozen ?? [])];
 
+  // D22 managed-provisioned hygiene (DETERMINISTIC): toolchain/provider
+  // droppings (`.serena`, `graphify-out`, `.config/mise`) are
+  // exclude-from-accounting — never worker-attributable, NOT authorizable —
+  // so they are removed from scope accounting before every check below
+  // (allowed, forbidden AND frozen). Unlike the D8
+  // `.harness/managed-assets.json` ignore (which yields to explicit scope
+  // rules via generatedIgnoreYieldedToExplicitRule), this filter is
+  // unconditional: no explicit allow/forbid/freeze rule can re-expose a
+  // dropping, and an explicit rule can never be satisfied BY a dropping.
+  // The D8 protected-manifest class is disjoint from the managed set, so its
+  // denials are unchanged.
+  const effectiveFiles = changedFiles.filter((f) => !isManagedProvisionedPath(f));
+
   // Fail-closed empty allowlist (C2): an empty/missing `allowed` denies all
   // changes (outsideAllowed = all changed files). Only an explicit `["**"]`
   // allowlist opens scope. This mirrors repair-scope fail-closed defaults:
@@ -48,8 +62,8 @@ export function validateDiffScope(changedFiles: string[], contract: TaskContract
   // unscoped contract cannot silently pass. Documented: closed by default,
   // open only via explicit `["**"]`.
   const outsideAllowed = allowed.length > 0
-    ? changedFiles.filter((f) => !matches(f, allowed))
-    : [...changedFiles];
+    ? effectiveFiles.filter((f) => !matches(f, allowed))
+    : [...effectiveFiles];
   checks.push({
     id: "diff.allowed-scope",
     category: "diff",
@@ -58,7 +72,7 @@ export function validateDiffScope(changedFiles: string[], contract: TaskContract
     details: { outsideAllowed }
   });
 
-  const forbiddenChanged = forbidden.length ? changedFiles.filter((f) => matches(f, forbidden)) : [];
+  const forbiddenChanged = forbidden.length ? effectiveFiles.filter((f) => matches(f, forbidden)) : [];
   checks.push({
     id: "diff.forbidden-paths",
     category: "diff",
@@ -67,7 +81,7 @@ export function validateDiffScope(changedFiles: string[], contract: TaskContract
     details: { forbiddenChanged }
   });
 
-  const frozenChanged = frozen.length ? changedFiles.filter((f) => matches(f, frozen)) : [];
+  const frozenChanged = frozen.length ? effectiveFiles.filter((f) => matches(f, frozen)) : [];
   checks.push({
     id: "diff.frozen-paths",
     category: "trust-boundary",

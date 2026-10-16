@@ -73,7 +73,7 @@ export async function bindAssembledCandidate(input: {
  */
 export async function assembleAndBindCandidateChangeSet(
   input: Omit<CandidateAssemblyInputV1, "currentCandidate"> & { stateRoot: string; baseCandidate: CandidateRevisionV1 }
-): Promise<{ candidate: CandidateRevisionV1; impact: CandidateImpactV1 }> {
+): Promise<{ candidate: CandidateRevisionV1; impact: CandidateImpactV1; changeSet: ChangeSetV1 }> {
   const { stateRoot, baseCandidate, ...assemblyInput } = input;
   return withOperationCoordinationLock(stateRoot, input.operationId, async () => {
     const latest = await loadOperation(stateRoot, input.operationId);
@@ -82,7 +82,12 @@ export async function assembleAndBindCandidateChangeSet(
       throw new AehError("CANDIDATE_STALE", `ChangeSet is based on revision ${baseCandidate.revision}, current candidate is revision ${current?.revision ?? "none"}.`);
     }
     const assembled = await assembleCandidateChangeSet({ ...assemblyInput, currentCandidate: current });
-    const bound = await bindAssembledCandidate({ root: input.root, stateRoot, operationId: input.operationId, baseCandidate: current, candidate: assembled.candidate, changeSet: input.changeSet });
-    return { candidate: bound, impact: assembled.impact };
+    // D22 lineage: bind the ASSEMBLED (managed-provisioned-stripped)
+    // ChangeSet, never the worker-submitted original. The receipt digest,
+    // lineage and any later inverse capture must describe exactly what `git
+    // apply` consumed — otherwise rejection would reverse-apply droppings
+    // hunks for files delivery never created.
+    const bound = await bindAssembledCandidate({ root: input.root, stateRoot, operationId: input.operationId, baseCandidate: current, candidate: assembled.candidate, changeSet: assembled.changeSet });
+    return { candidate: bound, impact: assembled.impact, changeSet: assembled.changeSet };
   });
 }
