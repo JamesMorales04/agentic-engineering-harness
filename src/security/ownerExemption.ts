@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { canonicalSerialize, sha256Canonical } from "../core/digest.js";
+import { isDelegatedOwnerActor } from "./ownerAuthority.js";
 import {
   assertCandidateAssemblyReceiptV1,
   candidateAssemblyReceiptIdV1,
@@ -156,6 +157,18 @@ export interface OwnerHardProtectionExemptionGrantV1 {
   decisionId: string;
   decisionDigest: string;
   decidedActor: string;
+  /**
+   * Delegated-approval provenance: present if and only if decidedActor is
+   * a `delegate:*` principal. Records the FULL_PROJECT_OWNER grant that
+   * authorized the approval (verified live at mint time). A delegated
+   * approver is recorded as DELEGATED_OWNER here — never as HUMAN_OWNER.
+   * Covered by the grant MAC like every other body field.
+   */
+  delegatedFrom?: {
+    grantorOwnerId: string;
+    delegationId: string;
+    profile: "FULL_PROJECT_OWNER";
+  };
   decisionReason: string;
   createdAt: string;
   expiresAt?: string;
@@ -455,7 +468,7 @@ function instant(value: unknown, name: string): string {
 export function assertOwnerHardProtectionExemptionGrant(value: unknown): asserts value is OwnerHardProtectionExemptionGrantV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: grant must be an object.");
   const record = value as Record<string, unknown>;
-  const allowed = ["version", "kind", "mechanism", "exemptionId", "operationId", "controllerEpoch", "anchoredCandidateId", "candidateRevision", "candidateIdentityDigest", "policyDigest", "policyStableDigest", "operationExecutionRevision", "paths", "decisionId", "decisionDigest", "decidedActor", "decisionReason", "createdAt", "expiresAt", "mac"];
+  const allowed = ["version", "kind", "mechanism", "exemptionId", "operationId", "controllerEpoch", "anchoredCandidateId", "candidateRevision", "candidateIdentityDigest", "policyDigest", "policyStableDigest", "operationExecutionRevision", "paths", "decisionId", "decisionDigest", "decidedActor", "delegatedFrom", "decisionReason", "createdAt", "expiresAt", "mac"];
   const extra = Object.keys(record).filter((key) => !allowed.includes(key));
   if (extra.length) throw new Error(`OWNER_EXEMPTION_GRANT_INVALID: unsupported fields: ${extra.join(", ")}.`);
   const grant = value as OwnerHardProtectionExemptionGrantV1;
@@ -480,7 +493,31 @@ export function assertOwnerHardProtectionExemptionGrant(value: unknown): asserts
   if (!/^decision:[0-9a-f-]{36}$/i.test(requiredText(grant.decisionId, "decisionId", 64))) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: decisionId must be the ledger HumanDecision id.");
   if (!/^[a-f0-9]{64}$/.test(grant.decisionDigest)) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: decisionDigest must be a lowercase SHA-256 digest.");
   const actor = requiredText(grant.decidedActor, "decidedActor", 200);
-  if (!actor.startsWith("human:")) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: decidedActor must be a human authority.");
+  if (isDelegatedOwnerActor(actor)) {
+    // Delegated approvals are recorded as DELEGATED_OWNER with exact grant
+    // provenance — never as HUMAN_OWNER. Liveness is verified by the mint
+    // and honor paths; this assert pins the artifact shape only.
+    const provenance = grant.delegatedFrom as Record<string, unknown> | undefined;
+    if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) {
+      throw new Error("OWNER_EXEMPTION_GRANT_INVALID: delegated grants must carry delegatedFrom grant provenance (grantor, delegation id, profile).");
+    }
+    const keys = Object.keys(provenance).sort();
+    if (keys.join(",") !== "delegationId,grantorOwnerId,profile") {
+      throw new Error("OWNER_EXEMPTION_GRANT_INVALID: delegated grant provenance must cite exactly grantorOwnerId, delegationId, and profile.");
+    }
+    if (typeof provenance["grantorOwnerId"] !== "string" || !provenance["grantorOwnerId"].startsWith("human:") || !String(provenance["grantorOwnerId"]).slice("human:".length).trim()) {
+      throw new Error("OWNER_EXEMPTION_GRANT_INVALID: delegated grant grantorOwnerId must be the authenticated human grantor ('human:*').");
+    }
+    if (typeof provenance["delegationId"] !== "string" || !/^delegation:[0-9a-f-]{36}$/i.test(provenance["delegationId"])) {
+      throw new Error("OWNER_EXEMPTION_GRANT_INVALID: delegated grant delegationId must be 'delegation:<uuid>'.");
+    }
+    if (provenance["profile"] !== "FULL_PROJECT_OWNER") {
+      throw new Error("OWNER_EXEMPTION_GRANT_INVALID: delegated grant profile must be FULL_PROJECT_OWNER.");
+    }
+  } else {
+    if (!actor.startsWith("human:")) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: decidedActor must be a human authority or a delegated Owner principal with grant provenance.");
+    if (grant.delegatedFrom !== undefined) throw new Error("OWNER_EXEMPTION_GRANT_INVALID: human-decided grants must not carry delegated provenance.");
+  }
   requiredText(grant.decisionReason, "decisionReason", 2000);
   instant(grant.createdAt, "createdAt");
   if (grant.expiresAt !== undefined) {
