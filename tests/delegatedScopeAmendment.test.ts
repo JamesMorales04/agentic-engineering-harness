@@ -109,13 +109,89 @@ describe("DELEGATED_OWNER scope-amendment authority", () => {
     const anchored = (await loadOperation(root, "DELEGATED-HARD-1")).ownerExemptions?.[resolved.ownerExemption.exemptionId];
     expect(anchored?.decidedActor).toBe(DELEGATE);
     expect(() => assertRepairScopeAmendment(resolved.amendment)).not.toThrow();
-    // The anchored grant honors on the live operation (MAC, lineage, expiry).
+    // The anchored grant honors on the live operation (MAC, lineage, expiry,
+    // live delegation).
     const ledger = testLedger(root);
     const operation = await loadOperation(root, "DELEGATED-HARD-1");
     const honored = await verifyOwnerHardProtectionExemption({
-      operation, neededPaths: [HARD_SPEC], grant: anchored!, ledger,
+      operation, neededPaths: [HARD_SPEC], grant: anchored!, ledger, root,
     });
     expect(honored.decidedActor).toBe(DELEGATE);
+  });
+
+  it("adversarial: honor fails closed after delegation revocation (mint-then-revoke)", async () => {
+    const { root, task, config } = await fixture("DELEGATED-HONOR-REVOKE-1", HARD_SPEC);
+    const grant = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId: PROJECT,
+      capabilities: ["scope.amend", "decision.resolve"],
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, TEST_CTX);
+    const blocker = await writtenBlocker(root, "DELEGATED-HONOR-REVOKE-1", task.task.id, [HARD_SPEC]);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId: "DELEGATED-HONOR-REVOKE-1", config, contract: task, blocker,
+    });
+    const approve = approveWaitingRequest(root, "DELEGATED-HONOR-REVOKE-1", grant.delegationId, "delegate approves hard set");
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
+    expect(resolved.status).toBe("AMENDED");
+    if (resolved.status !== "AMENDED" || !resolved.ownerExemption) throw new Error("expected AMENDED with grant");
+    const anchored = (await loadOperation(root, "DELEGATED-HONOR-REVOKE-1")).ownerExemptions?.[resolved.ownerExemption.exemptionId];
+    expect(anchored).toBeDefined();
+    await revokeDelegatedOwnerGrantV1(root, grant.delegationId, { revokedBy: GRANTOR }, TEST_CTX);
+    const ledger = testLedger(root);
+    const operation = await loadOperation(root, "DELEGATED-HONOR-REVOKE-1");
+    await expect(verifyOwnerHardProtectionExemption({
+      operation, neededPaths: [HARD_SPEC], grant: anchored!, ledger, root,
+    })).rejects.toThrow(/REVOKED/);
+  });
+
+  it("adversarial: honor fails closed after delegation expiry (mint-then-expire)", async () => {
+    const { root, task, config } = await fixture("DELEGATED-HONOR-EXPIRE-1", HARD_SPEC);
+    const grant = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId: PROJECT,
+      capabilities: ["scope.amend", "decision.resolve"],
+      expiresAt: new Date(Date.now() + 1500).toISOString(),
+    }, TEST_CTX);
+    const blocker = await writtenBlocker(root, "DELEGATED-HONOR-EXPIRE-1", task.task.id, [HARD_SPEC]);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId: "DELEGATED-HONOR-EXPIRE-1", config, contract: task, blocker,
+    });
+    const approve = approveWaitingRequest(root, "DELEGATED-HONOR-EXPIRE-1", grant.delegationId, "delegate approves hard set");
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
+    expect(resolved.status).toBe("AMENDED");
+    if (resolved.status !== "AMENDED" || !resolved.ownerExemption) throw new Error("expected AMENDED with grant");
+    const anchored = (await loadOperation(root, "DELEGATED-HONOR-EXPIRE-1")).ownerExemptions?.[resolved.ownerExemption.exemptionId];
+    expect(anchored).toBeDefined();
+    await new Promise((r) => setTimeout(r, 1700));
+    const ledger = testLedger(root);
+    const operation = await loadOperation(root, "DELEGATED-HONOR-EXPIRE-1");
+    await expect(verifyOwnerHardProtectionExemption({
+      operation, neededPaths: [HARD_SPEC], grant: anchored!, ledger, root,
+    })).rejects.toThrow(/EXPIRED/);
+  });
+
+  it("adversarial: second blocker after revocation stays BLOCKED (no reuse of dead-delegation amendment)", async () => {
+    const { root, task, config } = await fixture("DELEGATED-REUSE-REVOKE-1", HARD_SPEC);
+    const grant = await issueDelegatedOwnerGrantV1(root, {
+      grantorOwnerId: GRANTOR, delegatePrincipalId: DELEGATE, projectId: PROJECT,
+      capabilities: ["scope.amend", "decision.resolve"],
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    }, TEST_CTX);
+    const blocker = await writtenBlocker(root, "DELEGATED-REUSE-REVOKE-1", task.task.id, [HARD_SPEC]);
+    const pending = resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId: "DELEGATED-REUSE-REVOKE-1", config, contract: task, blocker,
+    });
+    const approve = approveWaitingRequest(root, "DELEGATED-REUSE-REVOKE-1", grant.delegationId, "delegate approves hard set");
+    const resolved = await Promise.all([pending, approve]).then(([r]) => r);
+    expect(resolved.status).toBe("AMENDED");
+    const { listRepairScopeAmendments } = await import("../src/candidates/repairScope.js");
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(1);
+    await revokeDelegatedOwnerGrantV1(root, grant.delegationId, { revokedBy: GRANTOR }, TEST_CTX);
+    const blocker2 = await writtenBlocker(root, "DELEGATED-REUSE-REVOKE-1", task.task.id, [HARD_SPEC]);
+    const resolved2 = await resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId: "DELEGATED-REUSE-REVOKE-1", config, contract: task, blocker: blocker2,
+    });
+    expect(resolved2.status).toBe("BLOCKED");
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(1);
   });
 
   it("adversarial: revoked grant fails closed at apply time (recorded while live, revoked before apply)", async () => {

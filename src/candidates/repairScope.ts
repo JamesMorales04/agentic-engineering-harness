@@ -1326,6 +1326,16 @@ export async function verifyOwnerHardProtectionExemption(input: {
   grant: OwnerHardProtectionExemptionGrantV1;
   ledger: HumanDecisionLedgerV2;
   now?: Date;
+  /**
+   * Control root for delegated-grant liveness. Required whenever the
+   * grant carries delegated provenance: honor re-verifies the LIVE
+   * delegation (MAC, project scope, scope.amend capability, expiry,
+   * revocation, principal/grantor binding), so a delegation revoked or
+   * expired after minting fails closed here instead of authorizing.
+   * Human-decided grants ignore it. Callers that cannot supply a root
+   * fail closed on delegated grants (liveness unprovable).
+   */
+  root?: string;
 }): Promise<OwnerHardProtectionExemptionGrantV1> {
   const { operation, neededPaths, grant, ledger } = input;
   const now = input.now ?? new Date();
@@ -1398,6 +1408,27 @@ export async function verifyOwnerHardProtectionExemption(input: {
   if (!verifyOwnerExemptionMac(controllerTokenFromEnvironment(), grant)) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_FORGED: grant MAC integrity check failed; the grant was not minted by the live controller.");
   }
+  // Delegation liveness at honor time: a delegation revoked or expired
+  // AFTER minting must fail closed here. Recording and minting verify the
+  // live grant, but honor and reuse happen later — potentially under a dead
+  // delegation — so every honor path re-verifies (MAC, project scope,
+  // scope.amend capability, expiry, revocation, principal/grantor binding).
+  // Human-decided grants skip this (no delegation involved).
+  if (grant.delegatedFrom !== undefined || isDelegatedOwnerActor(grant.decidedActor)) {
+    if (!input.root) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DELEGATION_ROOT_REQUIRED: honoring a delegated grant requires a control root for live delegation verification.");
+    }
+    assertDelegatedAmendmentProvenance(grant.delegatedFrom);
+    await reverifyDelegatedDecisionForUse(input.root, {
+      actorId: grant.decidedActor,
+      delegatedFrom: {
+        grantorOwnerId: grant.delegatedFrom.grantorOwnerId,
+        delegationId: grant.delegatedFrom.delegationId,
+        profile: grant.delegatedFrom.profile,
+      },
+      requiredCapability: "scope.amend",
+    });
+  }
   if (grant.expiresAt && new Date(grant.expiresAt).getTime() <= now.getTime()) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EXPIRED: the hard-protection exemption has expired.");
   }
@@ -1468,6 +1499,8 @@ export async function findCoveringOwnerHardProtectionExemption(input: {
   neededPaths: readonly string[];
   ledger: HumanDecisionLedgerV2;
   now?: Date;
+  /** Control root for delegated-grant liveness (see verify). */
+  root?: string;
 }): Promise<{ grant?: OwnerHardProtectionExemptionGrantV1; failures: string[] }> {
   const failures: string[] = [];
   for (const grant of Object.values(input.operation.ownerExemptions ?? {})) {
@@ -1540,6 +1573,7 @@ async function findReusableOwnerAmendmentForBlocker(input: {
         neededPaths: blocker.filesNeededOutsideScope.map((entry) => entry.path),
         grant: cited,
         ledger,
+        root,
       });
     } catch {
       continue;
@@ -1597,7 +1631,7 @@ export async function applyAnchoredCoveringGrantForBlocker(input: {
   }
   const ledger = repairScopeLedger(controlRoot);
   const neededPaths = blocker.filesNeededOutsideScope.map((entry) => entry.path);
-  const covering = await findCoveringOwnerHardProtectionExemption({ operation, neededPaths, ledger });
+  const covering = await findCoveringOwnerHardProtectionExemption({ operation, neededPaths, ledger, root: controlRoot });
   if (!covering.grant) return { status: "NO_COVERING_GRANT", failures: covering.failures };
   const reusable = await findReusableOwnerAmendmentForBlocker({ root, config, operation, ledger, contract, blocker });
   if (reusable) {
@@ -1646,6 +1680,7 @@ export async function applyOwnerExemptedRepairScopeAmendment(input: {
     neededPaths: blocker.filesNeededOutsideScope.map((entry) => entry.path),
     grant,
     ledger,
+    root,
   });
   // Delegated provenance for the artifact: a delegate-minted grant records
   // DELEGATED_OWNER with the decision's exact grant provenance (never
@@ -2290,6 +2325,7 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
       operation,
       neededPaths: blocker.filesNeededOutsideScope.map((entry) => entry.path),
       ledger,
+      root: controlRoot,
     });
     if (covering.grant) {
       // H-NEW-14 grant-consumption coverage: a second blocker on
