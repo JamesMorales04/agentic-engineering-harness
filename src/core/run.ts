@@ -85,7 +85,7 @@ import {
   TEST_ATTRIBUTION_REPORTER_INCOMPLETE,
 } from "../validation/testAttribution.js";
 import type { CandidateImpactV1 } from "../candidates/assembler.js";
-import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
+import { candidateRevisionsEqual, type CandidateRevisionV1, type ParticipantReceiptV1 } from "../operations/v2Contracts.js";
 import { objectiveParticipantAccountingV1 } from "../operations/participantAccounting.js";
 import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy, type ResolvedOperationPolicyV2 } from "../architecture/executionIdentity.js";
 import { bindResolvedOperationPolicy, currentControllerEpoch } from "../operations/state.js";
@@ -1438,7 +1438,12 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       const identity = currentObjectiveIdentityV1(operation);
       const requiredWorkUnitIds = waveResult?.plan?.workUnits.map((unit) => unit.id) ?? [`direct:${effectiveContract.task.id}`];
       const { accountedWorkUnitIds, sessionAccountedWorkUnitIds } = waveResult?.plan
-        ? resolveAccountedWorkUnitIds(requiredWorkUnitIds, waveResult.waves.flatMap((wave) => wave.results), report.status === "PASS")
+        ? resolveAccountedWorkUnitIds(
+            requiredWorkUnitIds,
+            waveResult.waves.flatMap((wave) => wave.results),
+            Object.values(operation.participantReceipts ?? {}),
+            report.status === "PASS"
+          )
         : { accountedWorkUnitIds: worker.exitCode === 0 ? [`direct:${effectiveContract.task.id}`] : [], sessionAccountedWorkUnitIds: [] as string[] };
       const validationRequirements = evidenceBundle.requirements.filter((requirement) => requirement.validationRequirementIds.length > 0);
       const reviewRequirements = evidenceBundle.requirements.filter((requirement) => requirement.reviewDimensions.length > 0);
@@ -2177,32 +2182,47 @@ function bindingForSelection(selection: AgentExecutionSelection) {
 
 /**
  * Work-unit accounting for the objective Definition of Done (MECHANISM:
- * DETERMINISTIC). A unit is accounted when its work is evidenced complete:
- * a wave PASS verdict, or any successful (exit 0) worker session recorded
- * for it once the final report is PASS. The second arm matters because
- * wave-time verdicts freeze at dispatch including barrier (validator)
+ * DETERMINISTIC). A unit is accounted when its completion is evidenced:
+ * a wave PASS verdict, or a controller-written SUCCEEDED participant
+ * receipt for one of its worker sessions once the final report is green.
+ * Receipts are the completion proof that survives the lazy-implementer
+ * challenge: they are written only for contract-valid completions
+ * (vacuous output fails contract validation and yields no success
+ * receipt), so unlike bare exit codes they cannot credit empty work.
+ * Wave-time verdicts freeze at dispatch including barrier (validator)
  * outcomes: a transient barrier flake fails the wave even though the
- * unit's worker completed successfully, and a later green revalidation
- * (e.g. via the repair loop) would otherwise leave the unit unaccounted
- * forever — observed blocking DoD on a fully-green no-op. Worker
- * sessions are unit-mapped through wave results; repair-loop sessions
- * are candidate-scoped and deliberately do NOT account units (a repair
- * turn cannot attest unit-level completion, so dropped or crashed units
- * with no successful worker session still block loudly even when the
- * final report is green). Substantive completeness additionally rests on
+ * unit's worker completed successfully, and the receipt arm covers
+ * exactly that case once later revalidation passes. Sessions join to
+ * receipts by session id (falling back to participant id); repair-loop
+ * sessions are candidate-scoped and deliberately do NOT attest units.
+ * Dropped or crashed units with no success receipt stay unaccounted
+ * and DoD blocks loudly. Substantive completeness additionally rests on
  * the validation/review/acceptance gates. Exported for regression
  * coverage.
  */
 export function resolveAccountedWorkUnitIds(
   requiredWorkUnitIds: readonly string[],
-  waveResults: ReadonlyArray<{ task: { id: string }; status: string; session?: { exitCode: number } }>,
+  waveResults: ReadonlyArray<{ task: { id: string }; status: string; session?: { id?: string; participantId?: string; exitCode: number } }>,
+  receipts: ReadonlyArray<Pick<ParticipantReceiptV1, "participantId" | "sessionId" | "outcome">>,
   finalReportPass: boolean
 ): { accountedWorkUnitIds: string[]; sessionAccountedWorkUnitIds: string[] } {
   const accounted = new Set<string>();
   const sessionAccounted = new Set<string>();
+  const succeeded = receipts.filter((receipt) => receipt.outcome === "SUCCEEDED");
   for (const result of waveResults) {
-    if (result.status === "PASS") accounted.add(result.task.id);
-    else if (finalReportPass && result.session?.exitCode === 0) {
+    if (result.status === "PASS") {
+      accounted.add(result.task.id);
+      continue;
+    }
+    if (!finalReportPass) continue;
+    const sessionId = result.session?.id;
+    const participantId = result.session?.participantId;
+    const evidenced = succeeded.some(
+      (receipt) =>
+        (sessionId !== undefined && receipt.sessionId === sessionId) ||
+        (participantId !== undefined && receipt.participantId === participantId)
+    );
+    if (evidenced) {
       accounted.add(result.task.id);
       sessionAccounted.add(result.task.id);
     }
