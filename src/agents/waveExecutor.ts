@@ -36,8 +36,10 @@ import {
   findRepairHardProtectedViolations,
   isExactRepairScopeFilePath,
   isSafeRepairScopePath,
+  MAX_REPAIR_SCOPE_BLOCKER_FILES_V1,
   normalizeRepairScopePath,
   parseRepairScopeBlockerFromSession,
+  partitionHardViolationsByNewTestTier,
   repairHardProtectedPaths,
   repairScopeBlockerValidationCheck,
   resolveRepairScopeBlockerViaProductChoice,
@@ -575,8 +577,45 @@ export async function executePlannerWaves(input: { root: string; stateRoot: stri
     if (plannerSession.exitCode !== 0) return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, "Planner runtime failed.") };
     try { plan = plannerOutputSchema.parse(extractMarkedJson(plannerSession.stdout, plannerSession.stderr)); } catch (error) { return { used: true, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Invalid planner output: ${String(error)}`) }; }
   }
-  const planIssues = validatePlannerWavePlan(input.contract, plan, input.config);
-  if (planIssues.length) return { used: true, plan, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Planner contract rejected: ${planIssues.join("; ")}`) };
+  const initialPlanIssues = validatePlannerWavePlan(input.contract, plan, input.config);
+  if (initialPlanIssues.length) {
+    // D10 narrow auto-declare (DETERMINISTIC): when EVERY issue is of class
+    // PLANNER_PROTECTED_SCOPE_UNDECLARED, the trigger is a mechanically
+    // observable fact (WU scope x hard-protected intersection) that must not
+    // depend on model protocol compliance. Partition the recomputed
+    // intersections (shared `computePlannerUndeclaredHardScopes`, never regex
+    // over issue prose) via the H-NEW-13 tier using the workspace root
+    // (`input.root`, the same tree the existence stat must observe). The
+    // new-test-tier subset is synthesized into plan-level declarations and
+    // fed to the EXISTING resolvePlannerScopeDeclarations suspend/human route
+    // unchanged (Owner approves/denies — authority boundary untouched).
+    // Non-new-test-tier citations (existing tests/, validators, seals,
+    // policy, globs), cap overflow, and any mixed remainder stay TERMINAL
+    // with the current diagnostic: if re-validation still reports issues,
+    // the whole plan fails (auto-declared subset discarded with it, never
+    // routed). No new-test-tier paths -> original terminal unchanged.
+    // Mechanism: DETERMINISTIC (glob intersection + existence stat +
+    // objective-text reuse; no new model call, no new correction turn).
+    const allUndeclared = initialPlanIssues.every((issue) => issue.includes("PLANNER_PROTECTED_SCOPE_UNDECLARED"));
+    if (!allUndeclared) {
+      return { used: true, plan, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Planner contract rejected: ${initialPlanIssues.join("; ")}`) };
+    }
+    const auto = await autoDeclarePlannerNewTestScopes({ contract: input.contract, plan, config: input.config, root: input.root });
+    if (!auto) {
+      return { used: true, plan, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Planner contract rejected: ${initialPlanIssues.join("; ")}`) };
+    }
+    const reIssues = validatePlannerWavePlan(input.contract, auto.plan, input.config);
+    if (reIssues.length) {
+      return { used: true, plan: auto.plan, waves: [], sessions, preExecutionFailure: true, aggregateSession: aggregate(sessions, 1, `Planner contract rejected: ${reIssues.join("; ")}`) };
+    }
+    plan = auto.plan;
+    await recordEvent(input.stateRoot, input.config, "harness.plan.scope-auto-declared", {
+      taskId: input.contract.task.id,
+      autoDeclared: auto.autoDeclared,
+      hardRemaining: auto.hardRemaining,
+      source: "planner-new-test-auto-declare",
+    }).catch(() => undefined);
+  }
   // H-NEW-11 planner declaration routing (DETERMINISTIC orchestration, MODEL
   // content): plan-level filesNeededOutsideScope flows to the EXISTING
   // repairer amendment/suspend machinery (same receipt +
@@ -1487,6 +1526,157 @@ export function validatePlannerWavePlan(contract: TaskContract, plan: PlannerOut
 }
 
 /**
+ * D10 shared hard-intersection computation (DETERMINISTIC, pure, no I/O).
+ * Single definition of "undeclared work-unit scope x hard-protected
+ * intersection" used by BOTH the compile gate
+ * (`validatePlannerHardProtectionDeclarations`, string diagnostics) and the
+ * new-test auto-declare path (`autoDeclarePlannerNewTestScopes`, structured
+ * candidates). No regex over model prose: candidates are recomputed from
+ * scope-vs-hard glob matching, never parsed out of issue strings.
+ *
+ * Returns one entry per (work unit, scope) that intersects hard-protected
+ * paths and lacks a satisfying declaration:
+ * - exact-file scopes require an exact declaration of that same file;
+ * - glob scopes intersecting ANY protected pattern are always undeclared
+ *   (no declaration can satisfy them — unbounded match = unprovable
+ *   coverage), so they are returned with `isExactFile: false` and are never
+ *   auto-declarable.
+ * Malformed declarations (glob/traversal/empty) never satisfy the gate; they
+ * are reported separately by the validator and ignored here for the declared
+ * set (same rule, shared).
+ */
+export interface PlannerHardScopeIntersectionV1 {
+  workUnitId: string;
+  objective: string;
+  scope: string;
+  normalizedScope: string;
+  cited: string;
+  isExactFile: boolean;
+}
+
+export function computePlannerUndeclaredHardScopes(
+  contract: TaskContract,
+  plan: PlannerOutput,
+  config: HarnessProjectConfig,
+): PlannerHardScopeIntersectionV1[] {
+  const hardProtected = repairHardProtectedPaths(config, contract);
+  const declared = new Map<string, string>();
+  for (const entry of plan.filesNeededOutsideScope ?? []) {
+    const raw = typeof entry?.path === "string" ? entry.path.trim() : "";
+    if (!raw || !isSafeRepairScopePath(raw) || !isExactRepairScopeFilePath(raw)) continue;
+    const normalized = normalizeRepairScopePath(raw);
+    if (!declared.has(normalized)) declared.set(normalized, typeof entry?.reason === "string" ? entry.reason : "");
+  }
+  const intersections: PlannerHardScopeIntersectionV1[] = [];
+  for (const unit of plan.workUnits) {
+    for (const scope of unit.scope) {
+      const rawScope = typeof scope === "string" ? scope.trim() : "";
+      if (!rawScope) continue;
+      const directlyViolated = findRepairHardProtectedViolations([rawScope], config, contract);
+      const overlapped = hardProtected.filter((hard) => scopePatternOverlapsHardPattern(rawScope, hard));
+      if (!directlyViolated.length && !overlapped.length) continue;
+      const cited = [...new Set([...directlyViolated, ...overlapped])].sort((a, b) => a.localeCompare(b)).slice(0, 8).join(", ");
+      if (!isExactRepairScopeFilePath(rawScope)) {
+        intersections.push({
+          workUnitId: unit.id,
+          objective: typeof unit.objective === "string" ? unit.objective : "",
+          scope: rawScope,
+          normalizedScope: normalizeRepairScopePath(rawScope),
+          cited,
+          isExactFile: false,
+        });
+        continue;
+      }
+      const normalizedScope = normalizeRepairScopePath(rawScope);
+      if (declared.has(normalizedScope)) continue;
+      intersections.push({
+        workUnitId: unit.id,
+        objective: typeof unit.objective === "string" ? unit.objective : "",
+        scope: rawScope,
+        normalizedScope,
+        cited,
+        isExactFile: true,
+      });
+    }
+  }
+  return intersections;
+}
+
+export interface PlannerNewTestAutoDeclarationV1 {
+  plan: PlannerOutput;
+  autoDeclared: string[];
+  hardRemaining: string[];
+}
+
+/**
+ * D10 narrow auto-declare (DETERMINISTIC: glob intersection + existence stat
+ * + objective-text reuse; no new model call, no new correction turn).
+ *
+ * When the plan validation issues are ALL of class
+ * PLANNER_PROTECTED_SCOPE_UNDECLARED, the runPlanning call site offers the
+ * new-test-tier subset a declaration the planner omitted: exact-file WU
+ * scopes that partition into the H-NEW-13 `newTestCreations` tier
+ * (non-existent tests/ files solely under the broad rule) are synthesized
+ * into plan-level filesNeededOutsideScope entries with reasons auto-derived
+ * from the owning WU objective, prefixed `[auto-derived from WU <id> scope]`
+ * for Owner transparency.
+ *
+ * Security invariant: auto-declaration cannot widen what the planner can
+ * express (it already controls WU scopes) and cannot bypass Owner approval —
+ * the augmented plan flows into the EXISTING resolvePlannerScopeDeclarations
+ * suspend/human route unchanged (deny -> BLOCKED). Only exact new-test
+ * paths; total declarations capped at MAX_REPAIR_SCOPE_BLOCKER_FILES_V1 (8);
+ * globs, existing tests/, validators, seals, policy and every other hard
+ * class are never synthesized. Returns null when nothing is auto-declarable
+ * (caller keeps the original terminal outcome unchanged). When a hard
+ * remainder exists (non-tier citations, globs, cap overflow), the caller
+ * keeps the whole plan terminal — the auto-declared subset is discarded with
+ * the failed plan and never routed.
+ */
+export async function autoDeclarePlannerNewTestScopes(input: {
+  contract: TaskContract;
+  plan: PlannerOutput;
+  config: HarnessProjectConfig;
+  root: string;
+}): Promise<PlannerNewTestAutoDeclarationV1 | null> {
+  const intersections = computePlannerUndeclaredHardScopes(input.contract, input.plan, input.config);
+  const exact = intersections.filter((item) => item.isExactFile);
+  if (!exact.length) return null;
+  const byPath = new Map<string, { workUnitId: string; objective: string }>();
+  for (const item of exact) {
+    if (!byPath.has(item.normalizedScope)) {
+      byPath.set(item.normalizedScope, { workUnitId: item.workUnitId, objective: item.objective });
+    }
+  }
+  const candidates = [...byPath.keys()];
+  if (!candidates.length) return null;
+  const tiered = await partitionHardViolationsByNewTestTier(candidates, input.config, input.contract, input.root);
+  if (!tiered.newTestCreations.length) return null;
+  const existing = input.plan.filesNeededOutsideScope ?? [];
+  const existingPaths = new Set(existing.map((entry) => normalizeRepairScopePath(String(entry?.path ?? "").trim())));
+  const fresh = tiered.newTestCreations.filter((candidate) => !existingPaths.has(normalizeRepairScopePath(candidate)));
+  if (!fresh.length) return null;
+  const room = MAX_REPAIR_SCOPE_BLOCKER_FILES_V1 - existing.length;
+  if (room <= 0) return null;
+  const capped = fresh.slice(0, room);
+  const overflow = fresh.slice(room);
+  const synthesized = capped.map((candidate) => {
+    const owner = byPath.get(normalizeRepairScopePath(candidate)) ?? byPath.get(candidate);
+    const workUnitId = owner?.workUnitId ?? "unknown";
+    const objective = (owner?.objective ?? "").trim().slice(0, 500) || "requires new test file";
+    let reason = `[auto-derived from WU ${workUnitId} scope] ${objective}`;
+    if (reason.length > 1000) reason = reason.slice(0, 1000);
+    return { path: normalizeRepairScopePath(candidate), reason };
+  });
+  if (!synthesized.length) return null;
+  return {
+    plan: { ...input.plan, filesNeededOutsideScope: [...existing, ...synthesized] },
+    autoDeclared: synthesized.map((entry) => entry.path),
+    hardRemaining: [...tiered.hard, ...overflow],
+  };
+}
+
+/**
  * H-NEW-11 plan-level declaration check (DETERMINISTIC, pure, no I/O).
  * Extracted so the compile gate above and plan-routing diagnostics share one
  * definition of "declared". STRICT rule (R2):
@@ -1502,43 +1692,24 @@ export function validatePlannerWavePlan(contract: TaskContract, plan: PlannerOut
  * single declaration launder a broad protected expansion.
  * Malformed declarations (glob/traversal/empty) are rejected fail-closed so
  * they can never satisfy the gate or reach the receipt.
+ * Scope-vs-hard intersection shape is shared with the D10 auto-declare path
+ * via `computePlannerUndeclaredHardScopes` (no duplication); this function
+ * only renders the shared intersections to the stable diagnostics.
  */
 export function validatePlannerHardProtectionDeclarations(contract: TaskContract, plan: PlannerOutput, config: HarnessProjectConfig): string[] {
   const issues: string[] = [];
-  const hardProtected = repairHardProtectedPaths(config, contract);
-  const declared = new Map<string, string>();
   for (const entry of plan.filesNeededOutsideScope ?? []) {
     const raw = typeof entry?.path === "string" ? entry.path.trim() : "";
     if (!raw || !isSafeRepairScopePath(raw) || !isExactRepairScopeFilePath(raw)) {
       issues.push(`PLANNER_BLOCKER_DECLARATION_INVALID: plan-level filesNeededOutsideScope entry '${raw || "(empty)"}' is not an exact file path; declarations allow exact paths only (no wildcards, traversal, or absolute forms).`);
+    }
+  }
+  for (const item of computePlannerUndeclaredHardScopes(contract, plan, config)) {
+    if (!item.isExactFile) {
+      issues.push(`PLANNER_PROTECTED_SCOPE_UNDECLARED: work unit '${item.workUnitId}' scope '${item.scope}' is a glob intersecting hard-protected path(s): ${item.cited}. Glob scopes cannot be satisfied by declaration (unbounded match = unprovable coverage: one exact declaration cannot cover every protected file the glob could match). Replace the glob with enumerated exact protected file scopes and declare each exact file via plan-level filesNeededOutsideScope[{path, reason}].`);
       continue;
     }
-    const normalized = normalizeRepairScopePath(raw);
-    if (!declared.has(normalized)) declared.set(normalized, typeof entry?.reason === "string" ? entry.reason : "");
-  }
-  for (const unit of plan.workUnits) {
-    for (const scope of unit.scope) {
-      const rawScope = typeof scope === "string" ? scope.trim() : "";
-      if (!rawScope) continue;
-      const directlyViolated = findRepairHardProtectedViolations([rawScope], config, contract);
-      const overlapped = hardProtected.filter((hard) => scopePatternOverlapsHardPattern(rawScope, hard));
-      if (!directlyViolated.length && !overlapped.length) continue;
-      const cited = [...new Set([...directlyViolated, ...overlapped])].sort((a, b) => a.localeCompare(b)).slice(0, 8).join(", ");
-      // (b) GLOB scopes intersecting ANY protected pattern are REJECTED
-      // outright — unbounded glob match = unprovable coverage. A single exact
-      // declaration cannot prove coverage of every protected file the glob
-      // could match, so no declaration satisfies this scope. The planner must
-      // replace the glob with enumerated exact protected file scopes, each
-      // with its own exact declaration per (a).
-      if (!isExactRepairScopeFilePath(rawScope)) {
-        issues.push(`PLANNER_PROTECTED_SCOPE_UNDECLARED: work unit '${unit.id}' scope '${rawScope}' is a glob intersecting hard-protected path(s): ${cited}. Glob scopes cannot be satisfied by declaration (unbounded match = unprovable coverage: one exact declaration cannot cover every protected file the glob could match). Replace the glob with enumerated exact protected file scopes and declare each exact file via plan-level filesNeededOutsideScope[{path, reason}].`);
-        continue;
-      }
-      // (a) exact-file scopes require the exact declaration of that same file.
-      const normalizedScope = normalizeRepairScopePath(rawScope);
-      if (declared.has(normalizedScope)) continue;
-      issues.push(`PLANNER_PROTECTED_SCOPE_UNDECLARED: work unit '${unit.id}' scope '${rawScope}' intersects hard-protected path(s): ${cited}. Declare the exact file(s) via plan-level filesNeededOutsideScope[{path, reason}] (max 8, exact file paths with per-file reasons); hard-protected paths the planned work needs (validators, tests, policy, .harness/project.yaml, seals) flow to Owner-approved amendment only through this declaration channel. Glob scopes touching hard-protected paths must first be narrowed to exact file paths.`);
-    }
+    issues.push(`PLANNER_PROTECTED_SCOPE_UNDECLARED: work unit '${item.workUnitId}' scope '${item.scope}' intersects hard-protected path(s): ${item.cited}. Declare the exact file(s) via plan-level filesNeededOutsideScope[{path, reason}] (max 8, exact file paths with per-file reasons); hard-protected paths the planned work needs (validators, tests, policy, .harness/project.yaml, seals) flow to Owner-approved amendment only through this declaration channel. Glob scopes touching hard-protected paths must first be narrowed to exact file paths.`);
   }
   return issues;
 }
