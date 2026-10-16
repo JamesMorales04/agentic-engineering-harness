@@ -13,6 +13,25 @@ const leadOutputSchema = z.object({
   unresolved: z.array(z.string().trim().min(1))
 }).strict();
 
+/**
+ * Provider identity for the bound Lead (MECHANISM: DETERMINISTIC).
+ * Prefers the AEH-managed `aeh.provider` label (set at AEH launch);
+ * ambient environment-bound leads (explicit-CLI flows) carry no AEH
+ * labels, so falls back to the daemon-reported session provider (same
+ * controller-observable trust domain, never model-influenced). Without
+ * either, acceptance cannot attribute its verdict to a provider.
+ */
+export function leadProviderIdentity(
+  lead: { labels?: Record<string, string>; raw?: unknown } | undefined | null
+): string | undefined {
+  const labeled = lead?.labels?.["aeh.provider"];
+  if (typeof labeled === "string" && labeled.trim()) return labeled.trim();
+  const raw = lead?.raw as Record<string, unknown> | undefined;
+  const reported = raw?.["provider"];
+  if (typeof reported === "string" && reported.trim()) return reported.trim();
+  return undefined;
+}
+
 export async function requestManagedLeadAcceptance(input: {
   root: string;
   operationId: string;
@@ -64,8 +83,8 @@ export async function requestManagedLeadAcceptance(input: {
   ].join("\n");
   const promptDigest = sha256Canonical(prompt);
   const paseoLead = await inspectManagedPaseoAgent(input.root, binding.agentId);
-  const provider = paseoLead?.labels?.["aeh.provider"];
-  if (!provider) throw new Error("ACCEPTANCE_LEAD_PROVIDER_IDENTITY_REQUIRED: the bound Paseo Lead session has no persisted provider label.");
+  const provider = leadProviderIdentity(paseoLead);
+  if (!provider) throw new Error("ACCEPTANCE_LEAD_PROVIDER_IDENTITY_REQUIRED: the bound Paseo Lead session has neither a persisted provider label nor a daemon-reported provider.");
   // The bound interactive Lead session was created outside the AEH structured-result channel path
   // (no `aeh-result` sink or result channel binding), so requesting an AEH-schema turn for it fails
   // with `AEH_RESULT_CHANNEL_STATE` before the provider ever runs (AEH-V2-0122). The lead contract
@@ -76,7 +95,7 @@ export async function requestManagedLeadAcceptance(input: {
     "aeh.lead.agentId": binding.agentId,
     "aeh.lead.generation": String(binding.generation),
     "aeh.provider": provider,
-    ...(paseoLead.workspaceId ? { "aeh.workspace.id": paseoLead.workspaceId } : {})
+    ...(paseoLead?.workspaceId ? { "aeh.workspace.id": paseoLead.workspaceId } : {})
   });
   const latest = await loadOperation(stateRoot, input.operationId);
   const latestIdentity = currentObjectiveIdentityV1(latest);

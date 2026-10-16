@@ -9,7 +9,7 @@ import { requestManagedLeadAcceptance } from "../src/agents/managedLeadAcceptanc
 import type { CandidateAssuranceCompilationV1 } from "../src/architecture/candidateAssurance.js";
 import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../src/core/types.js";
 import { sha256Canonical } from "../src/core/digest.js";
-import { continueManagedPaseoAgent } from "../src/paseo/runtime.js";
+import { continueManagedPaseoAgent, inspectManagedPaseoAgent } from "../src/paseo/runtime.js";
 
 vi.mock("../src/paseo/runtime.js", () => ({
   continueManagedPaseoAgent: vi.fn(),
@@ -67,6 +67,23 @@ describe("managed Lead acceptance evidence", () => {
     const setup = await fixture();
     await expect(requestManagedLeadAcceptance({ root: setup.root, operationId: setup.operationId, compilation: setup.compilation, report: setup.report, implementationIdentity: "lead-session" }))
       .rejects.toThrow("ACCEPTANCE_LEAD_NOT_INDEPENDENT");
+    expect(continueManagedPaseoAgent).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the daemon-reported provider for an ambient lead without AEH labels", async () => {
+    const setup = await fixture();
+    vi.mocked(inspectManagedPaseoAgent).mockResolvedValueOnce({ id: "lead-session", status: "idle", workspaceId: "workspace-lead", raw: { provider: "opencode" } });
+    vi.mocked(continueManagedPaseoAgent).mockResolvedValue({ exitCode: 0, stdout: `AEH_RESULT_JSON=${JSON.stringify({ assertions: [{ assertionId: "ASSERT-1", verdict: "PASS", rationale: "Supported." }], summary: "Supported.", unresolved: [] })}`, stderr: "", transport: "sdk" });
+    const evidence = await requestManagedLeadAcceptance({ root: setup.root, operationId: setup.operationId, compilation: setup.compilation, report: setup.report, implementationIdentity: "implementer" });
+    expect(evidence?.status).toBe("PASS");
+    expect(vi.mocked(continueManagedPaseoAgent)).toHaveBeenCalledWith(setup.root, "lead-session", expect.any(String), 600, undefined, undefined, expect.objectContaining({ "aeh.provider": "opencode" }));
+  });
+
+  it("still fails closed when neither label nor daemon provider exists", async () => {
+    const setup = await fixture();
+    vi.mocked(inspectManagedPaseoAgent).mockResolvedValueOnce({ id: "lead-session", status: "idle", raw: {} });
+    await expect(requestManagedLeadAcceptance({ root: setup.root, operationId: setup.operationId, compilation: setup.compilation, report: setup.report, implementationIdentity: "implementer" }))
+      .rejects.toThrow("ACCEPTANCE_LEAD_PROVIDER_IDENTITY_REQUIRED");
     expect(continueManagedPaseoAgent).not.toHaveBeenCalled();
   });
 });
