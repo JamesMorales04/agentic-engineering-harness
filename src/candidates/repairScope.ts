@@ -1707,12 +1707,16 @@ export async function loadAmendedContractForReuse(
   }
   const relative = typeof amendment.contractPath === "string" ? amendment.contractPath.trim().replaceAll("\\", "/") : "";
   if (!relative || !isSafeRepairScopePath(relative)) return undefined;
-  // Canonical-path gate (Luna round 2): the cited path must be EXACTLY the
+  // Canonical-path gate (Luna round 2+3): the cited path must be EXACTLY the
   // deterministic per-task contract location — never an alternate file that
-  // happens to share the task id with a broader allowlist.
+  // happens to share the task id with a broader allowlist. Both sides use
+  // the single scope-string identity (normalizeRepairScopePath, same as the
+  // path.join/path.relative normalization the amendment writers produce), so
+  // accepted configs like contractsDir "./contracts" compare equal instead
+  // of failing closed on a `./` spelling difference.
   const contractsDir = (config.sdd?.contractsDir ?? ".harness/contracts").replaceAll("\\", "/").replace(/\/+$/, "");
-  const canonical = `${contractsDir}/${amendment.taskId}.yaml`;
-  if (relative.replace(/\/+$/, "") !== canonical) return undefined;
+  const canonical = normalizeRepairScopePath(`${contractsDir}/${amendment.taskId}.yaml`);
+  if (!canonical || normalizeRepairScopePath(relative) !== canonical) return undefined;
   // Realpath containment (Luna round 2): path.resolve is symlink-blind, so
   // resolve both sides through the filesystem before comparing.
   let rootReal: string;
@@ -1750,8 +1754,15 @@ export async function loadAmendedContractForReuse(
     const normalized = normalizeRepairScopePath(String(exempted ?? "").trim());
     if (!normalized || !normalizedAllowed.has(normalized)) return undefined;
   }
-  // Seal gate (Luna round 2): the bytes just read must match the frozen
-  // seal for this task; a swapped or hand-written contract file is refused.
+  // Seal gate (Luna round 2): the contract file on disk must match the frozen
+  // seal for this task (verifyTaskSeal re-reads the disk files and compares
+  // against the seal digests). This refuses swapped or hand-written contract
+  // files. Precision note (Luna round 3): the check binds DISK bytes to the
+  // seal, not the loader's parsed object — a concurrent swap between this
+  // check and retry use affects only worker-context copies; the enforced
+  // scope object is this validated parse, and downstream seal/digest gates
+  // trip on disk divergence. A local writer able to rewrite the checkout at
+  // will remains out of scope per the repo threat model.
   try {
     const seal = await verifyTaskSeal(rootReal, candidate, true);
     if (seal.status !== "PASS") return undefined;

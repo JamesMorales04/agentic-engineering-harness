@@ -327,6 +327,48 @@ describe("D12 non-owner amendment reuse for later blockers", () => {
     expect(await loadAmendedContractForReuse(root, config, stored!)).toBeUndefined();
   });
 
+  it("(k) custom contractsDir with ./ prefix reuses normally (canonical-path normalization, Luna D12 round 3)", async () => {
+    const root = await createRepo();
+    const operationId = "D12-CUSTOMDIR-1";
+    const task = contract("D12-CUSTOMDIR-1");
+    // Accepted config spelling with a ./ prefix: writers (path.join +
+    // path.relative) store the normalized "custom-contracts/…" form, so the
+    // loader must compare normalized identities, not raw strings.
+    const config: HarnessProjectConfig = {
+      ...projectConfig(),
+      sdd: { contractsDir: "./custom-contracts" },
+    };
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+
+    const covered = "tests/d12-customdir-new.spec.js";
+    await amendViaApproval(root, operationId, task, config, covered, "validation-repair:d12-first");
+    const [stored] = await listRepairScopeAmendments(root, config, task.task.id);
+    expect(stored!.contractPath).toBe(`custom-contracts/${task.task.id}.yaml`);
+
+    const secondBlocker = createRepairScopeBlockerReceipt({
+      operationId,
+      taskId: task.task.id,
+      workUnitId: "validation-repair:d12-second",
+      filesNeededOutsideScope: [{ path: covered, reason: "later repairer needs the same covered new-test file" }],
+    });
+    await writeRepairScopeBlockerReceipt(root, config, secondBlocker);
+    const second = await resolveRepairScopeBlockerViaProductChoice({
+      root, controlRoot: root, operationId, config, contract: task, blocker: secondBlocker,
+      timeoutMs: 2000, pollMs: 25,
+    });
+    expect(second.status).toBe("AMENDED");
+    if (second.status !== "AMENDED") throw new Error("expected AMENDED-reuse");
+    expect(second.reused).toBe(true);
+    expect(second.contract.scope?.allowed).toContain(covered);
+    expect((await loadOperation(root, operationId)).phase).not.toBe("HUMAN_REQUIRED");
+  });
+
   it("(d) amendments for another task or operation are ignored", async () => {    const root = await createRepo();
     const operationId = "D12-SCOPED-1";
     const taskA = contract("D12-SCOPED-A");
