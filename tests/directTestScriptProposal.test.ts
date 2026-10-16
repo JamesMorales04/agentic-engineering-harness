@@ -144,6 +144,25 @@ describe("D24 DIRECT test-script authoring proposal", () => {
     expect(contract.verification).toBeUndefined();
   });
 
+  it("suppresses the proposal entirely when any input requirement declares explicit validators", async () => {
+    const root = await tmpRoot({ scripts: { test: "vitest run" } });
+    const { contract } = await createRoutedContract(root, bareConfig, "TASK-D24-D2", {
+      title: "Mixed validation", request: "add an export", scope: ["src/greeting.mjs"],
+      requirements: [
+        { id: "R-1", description: "explicitly validated", validators: ["custom-check"] },
+        { id: "R-2", description: "left bare" },
+      ]
+    });
+    // A partially explicit intent signals manual validation design: auto-attaching
+    // `npm test` to the remaining bare requirement would surprise, so the proposal
+    // stays off and the bare requirement keeps the fail-closed empty set.
+    expect(contract.requirements).toEqual([
+      expect.objectContaining({ id: "R-1", validators: ["custom-check"] }),
+      expect.objectContaining({ id: "R-2", validators: [] }),
+    ]);
+    expect(contract.verification).toBeUndefined();
+  });
+
   it("configured project validators win over the test-script proposal", async () => {
     const root = await tmpRoot({ scripts: { test: "vitest run" } });
     const config = {

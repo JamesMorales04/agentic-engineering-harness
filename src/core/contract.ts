@@ -49,9 +49,13 @@ export async function createRoutedContract(root: string, config: HarnessProjectC
   // share (unit-test kinds already resolve to `npm test` via scriptCandidates, but the oracle
   // demands DECLARED validators, so resolution alone cannot satisfy coverage). The proposal is
   // sealed in the frozen contract and stays Owner-amendable via reseal; explicit requirement
-  // validators and configured project validators always win. Non-DIRECT routes are untouched
+  // validators and configured project validators always win. If ANY input requirement carries
+  // explicit validators, the proposal is suppressed entirely: a partially explicit intent
+  // signals manual validation design, and auto-attaching `npm test` to the remaining bare
+  // requirements would surprise (unwanted suite runs). Non-DIRECT routes are untouched
   // (DELEGATED keeps its existing semantics; FORMAL_SDD compiles through resolveRequirementValidation).
-  const directTestProposal = decision.route === "DIRECT" && configuredValidators.length === 0
+  const hasExplicitInputValidators = (input.requirements ?? []).some((requirement) => (requirement.validators?.length ?? 0) > 0);
+  const directTestProposal = decision.route === "DIRECT" && configuredValidators.length === 0 && !hasExplicitInputValidators
     ? await directProjectTestProposalV1(root)
     : undefined;
   const requirements = (input.requirements ?? acceptance.map((description, index) => ({ id: `AC-${index + 1}`, description, validators: [] })))
