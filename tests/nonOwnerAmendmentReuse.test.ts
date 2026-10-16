@@ -10,9 +10,11 @@ import {
   applyReusableNonOwnerAmendmentForBlocker,
   createRepairScopeBlockerReceipt,
   listRepairScopeAmendments,
+  loadAmendedContractForReuse,
   resolveRepairScopeBlockerViaProductChoice,
   writeRepairScopeBlockerReceipt,
 } from "../src/candidates/repairScope.js";
+import { sha256Canonical } from "../src/core/digest.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
 import { buildRepairPrompt } from "../src/workers/prompt.js";
 import {
@@ -237,8 +239,95 @@ describe("D12 non-owner amendment reuse for later blockers", () => {
     expect((await loadOperation(root, operationId)).phase).not.toBe("HUMAN_REQUIRED");
   });
 
-  it("(d) amendments for another task or operation are ignored", async () => {
+  it("(h) forged amendment citing an alternate same-task contract is refused even with a recomputed digest (Luna D12 round 2)", async () => {
     const root = await createRepo();
+    const operationId = "D12-ALT-CONTRACT-1";
+    const task = contract("D12-ALT-CONTRACT-1");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+
+    const covered = "tests/d12-alt-new.spec.js";
+    await amendViaApproval(root, operationId, task, config, covered, "validation-repair:d12-first");
+    const [stored] = await listRepairScopeAmendments(root, config, task.task.id);
+    // Forge: same task id, broader allowlist, digest recomputed so the
+    // artifact is self-consistent — only the canonical-path gate stands.
+    const altRelative = ".harness/alt-contracts/D12-ALT-CONTRACT-1.yaml";
+    const altBody = { ...task, scope: { ...(task.scope ?? {}), allowed: ["**"] } };
+    await fs.mkdir(path.join(root, ".harness", "alt-contracts"), { recursive: true });
+    const { default: YAML } = await import("yaml");
+    await fs.writeFile(path.join(root, altRelative), YAML.stringify(altBody));
+    const { amendmentDigest: _dropped, ...unsigned } = stored!;
+    const forged = { ...unsigned, contractPath: altRelative };
+    const forgedRecord = { ...forged, amendmentDigest: sha256Canonical(forged) };
+    await fs.writeFile(path.join(root, stored!.amendmentPath), `${JSON.stringify(forgedRecord, null, 2)}\n`);
+
+    expect(await loadAmendedContractForReuse(root, config, forgedRecord as never)).toBeUndefined();
+  });
+
+  it("(i) symlink escape in the cited contract path is refused (Luna D12 round 2)", async () => {
+    const root = await createRepo();
+    const operationId = "D12-SYMLINK-1";
+    const task = contract("D12-SYMLINK-1");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+
+    const covered = "tests/d12-symlink-new.spec.js";
+    await amendViaApproval(root, operationId, task, config, covered, "validation-repair:d12-first");
+    const [stored] = await listRepairScopeAmendments(root, config, task.task.id);
+    // Swap the canonical contract file for a symlink pointing outside root.
+    // The cited path string stays canonical, so only realpath containment
+    // can refuse it.
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-d12-outside-"));
+    roots.push(outside);
+    const { default: YAML } = await import("yaml");
+    await fs.writeFile(path.join(outside, "evil.yaml"), YAML.stringify({ ...task, scope: { allowed: ["**"] } }));
+    const canonicalFile = path.join(root, stored!.contractPath);
+    await fs.rm(canonicalFile, { force: true });
+    await fs.symlink(path.join(outside, "evil.yaml"), canonicalFile);
+
+    expect(await loadAmendedContractForReuse(root, config, stored!)).toBeUndefined();
+  });
+
+  it("(j) post-seal contract tampering is refused by the seal gate (Luna D12 round 2)", async () => {
+    const root = await createRepo();
+    const operationId = "D12-SEAL-1";
+    const task = contract("D12-SEAL-1");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+
+    const covered = "tests/d12-seal-new.spec.js";
+    await amendViaApproval(root, operationId, task, config, covered, "validation-repair:d12-first");
+    const [stored] = await listRepairScopeAmendments(root, config, task.task.id);
+    // Tamper the persisted contract file after sealing (widen allowlist):
+    // bytes no longer match the frozen seal, so the loader must refuse even
+    // though task id + allowlist membership would otherwise pass.
+    const { default: YAML } = await import("yaml");
+    const contractFile = path.join(root, stored!.contractPath);
+    const onDisk = YAML.parse(await fs.readFile(contractFile, "utf8")) as TaskContract;
+    await fs.writeFile(contractFile, YAML.stringify({ ...onDisk, scope: { ...(onDisk.scope ?? {}), allowed: ["**"] } }));
+
+    expect(await loadAmendedContractForReuse(root, config, stored!)).toBeUndefined();
+  });
+
+  it("(d) amendments for another task or operation are ignored", async () => {    const root = await createRepo();
     const operationId = "D12-SCOPED-1";
     const taskA = contract("D12-SCOPED-A");
     const taskB = contract("D12-SCOPED-B");

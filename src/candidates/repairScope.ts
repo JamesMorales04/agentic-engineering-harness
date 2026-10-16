@@ -6,7 +6,7 @@ import { z } from "zod";
 import { minimatch } from "minimatch";
 import { sha256Canonical, canonicalSerialize } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
-import { sealTask } from "../core/seal.js";
+import { sealTask, verifyTaskSeal } from "../core/seal.js";
 import { extractMarkedJson, StructuredOutputError } from "../agents/structuredOutput.js";
 import { validateAgentOutput } from "../agents/outputContracts.js";
 import type { HarnessProjectConfig, TaskContract, ValidationCheck, WorkerSession } from "../core/types.js";
@@ -1664,7 +1664,7 @@ async function findReusableNonOwnerAmendmentForBlocker(input: {
 
 /**
  * DETERMINISTIC loader for the persisted amended TaskContract cited by a
- * durable scope amendment (D12 P1 correctness fix).
+ * durable scope amendment (D12 P1 correctness fix, Luna round-2 hardening).
  *
  * A resolve-level or call-site reuse MUST return the LOADED amended
  * contract, never the caller's (stale) contract: the retry assembly
@@ -1674,19 +1674,30 @@ async function findReusableNonOwnerAmendmentForBlocker(input: {
  * the amendment. Returning the stale contract turns every reuse into a
  * terminal NOT_SEALED throw instead of a cap-stable retry.
  *
- * Reads `amendment.contractPath` (repository-relative) under `root`,
- * YAML-parses it, and verifies `contract.task.id === amendment.taskId` plus
- * every `exemptedPath` ∈ `scope.allowed` (exact normalized identity — the
- * apply path persists exempted paths literally into the allowlist, so exact
- * membership must hold; glob-cover alone is refused). Unreadable,
- * unparsable, or mismatching contracts yield undefined and the caller falls
- * through to BLOCKED fail-closed (no retry on a stale or forged contract).
+ * Trust gates (all must pass; any failure yields undefined and the caller
+ * falls through to BLOCKED fail-closed):
+ * 1. amendment itself digest-valid (assertRepairScopeAmendment);
+ * 2. cited contractPath EXACTLY equals the canonical per-task contract path
+ *    derived from config (a forged artifact citing an alternate same-task
+ *    contract with a broader allowlist is refused — Luna round 2);
+ * 3. realpath containment (path.resolve cannot see symlink escapes; the
+ *    resolved file must live under the real root);
+ * 4. task-id match + every exemptedPath ∈ scope.allowed (exact normalized);
+ * 5. seal verification (verifyTaskSeal PASS): the loaded bytes must match
+ *    the frozen seal, so a concurrently swapped or hand-written contract
+ *    file is refused. Residual TOCTOU (swap between seal check and retry
+ *    use) affects only worker-context copies; the enforced object is the
+ *    validated parse, and any disk divergence trips downstream seal/digest
+ *    gates. Local-filesystem forgery beyond this remains out of scope per
+ *    the repo threat model (a shell that can rewrite the checkout can do
+ *    worse), but every cheap deterministic check is applied.
  *
  * Mechanism: DETERMINISTIC (durable read + shape gates, no model judgment,
  * no suspension/mint/consume).
  */
 export async function loadAmendedContractForReuse(
   root: string,
+  config: HarnessProjectConfig,
   amendment: RepairScopeAmendmentV1,
 ): Promise<TaskContract | undefined> {
   try {
@@ -1694,17 +1705,28 @@ export async function loadAmendedContractForReuse(
   } catch {
     return undefined;
   }
-  const relative = typeof amendment.contractPath === "string" ? amendment.contractPath.trim() : "";
+  const relative = typeof amendment.contractPath === "string" ? amendment.contractPath.trim().replaceAll("\\", "/") : "";
   if (!relative || !isSafeRepairScopePath(relative)) return undefined;
-  // Fail-closed containment: the cited path must resolve inside root (isSafe
-  // already rejects `..`/absolute/drive forms; the resolve check below is
-  // defense in depth against symlink-adjacent construction).
-  const resolvedRoot = path.resolve(root);
-  const resolvedAbsolute = path.resolve(path.join(resolvedRoot, relative));
-  if (resolvedAbsolute !== resolvedRoot && !resolvedAbsolute.startsWith(`${resolvedRoot}${path.sep}`)) return undefined;
+  // Canonical-path gate (Luna round 2): the cited path must be EXACTLY the
+  // deterministic per-task contract location — never an alternate file that
+  // happens to share the task id with a broader allowlist.
+  const contractsDir = (config.sdd?.contractsDir ?? ".harness/contracts").replaceAll("\\", "/").replace(/\/+$/, "");
+  const canonical = `${contractsDir}/${amendment.taskId}.yaml`;
+  if (relative.replace(/\/+$/, "") !== canonical) return undefined;
+  // Realpath containment (Luna round 2): path.resolve is symlink-blind, so
+  // resolve both sides through the filesystem before comparing.
+  let rootReal: string;
+  let fileReal: string;
+  try {
+    rootReal = await fs.realpath(path.resolve(root));
+    fileReal = await fs.realpath(path.resolve(path.join(rootReal, relative)));
+  } catch {
+    return undefined;
+  }
+  if (fileReal !== rootReal && !fileReal.startsWith(`${rootReal}${path.sep}`)) return undefined;
   let raw: string;
   try {
-    raw = await fs.readFile(resolvedAbsolute, "utf8");
+    raw = await fs.readFile(fileReal, "utf8");
   } catch {
     return undefined;
   }
@@ -1727,6 +1749,14 @@ export async function loadAmendedContractForReuse(
   for (const exempted of amendment.exemptedPaths) {
     const normalized = normalizeRepairScopePath(String(exempted ?? "").trim());
     if (!normalized || !normalizedAllowed.has(normalized)) return undefined;
+  }
+  // Seal gate (Luna round 2): the bytes just read must match the frozen
+  // seal for this task; a swapped or hand-written contract file is refused.
+  try {
+    const seal = await verifyTaskSeal(rootReal, candidate, true);
+    if (seal.status !== "PASS") return undefined;
+  } catch {
+    return undefined;
   }
   return candidate;
 }
@@ -1788,7 +1818,7 @@ export async function applyReusableNonOwnerAmendmentForBlocker(input: {
       failures: [`NON_OWNER_REUSE_NO_COVERING_AMENDMENT: no durable non-owner amendment covers blocker ${blocker.digest.slice(0, 12)}… for task '${blocker.taskId}'; the BLOCKED outcome stands.`],
     };
   }
-  const loaded = await loadAmendedContractForReuse(root, reusable.amendment);
+  const loaded = await loadAmendedContractForReuse(root, config, reusable.amendment);
   if (!loaded) {
     return {
       status: "NO_COVERING_GRANT",
@@ -2567,7 +2597,7 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
     // below, which is BLOCKED fail-closed here: the durable amendment still
     // counts toward the per-task cap, so no second suspension opens and no
     // retry runs on the stale contract.
-    const loaded = await loadAmendedContractForReuse(root, reusableNonOwner.amendment);
+    const loaded = await loadAmendedContractForReuse(root, config, reusableNonOwner.amendment);
     if (loaded) {
       return { status: "AMENDED", contract: loaded, amendment: reusableNonOwner.amendment, reused: true };
     }
