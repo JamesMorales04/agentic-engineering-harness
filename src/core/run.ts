@@ -1437,10 +1437,9 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       }
       const identity = currentObjectiveIdentityV1(operation);
       const requiredWorkUnitIds = waveResult?.plan?.workUnits.map((unit) => unit.id) ?? [`direct:${effectiveContract.task.id}`];
-      const waveAccountedWorkUnitIds = waveResult?.plan
-        ? waveResult.waves.flatMap((wave) => wave.results.filter((result) => result.status === "PASS").map((result) => result.task.id))
-        : worker.exitCode === 0 ? [`direct:${effectiveContract.task.id}`] : [];
-      const { accountedWorkUnitIds, repairAccountedWorkUnitIds } = resolveAccountedWorkUnitIds(requiredWorkUnitIds, waveAccountedWorkUnitIds, attempts);
+      const { accountedWorkUnitIds, sessionAccountedWorkUnitIds } = waveResult?.plan
+        ? resolveAccountedWorkUnitIds(requiredWorkUnitIds, waveResult.waves.flatMap((wave) => wave.results), report.status === "PASS")
+        : { accountedWorkUnitIds: worker.exitCode === 0 ? [`direct:${effectiveContract.task.id}`] : [], sessionAccountedWorkUnitIds: [] as string[] };
       const validationRequirements = evidenceBundle.requirements.filter((requirement) => requirement.validationRequirementIds.length > 0);
       const reviewRequirements = evidenceBundle.requirements.filter((requirement) => requirement.reviewDimensions.length > 0);
       const evidenceForGate = (requirements: typeof validationRequirements, kind: "VALIDATION" | "REVIEW") => ({
@@ -1477,7 +1476,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         category: "objective-completion",
         status: objectiveCompletionDecision.complete ? "PASS" : "FAIL",
         message: objectiveCompletionDecision.complete ? "Complete objective evidence set satisfies the deterministic Definition of Done." : `Objective Definition of Done is blocked: ${objectiveCompletionDecision.blockers.map((item) => item.code).join(", ")}.`,
-        details: { identity, blockers: objectiveCompletionDecision.blockers, requiredWorkUnitIds, accountedWorkUnitIds, repairAccountedWorkUnitIds }
+        details: { identity, blockers: objectiveCompletionDecision.blockers, requiredWorkUnitIds, accountedWorkUnitIds, sessionAccountedWorkUnitIds }
       }]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2178,29 +2177,37 @@ function bindingForSelection(selection: AgentExecutionSelection) {
 
 /**
  * Work-unit accounting for the objective Definition of Done (MECHANISM:
- * DETERMINISTIC). Wave-time verdicts freeze at dispatch, but a repair
- * loop that converges to green re-verifies the whole candidate: units
- * completed via repair would otherwise stay unaccounted forever,
- * blocking DoD on a fully-green no-op whose wave barrier tripped
- * transiently (observed on a green no-op). Repair turns re-verify every
- * planned unit against the final candidate, so a repair-converged run
- * accounts all planned units as repair-accounted (returned separately
- * for audit). Substantive completeness still rests on the
- * validation/review/acceptance gates; this only stops a stale wave
- * verdict from vetoing a green run. With no wave pass and no repair
- * turn, required units stay unaccounted and DoD blocks loudly.
- * Exported for regression coverage.
+ * DETERMINISTIC). A unit is accounted when its work is evidenced complete:
+ * a wave PASS verdict, or any successful (exit 0) worker session recorded
+ * for it once the final report is PASS. The second arm matters because
+ * wave-time verdicts freeze at dispatch including barrier (validator)
+ * outcomes: a transient barrier flake fails the wave even though the
+ * unit's worker completed successfully, and a later green revalidation
+ * (e.g. via the repair loop) would otherwise leave the unit unaccounted
+ * forever — observed blocking DoD on a fully-green no-op. Worker
+ * sessions are unit-mapped through wave results; repair-loop sessions
+ * are candidate-scoped and deliberately do NOT account units (a repair
+ * turn cannot attest unit-level completion, so dropped or crashed units
+ * with no successful worker session still block loudly even when the
+ * final report is green). Substantive completeness additionally rests on
+ * the validation/review/acceptance gates. Exported for regression
+ * coverage.
  */
 export function resolveAccountedWorkUnitIds(
   requiredWorkUnitIds: readonly string[],
-  waveAccountedWorkUnitIds: readonly string[],
-  repairAttempts: number
-): { accountedWorkUnitIds: string[]; repairAccountedWorkUnitIds: string[] } {
-  const repairAccountedWorkUnitIds = repairAttempts > 0 ? [...new Set(requiredWorkUnitIds)] : [];
-  return {
-    accountedWorkUnitIds: [...new Set([...waveAccountedWorkUnitIds, ...repairAccountedWorkUnitIds])],
-    repairAccountedWorkUnitIds
-  };
+  waveResults: ReadonlyArray<{ task: { id: string }; status: string; session?: { exitCode: number } }>,
+  finalReportPass: boolean
+): { accountedWorkUnitIds: string[]; sessionAccountedWorkUnitIds: string[] } {
+  const accounted = new Set<string>();
+  const sessionAccounted = new Set<string>();
+  for (const result of waveResults) {
+    if (result.status === "PASS") accounted.add(result.task.id);
+    else if (finalReportPass && result.session?.exitCode === 0) {
+      accounted.add(result.task.id);
+      sessionAccounted.add(result.task.id);
+    }
+  }
+  return { accountedWorkUnitIds: [...accounted], sessionAccountedWorkUnitIds: [...sessionAccounted] };
 }
 
 /**
