@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { sha256Canonical } from "../core/digest.js";
 import type { HarnessProjectConfig, ValidationCheck, ValidationCommand } from "../core/types.js";
 import { pinnedWorkspaceBinPaths, runShell, type ProcessResult } from "../utils/process.js";
 import {
@@ -71,10 +72,16 @@ export async function runValidationCommand(root: string, command: ValidationComm
   // The evidence dir is git-ignored harness state, so raw files never enter
   // candidate digests or ChangeSets. Best-effort write: persistence failure
   // keeps the previous bounded-details behavior (attribution may then miss).
+  // The filename carries a digest of the raw id alongside the sanitized id:
+  // sanitization alone is not injective (`check/a` and `check-a` would share
+  // one path and one command could overwrite another's reporter output), so
+  // the digest suffix keeps distinct command ids on distinct artifact paths.
   // MECHANISM: DETERMINISTIC (fixed path derivation + verbatim bytes).
   let rawArtifactRel: string | undefined;
   try {
-    const rawPath = path.resolve(root, options.config?.evidence?.outputDir ?? ".harness/evidence", `${command.id.replace(/[^A-Za-z0-9._-]/g, "-")}.raw`);
+    const rawId = command.id.replace(/[^A-Za-z0-9._-]/g, "-");
+    const rawDigest = sha256Canonical(command.id).slice(0, 16);
+    const rawPath = path.resolve(root, options.config?.evidence?.outputDir ?? ".harness/evidence", `raw/${rawId}-${rawDigest}.raw`);
     await fs.mkdir(path.dirname(rawPath), { recursive: true });
     await fs.writeFile(rawPath, `${result.stdout}${result.stderr ? `\n--- stderr ---\n${result.stderr}` : ""}`, "utf8");
     rawArtifactRel = path.relative(root, rawPath).replaceAll("\\", "/");
