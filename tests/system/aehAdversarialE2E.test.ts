@@ -68,7 +68,7 @@ async function acceptedTerminalEvidence(root: string, id: string): Promise<Recor
     evidence: [{ version: 1 as const, id: `validation:validation:fixture:${assertionId}`, assertionId, kind: "VALIDATION" as const, status: "PASS" as const, identity, strength: "STANDARD" as const, provenance: { sourceId: "adversarial-fixture", digest: sha256Canonical({ id, status: "PASS" }) } }]
   };
   const bundle: EvidenceBundleV1 = { ...bundleBody, digest: sha256Canonical(bundleBody) };
-  const acceptanceOracle = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "STANDARD", minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] });
+  const acceptanceOracle = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "STANDARD", minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] }, undefined, []);
   if (acceptanceOracle.disposition !== "ACCEPTED") throw new Error(`Adversarial success fixture did not satisfy AcceptanceOracle: ${acceptanceOracle.blockers.map((item) => item.code).join(",")}`);
   const acceptanceOracleArtifact = await persistAcceptanceOracleArtifactV1(resolveOperationStateRoot(root), bundle, acceptanceOracle);
   const objectiveCompletion = {

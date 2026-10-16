@@ -495,7 +495,7 @@ async function persistFixtureAcceptanceOracle(root: string, operation: Awaited<R
   const requirement = { version: 1 as const, id: "verification:ASSERT-DELIVERY", assertionId: "ASSERT-DELIVERY", statement: "delivery candidate is ready", minimumAssurance: "STANDARD" as const, validationRequirementIds: ["REQ-DELIVERY"], reviewDimensions: ["architecture"], leadRequired: false };
   const bundleBody = { version: 1 as const, identity, candidate: operation.candidateRevision!, impactDigest: sha256Canonical("impact"), compilationDigest: sha256Canonical("compilation"), requirements: [requirement], evidence };
   const bundle: EvidenceBundleV1 = { ...bundleBody, digest: sha256Canonical(bundleBody) };
-  const disposition = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "ELEVATED", minimumIndependentReviewers: 1, providerDiversity: false, requiredDimensions: ["architecture"] });
+  const disposition = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "ELEVATED", minimumIndependentReviewers: 1, providerDiversity: false, requiredDimensions: ["architecture"] }, undefined, ["README.md"]);
   expect(disposition.disposition).toBe("ACCEPTED");
   await persistAcceptanceOracleArtifactV1(resolveOperationStateRoot(root), bundle, disposition);
 }
