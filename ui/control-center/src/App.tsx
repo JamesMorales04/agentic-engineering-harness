@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ControlCenterApi, ControlCenterApiError, type Candidate, type DecisionRequest, type DelegationDecision, type DelegationStatus, type Knowledge, type Operation, type Overview, type Participant, type SessionInfo } from "./api";
+import { ControlCenterApi, ControlCenterApiError, describeDelegationExpiry, type Candidate, type DecisionRequest, type DelegationDecision, type DelegationStatus, type Knowledge, type Operation, type Overview, type Participant, type SessionInfo } from "./api";
 
 const api = new ControlCenterApi();
 type Mode = "home" | "project";
@@ -183,6 +183,14 @@ function ActingPrincipalBanner({ session }: { session: SessionInfo | undefined }
   </div>;
 }
 
+function DelegationRow({ item, reviewing, onReview, onRevoke, revokePending, isHuman }: { item: DelegationStatus; reviewing: boolean; onReview: () => void; onRevoke: () => void; revokePending: boolean; isHuman: boolean }) {
+  const expiry = describeDelegationExpiry(item);
+  return <div className="row">
+    <span>AI delegate <code>{item.delegatePrincipalId}</code><small>grantor {item.grantorOwnerId} · {item.authorityProfile} · capabilities: {item.capabilities.join(", ")} · expires {new Date(item.expiresAt).toLocaleString()} (<span className={`delegation-expiry delegation-expiry-${expiry.tone}`}>{expiry.text}</span>) · {item.revoked ? `revoked ${item.revokedAt ?? ""}` : item.validNow ? "valid now" : "not valid"}</small></span>
+    <span className="row-actions"><button type="button" className="secondary" onClick={onReview}>{reviewing ? "Hide decisions" : "Review decisions"}</button>{isHuman && !item.revoked && <button type="button" className="secondary" disabled={revokePending} onClick={onRevoke}>Revoke now</button>}</span>
+  </div>;
+}
+
 function DelegationsCard({ csrfToken, session }: { csrfToken: string; session: SessionInfo | undefined }) {
   const queryClient = useQueryClient();
   const [delegatePrincipalId, setDelegatePrincipalId] = useState("");
@@ -216,10 +224,7 @@ function DelegationsCard({ csrfToken, session }: { csrfToken: string; session: S
     {grant.error && <p className="error" role="alert">{grant.error instanceof Error ? grant.error.message : "Delegation grant failed."}</p>}
     {!items.length
       ? <p className="muted">{list.isFetching ? "Loading delegations…" : "No delegations. Owner authority is human-only."}</p>
-      : <div className="stack">{items.map((item) => <div className="row" key={item.delegationId}>
-        <span>AI delegate <code>{item.delegatePrincipalId}</code><small>grantor {item.grantorOwnerId} · {item.authorityProfile} · capabilities: {item.capabilities.join(", ")} · expires {new Date(item.expiresAt).toLocaleString()} · {item.revoked ? `revoked ${item.revokedAt ?? ""}` : item.validNow ? "valid now" : "not valid"}</small></span>
-        <span className="row-actions"><button type="button" className="secondary" onClick={() => setReviewing(reviewing === item.delegationId ? undefined : item.delegationId)}>{reviewing === item.delegationId ? "Hide decisions" : "Review decisions"}</button>{isHuman && !item.revoked && <button type="button" className="secondary" disabled={revoke.isPending} onClick={() => revoke.mutate(item.delegationId)}>Revoke now</button>}</span>
-      </div>)}</div>}
+      : <div className="stack">{items.map((item) => <DelegationRow key={item.delegationId} item={item} reviewing={reviewing === item.delegationId} onReview={() => setReviewing(reviewing === item.delegationId ? undefined : item.delegationId)} onRevoke={() => revoke.mutate(item.delegationId)} revokePending={revoke.isPending} isHuman={isHuman} />)}</div>}
     {revoke.error && <p className="error" role="alert">{revoke.error instanceof Error ? revoke.error.message : "Revocation failed."}</p>}
     {reviewing && <div className="stack"><span className="eyebrow">Decisions by {short(reviewing)}</span>
       {decisions.isFetching ? <p className="muted">Loading decisions…</p> : (decisions.data ?? []).length ? (decisions.data as DelegationDecision[]).map((decision) => <div className="row" key={decision.decisionId}><span><code>{short(decision.decisionId)}</code> {decision.kind} · {short(decision.operationId)}<small>{decision.actorId} · {new Date(decision.createdAt).toLocaleString()} · {decision.reason}</small></span></div>) : <p className="muted">No delegated decisions recorded for this grant.</p>}
