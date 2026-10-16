@@ -101,7 +101,12 @@ function portfolioEntryFromOperation(operation: OperationRecordV2): OperationPor
     operationId: operation.id, kind: operation.kind, status: operation.status, phase: operation.phase,
     workspaceId: operation.workspaceId, supervisorAgentId: supervisor?.agentId, supervisorGeneration: supervisor?.generation,
     revision: operation.revision,
-    acknowledgedRevision: operation.lead?.acknowledgedRevision ?? operation.notification.lastLeadWakeRevision,
+    // Luna D17: portfolio acknowledgement is lead authority evidence, so it
+    // tracks ONLY operation.lead (0 = no bound lead ack). A completion
+    // notification wake recorded in notification.lastLeadWakeRevision is
+    // delivery state, never an acknowledgement — presenting it as ack= would
+    // let an unverified notify target masquerade as lead acceptance.
+    acknowledgedRevision: operation.lead?.acknowledgedRevision ?? 0,
     boundLeadAgentId: operation.lead?.agentId,
     originKind: operation.origin?.kind,
     parentOperationId: operation.origin?.parentOperationId,
