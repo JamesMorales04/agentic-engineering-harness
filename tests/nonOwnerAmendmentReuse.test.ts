@@ -3,14 +3,18 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { compileResolvedOperationPolicy } from "../src/architecture/executionIdentity.js";
+import { compileExecutionCatalog } from "../src/architecture/executionCatalog.js";
+import { executeRepairerCandidateMutation } from "../src/candidates/repair.js";
 import {
   REPAIR_SCOPE_APPROVE_CHOICE_ID,
+  applyReusableNonOwnerAmendmentForBlocker,
   createRepairScopeBlockerReceipt,
   listRepairScopeAmendments,
   resolveRepairScopeBlockerViaProductChoice,
   writeRepairScopeBlockerReceipt,
 } from "../src/candidates/repairScope.js";
 import type { HarnessProjectConfig, TaskContract } from "../src/core/types.js";
+import { buildRepairPrompt } from "../src/workers/prompt.js";
 import {
   bindResolvedOperationPolicy,
   currentControllerEpoch,
@@ -98,15 +102,64 @@ describe("D12 non-owner amendment reuse for later blockers", () => {
     });
     expect(second.status).toBe("AMENDED");
     if (second.status !== "AMENDED") throw new Error("expected AMENDED-reuse");
-    // Reuse shape: the EXISTING amendment, the UNCHANGED input contract
-    // (same reference — no rewrite), flagged as a reuse.
+    // Reuse shape (D12 P1): the EXISTING amendment, flagged as a reuse, with
+    // the LOADED persisted amended contract — never the caller's stale one.
     expect(second.amendment.amendmentDigest).toBe(first.amendment.amendmentDigest);
-    expect(second.contract).toBe(task);
     expect(second.reused).toBe(true);
     expect(second.ownerExemption).toBeUndefined();
+    expect(second.contract).not.toBe(task);
+    expect(second.contract.scope?.allowed).toContain(covered);
+    const { default: YAML } = await import("yaml");
+    const persisted = YAML.parse(
+      await fs.readFile(path.join(root, ".harness", "contracts", `${task.task.id}.yaml`), "utf8"),
+    ) as TaskContract;
+    expect(second.contract).toEqual(persisted);
     // Cap-stable: no second suspension opened, no new artifact written.
     expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(1);
     expect((await loadOperation(root, operationId)).phase).not.toBe("HUMAN_REQUIRED");
+
+    // P1 retry proof (mirrors the D4/protection-tier retry mechanics): the
+    // retry assembly requires every exempted path in the RETRY contract's
+    // allowlist (repair.ts REPAIR_SCOPE_AMENDMENT_NOT_SEALED), so only the
+    // loaded amended contract backs a successful retry. Remove the
+    // race-created file first so the workspace digest is restored (the
+    // proven protection-tier pattern), then retry through the amendment path.
+    await fs.rm(path.join(root, covered), { force: true });
+    const { selection, catalog } = repairerBinding();
+    // Negative control: the stale caller contract (pre-amendment allowlist)
+    // cannot back the same retry — the assembly fails closed NOT_SEALED.
+    // This is the exact pre-fix failure mode (reuse returned the caller's
+    // contract): with the stale contract the retry dies here.
+    await expect(
+      executeRepairerCandidateMutation({
+        root, stateRoot: root, operationId, taskId: task.task.id,
+        workUnitId: "validation-repair:d12-retry-stale", phase: "validation-repair",
+        config, contract: task, selection, executionCatalog: catalog,
+        allowedScope: task.scope?.allowed ?? ["src/**"], forbiddenScope: [],
+        scopeAmendment: second.amendment,
+        prompt: buildRepairPrompt(packet(task.task.id)),
+        execute: async (isolatedRoot, participantId) => {
+          await fs.mkdir(path.dirname(path.join(isolatedRoot, covered)), { recursive: true });
+          await fs.writeFile(path.join(isolatedRoot, covered), "it('covers range', () => {});\n// d12 stale control\n");
+          return { provider: "test", logicalAgent: "repairer", participantId, exitCode: 0, stdout: "", stderr: "" };
+        },
+      }),
+    ).rejects.toThrow(/NOT_SEALED/);
+    const retry = await executeRepairerCandidateMutation({
+      root, stateRoot: root, operationId, taskId: task.task.id,
+      workUnitId: "validation-repair:d12-retry-proof", phase: "validation-repair",
+      config, contract: second.contract, selection, executionCatalog: catalog,
+      allowedScope: second.contract.scope?.allowed ?? ["src/**"], forbiddenScope: [],
+      scopeAmendment: second.amendment,
+      prompt: buildRepairPrompt(packet(task.task.id)),
+      execute: async (isolatedRoot, participantId) => {
+        await fs.mkdir(path.dirname(path.join(isolatedRoot, covered)), { recursive: true });
+        await fs.writeFile(path.join(isolatedRoot, covered), "it('covers range', () => {});\n// d12 amended retry\n");
+        return { provider: "test", logicalAgent: "repairer", participantId, exitCode: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(retry.candidate).toBeDefined();
+    expect(retry.changeSet?.changedFiles).toContain(covered);
   });
 
   it("(b) second blocker on a DISTINCT hard path stays BLOCKED (cap preserved, owner flow untouched)", async () => {
@@ -241,6 +294,137 @@ describe("D12 non-owner amendment reuse for later blockers", () => {
   });
 });
 
+/**
+ * D12 P2 call-site coverage note: run.ts (amended-retry second-blocker
+ * honor) and reviewLifecycle.ts (review-remediation honor) adopt the
+ * wrapper's AMENDED contract through the IDENTICAL code path as the existing
+ * owner-honored handling (same contract adoption, same retry-once
+ * mechanics, same event shapes with a non-owner source marker); any
+ * non-AMENDED wrapper outcome falls into the pre-existing BLOCKED branch
+ * untouched. The only new decision logic at those sites is this wrapper
+ * (find + load), covered directly here; the shared loader + real retry
+ * mechanics are proven end-to-end by test (a) above. A full run.ts
+ * repair-loop run is not unit-reachable (provider-backed turns), so
+ * wrapper-direct coverage is the precise unit boundary — call-site behavior
+ * follows by construction (mechanical adoption of the wrapper result).
+ */
+describe("D12 applyReusableNonOwnerAmendmentForBlocker (second-blocker call sites)", () => {
+  it("(e) covered second blocker returns AMENDED with the loaded amended contract", async () => {
+    const root = await createRepo();
+    const operationId = "D12-WRAPPER-REUSE-1";
+    const task = contract("D12-WRAPPER-REUSE-1");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+
+    const covered = "tests/d12-wrapper-reuse.spec.js";
+    const first = await amendViaApproval(root, operationId, task, config, covered, "validation-repair:d12-wrapper-first");
+    // The live shape again: the caller still holds the ORIGINAL contract.
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId,
+      taskId: task.task.id,
+      workUnitId: "validation-repair:d12-wrapper-second",
+      filesNeededOutsideScope: [{ path: covered, reason: "second blocker needs the same covered new-test file" }],
+    });
+    await writeRepairScopeBlockerReceipt(root, config, blocker);
+    const resolved = await applyReusableNonOwnerAmendmentForBlocker({
+      root, controlRoot: root, config, contract: task, blocker,
+    });
+    expect(resolved.status).toBe("AMENDED");
+    if (resolved.status !== "AMENDED") throw new Error("expected AMENDED reuse");
+    expect(resolved.amendment.amendmentDigest).toBe(first.amendment.amendmentDigest);
+    expect(resolved.reused).toBe(true);
+    expect(resolved.contract).not.toBe(task);
+    expect(resolved.contract.scope?.allowed).toContain(covered);
+    const { default: YAML } = await import("yaml");
+    const persisted = YAML.parse(
+      await fs.readFile(path.join(root, ".harness", "contracts", `${task.task.id}.yaml`), "utf8"),
+    ) as TaskContract;
+    expect(resolved.contract).toEqual(persisted);
+    // Consult-only: no suspension opened, no new artifact written.
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(1);
+    expect((await loadOperation(root, operationId)).phase).not.toBe("HUMAN_REQUIRED");
+  });
+
+  it("(f) distinct-path blocker returns NO_COVERING_GRANT (no suspension, no artifact)", async () => {
+    const root = await createRepo();
+    const operationId = "D12-WRAPPER-MISS-1";
+    const task = contract("D12-WRAPPER-MISS-1");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+
+    await amendViaApproval(root, operationId, task, config, "tests/d12-wrapper-miss.spec.js", "validation-repair:d12-wrapper-first");
+    const hardPath = `specs/changes/${task.task.id}/spec.md`;
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId,
+      taskId: task.task.id,
+      workUnitId: "validation-repair:d12-wrapper-distinct",
+      filesNeededOutsideScope: [{ path: hardPath, reason: "distinct hard path needs owner approval" }],
+    });
+    await writeRepairScopeBlockerReceipt(root, config, blocker);
+    const resolved = await applyReusableNonOwnerAmendmentForBlocker({
+      root, controlRoot: root, config, contract: task, blocker,
+    });
+    expect(resolved.status).toBe("NO_COVERING_GRANT");
+    if (resolved.status !== "NO_COVERING_GRANT") throw new Error("expected NO_COVERING_GRANT");
+    expect(resolved.failures.length).toBeGreaterThan(0);
+    expect(await listRepairScopeAmendments(root, config, task.task.id)).toHaveLength(1);
+    expect((await loadOperation(root, operationId)).phase).not.toBe("HUMAN_REQUIRED");
+  });
+
+  it("(g) unverifiable persisted contract (exempted path outside the persisted allowlist) returns NO_COVERING_GRANT", async () => {
+    const root = await createRepo();
+    const operationId = "D12-WRAPPER-DRIFT-1";
+    const task = contract("D12-WRAPPER-DRIFT-1");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    await saveOwnedOperation(root, {
+      version: 1, id: operationId, kind: "run", status: "RUNNING", phase: "repair",
+      root, payload: { taskId: task.task.id }, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    } as never);
+    bindEnv(operationId, root);
+    await bindPolicyForCurrentIdentity(root, operationId);
+
+    const covered = "tests/d12-wrapper-drift.spec.js";
+    await amendViaApproval(root, operationId, task, config, covered, "validation-repair:d12-wrapper-first");
+    // Drift the persisted contract: drop the exempted path from the
+    // allowlist (the loader's exact-membership gate must refuse it).
+    const { default: YAML } = await import("yaml");
+    const contractFile = path.join(root, ".harness", "contracts", `${task.task.id}.yaml`);
+    const persisted = YAML.parse(await fs.readFile(contractFile, "utf8")) as TaskContract;
+    expect(persisted.scope?.allowed).toContain(covered);
+    await fs.writeFile(
+      contractFile,
+      YAML.stringify({ ...persisted, scope: { ...(persisted.scope ?? {}), allowed: ["src/**"] } }),
+    );
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId,
+      taskId: task.task.id,
+      workUnitId: "validation-repair:d12-wrapper-second",
+      filesNeededOutsideScope: [{ path: covered, reason: "second blocker needs the covered new-test file" }],
+    });
+    await writeRepairScopeBlockerReceipt(root, config, blocker);
+    const resolved = await applyReusableNonOwnerAmendmentForBlocker({
+      root, controlRoot: root, config, contract: task, blocker,
+    });
+    expect(resolved.status).toBe("NO_COVERING_GRANT");
+    if (resolved.status !== "NO_COVERING_GRANT") throw new Error("expected NO_COVERING_GRANT");
+    expect(resolved.failures.join(" ")).toMatch(/UNVERIFIED/);
+    expect((await loadOperation(root, operationId)).phase).not.toBe("HUMAN_REQUIRED");
+  });
+});
+
 /** First-blocker approve flow: suspend/record/await → AMENDED (mirrors the repairScopeReplan budget test). */
 async function amendViaApproval(
   root: string,
@@ -352,6 +536,31 @@ function contract(taskId: string): TaskContract {
     routing: { route: "DELEGATED", assurance: "STANDARD" },
     verification: { commands: [] },
   };
+}
+
+function packet(taskId: string) {
+  return {
+    version: 1 as const,
+    taskId,
+    attempt: 1,
+    createdAt: new Date().toISOString(),
+    failures: [{ id: "d12.reuse", category: "scope", message: "needs covered path" }],
+  };
+}
+
+function repairerBinding() {
+  const selection = {
+    logicalAgent: "repairer", role: "Repairer", domains: [], runtimeName: "test", runtimeAdapter: "codex",
+    paseoProvider: "codex", modelAlias: "test", modelName: "fake", modelId: "fake", transport: "direct",
+    skills: [], mcps: [], permissions: { read: "allow", write: "allow", shell: "allow", network: "deny", delegate: "deny", review: "deny", gitWrite: "deny" },
+    outputContract: "repair-result", args: [], runtimeCapabilities: {},
+  } as never;
+  const catalog = compileExecutionCatalog({
+    runtimes: { test: { adapter: "codex" } },
+    models: { test: { runtime: "test", model: "fake" } },
+    roleBindings: { Repairer: { runtimeId: "test", modelAlias: "test", transport: "direct", outputContract: "repair-result", args: [] } },
+  });
+  return { selection, catalog };
 }
 
 function bindEnv(operationId: string, root: string): void {

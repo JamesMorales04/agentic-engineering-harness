@@ -1663,6 +1663,142 @@ async function findReusableNonOwnerAmendmentForBlocker(input: {
 }
 
 /**
+ * DETERMINISTIC loader for the persisted amended TaskContract cited by a
+ * durable scope amendment (D12 P1 correctness fix).
+ *
+ * A resolve-level or call-site reuse MUST return the LOADED amended
+ * contract, never the caller's (stale) contract: the retry assembly
+ * (repair.ts effectiveRepairScope) requires every exempted path to be a
+ * member of the RETRY contract's scope allowlist
+ * (`REPAIR_SCOPE_AMENDMENT_NOT_SEALED`), and the caller's contract predates
+ * the amendment. Returning the stale contract turns every reuse into a
+ * terminal NOT_SEALED throw instead of a cap-stable retry.
+ *
+ * Reads `amendment.contractPath` (repository-relative) under `root`,
+ * YAML-parses it, and verifies `contract.task.id === amendment.taskId` plus
+ * every `exemptedPath` ∈ `scope.allowed` (exact normalized identity — the
+ * apply path persists exempted paths literally into the allowlist, so exact
+ * membership must hold; glob-cover alone is refused). Unreadable,
+ * unparsable, or mismatching contracts yield undefined and the caller falls
+ * through to BLOCKED fail-closed (no retry on a stale or forged contract).
+ *
+ * Mechanism: DETERMINISTIC (durable read + shape gates, no model judgment,
+ * no suspension/mint/consume).
+ */
+export async function loadAmendedContractForReuse(
+  root: string,
+  amendment: RepairScopeAmendmentV1,
+): Promise<TaskContract | undefined> {
+  try {
+    assertRepairScopeAmendment(amendment);
+  } catch {
+    return undefined;
+  }
+  const relative = typeof amendment.contractPath === "string" ? amendment.contractPath.trim() : "";
+  if (!relative || !isSafeRepairScopePath(relative)) return undefined;
+  // Fail-closed containment: the cited path must resolve inside root (isSafe
+  // already rejects `..`/absolute/drive forms; the resolve check below is
+  // defense in depth against symlink-adjacent construction).
+  const resolvedRoot = path.resolve(root);
+  const resolvedAbsolute = path.resolve(path.join(resolvedRoot, relative));
+  if (resolvedAbsolute !== resolvedRoot && !resolvedAbsolute.startsWith(`${resolvedRoot}${path.sep}`)) return undefined;
+  let raw: string;
+  try {
+    raw = await fs.readFile(resolvedAbsolute, "utf8");
+  } catch {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const candidate = parsed as TaskContract;
+  if (!candidate.task || candidate.task.id !== amendment.taskId) return undefined;
+  const allowed = candidate.scope?.allowed;
+  if (!Array.isArray(allowed)) return undefined;
+  const normalizedAllowed = new Set(
+    allowed
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => normalizeRepairScopePath(entry.trim())),
+  );
+  for (const exempted of amendment.exemptedPaths) {
+    const normalized = normalizeRepairScopePath(String(exempted ?? "").trim());
+    if (!normalized || !normalizedAllowed.has(normalized)) return undefined;
+  }
+  return candidate;
+}
+
+/**
+ * DETERMINISTIC consult-only honor of a durable NON-OWNER scope amendment
+ * for a scope blocker (D12 mirror of applyAnchoredCoveringGrantForBlocker
+ * for the regular product-choice channel, REUSE-ONLY).
+ *
+ * Every scope-enforcement point that consults anchored owner grants for a
+ * second blocker on already-covered paths must also consult durable
+ * non-owner amendments: on match the caller retries once against the LOADED
+ * amended contract (P1: the persisted contract, never the caller's stale
+ * one) with the existing amendment. No second suspension is ever opened
+ * here; without a reusable amendment the caller keeps its existing BLOCKED
+ * behavior bit-for-bit (per-task cap preserved, reuse consumes nothing).
+ *
+ * Consult-only invariant (reuse-awareness must never become
+ * amendment-creation): this helper NEVER suspends for a product choice,
+ * NEVER mints a grant, NEVER consumes a ledger receipt, and NEVER writes
+ * artifacts. It calls ONLY loadOperation (durable read),
+ * findReusableNonOwnerAmendmentForBlocker (digest/shape/tier gates), and
+ * loadAmendedContractForReuse (persisted-contract verification) — never
+ * resolveRepairScopeBlockerViaProductChoice. All reuse-miss outcomes are
+ * returned as data (NO_COVERING_GRANT); operation-load failure is
+ * APPLY_FAILED (mirrors the owner helper); only malformed input throws. The
+ * caller treats any non-AMENDED outcome as BLOCKED.
+ *
+ * Mechanism: DETERMINISTIC (durable reads + digest/shape gates).
+ */
+export type ReusableNonOwnerAmendmentResolutionV1 =
+  | { status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1; reused: true }
+  | { status: "NO_COVERING_GRANT"; failures: string[] }
+  | { status: "APPLY_FAILED"; error: string; failures: string[] };
+
+export async function applyReusableNonOwnerAmendmentForBlocker(input: {
+  root: string;
+  controlRoot: string;
+  config: HarnessProjectConfig;
+  contract: TaskContract;
+  blocker: RepairScopeBlockerReceiptV1;
+}): Promise<ReusableNonOwnerAmendmentResolutionV1> {
+  const { root, controlRoot, config, contract, blocker } = input;
+  assertRepairScopeBlockerReceipt(blocker);
+  let operation: OperationRecordV2;
+  try {
+    operation = await loadOperation(controlRoot, blocker.operationId);
+  } catch (error) {
+    return {
+      status: "APPLY_FAILED",
+      error: `NON_OWNER_REUSE_LOAD_FAILED: the live operation could not be loaded for non-owner reuse: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500),
+      failures: [],
+    };
+  }
+  const reusable = await findReusableNonOwnerAmendmentForBlocker({ root, config, operation, contract, blocker });
+  if (!reusable) {
+    return {
+      status: "NO_COVERING_GRANT",
+      failures: [`NON_OWNER_REUSE_NO_COVERING_AMENDMENT: no durable non-owner amendment covers blocker ${blocker.digest.slice(0, 12)}… for task '${blocker.taskId}'; the BLOCKED outcome stands.`],
+    };
+  }
+  const loaded = await loadAmendedContractForReuse(root, reusable.amendment);
+  if (!loaded) {
+    return {
+      status: "NO_COVERING_GRANT",
+      failures: [`NON_OWNER_REUSE_CONTRACT_UNVERIFIED: the persisted amended contract for amendment '${reusable.amendment.amendmentDigest.slice(0, 12)}…' could not be loaded or verified (unreadable, invalid, or exempted paths outside the persisted allowlist); the BLOCKED outcome stands.`],
+    };
+  }
+  return { status: "AMENDED", contract: loaded, amendment: reusable.amendment, reused: true as const };
+}
+
+/**
  * DETERMINISTIC consult-only honor of an already-anchored covering owner
  * grant for a scope blocker (H-NEW-14 grant-consumption coverage).
  *
@@ -2421,7 +2557,20 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
     reusableNonOwner = undefined;
   }
   if (reusableNonOwner) {
-    return { status: "AMENDED", contract, amendment: reusableNonOwner.amendment, reused: true };
+    // D12 P1: return the LOADED amended contract, never the caller's stale
+    // one — the retry assembly requires every exempted path to be a member
+    // of the RETRY contract's scope allowlist (repair.ts
+    // REPAIR_SCOPE_AMENDMENT_NOT_SEALED), and the caller's contract predates
+    // the amendment. Returning the stale contract would turn every reuse
+    // into a terminal NOT_SEALED throw instead of a cap-stable retry.
+    // Loader miss (unreadable/invalid/mismatch) falls through to the flow
+    // below, which is BLOCKED fail-closed here: the durable amendment still
+    // counts toward the per-task cap, so no second suspension opens and no
+    // retry runs on the stale contract.
+    const loaded = await loadAmendedContractForReuse(root, reusableNonOwner.amendment);
+    if (loaded) {
+      return { status: "AMENDED", contract: loaded, amendment: reusableNonOwner.amendment, reused: true };
+    }
   }
   // HARD-protection gate (suspend/decide/resume, DETERMINISTIC, no model
   // judgment): a blocker intersecting frozen TaskContract, seal, validators,

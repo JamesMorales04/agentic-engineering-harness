@@ -56,6 +56,7 @@ import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { executeRepairerCandidateMutation, partitionRepairScopeBlockerFiles, repairProtectedPaths, verifiedOwnerExemptionForRetry } from "../candidates/repair.js";
 import {
   applyAnchoredCoveringGrantForBlocker,
+  applyReusableNonOwnerAmendmentForBlocker,
   assertRepairScopeBlockerReceipt,
   createRepairScopeBlockerReceipt,
   isNewTestCreationTierPath,
@@ -1398,6 +1399,12 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         // bounded retry instead of terminal BLOCKED. No second suspension is
         // ever opened here; without a covering grant the BLOCKED outcome
         // below stands exactly as before (max 1/task preserved).
+        // D12 non-owner reuse (consult-only honor, never grant-creation):
+        // when the owner consult above misses, a durable NON-OWNER amendment
+        // already covering the second blocker is reused the same way (loaded
+        // amended contract, one more bounded retry, no second suspension).
+        // The wrapper never suspends/mints/consumes/writes; any non-AMENDED
+        // outcome keeps the BLOCKED behavior below bit-for-bit.
         let honoredSecond: Awaited<ReturnType<typeof applyAnchoredCoveringGrantForBlocker>> | undefined;
         try {
           honoredSecond = await applyAnchoredCoveringGrantForBlocker({
@@ -1410,7 +1417,27 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         } catch {
           honoredSecond = undefined;
         }
+        let reuseSecond: Awaited<ReturnType<typeof applyReusableNonOwnerAmendmentForBlocker>> | undefined;
         if (honoredSecond?.status !== "AMENDED") {
+          try {
+            reuseSecond = await applyReusableNonOwnerAmendmentForBlocker({
+              root: workspaceRoot,
+              controlRoot,
+              config: effectiveConfig,
+              contract: effectiveContract,
+              blocker: amendedRetry.scopeBlocker,
+            });
+          } catch {
+            reuseSecond = undefined;
+          }
+        }
+        const honoredResolution =
+          honoredSecond?.status === "AMENDED"
+            ? { contract: honoredSecond.contract, amendment: honoredSecond.amendment, reused: honoredSecond.reused, source: "scope-amended-retry-2" as const }
+            : reuseSecond?.status === "AMENDED"
+              ? { contract: reuseSecond.contract, amendment: reuseSecond.amendment, reused: reuseSecond.reused, source: "scope-amended-retry-2-nonowner-reuse" as const }
+              : undefined;
+        if (!honoredResolution) {
           // A second blocker after the single amendment means the retry still
           // needs scope outside the amended allowlist: BLOCKED (no second
           // suspension, max 1/task preserved). Fail closed citing the new blocker.
@@ -1424,13 +1451,13 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           await recordEvent(controlRoot, effectiveConfig, "harness.repair.finish", { taskId: effectiveContract.task.id, attempt: attempts, status: report.status, agent: selection?.logicalAgent, scopeBlocked: true }).catch(() => undefined);
           break;
         }
-        effectiveContract = honoredSecond.contract;
-        const secondAmendment = honoredSecond.amendment;
+        effectiveContract = honoredResolution.contract;
+        const secondAmendment = honoredResolution.amendment;
         await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-amended", {
           taskId: effectiveContract.task.id, attempt: attempts, blockerDigest: amendedRetry.scopeBlocker.digest,
           exemptedPaths: secondAmendment.exemptedPaths, decisionId: secondAmendment.decisionId,
           requestId: secondAmendment.requestId, decidedActor: secondAmendment.decidedActor,
-          source: "scope-amended-retry-2", reused: honoredSecond.reused,
+          source: honoredResolution.source, reused: honoredResolution.reused,
         }).catch(() => undefined);
         const amendedRetry2 = await withBoundedRepairStallRetryV1({
           prompt: repairPrompt,
