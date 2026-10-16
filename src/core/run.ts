@@ -1437,9 +1437,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       }
       const identity = currentObjectiveIdentityV1(operation);
       const requiredWorkUnitIds = waveResult?.plan?.workUnits.map((unit) => unit.id) ?? [`direct:${effectiveContract.task.id}`];
-      const accountedWorkUnitIds = waveResult?.plan
+      const waveAccountedWorkUnitIds = waveResult?.plan
         ? waveResult.waves.flatMap((wave) => wave.results.filter((result) => result.status === "PASS").map((result) => result.task.id))
         : worker.exitCode === 0 ? [`direct:${effectiveContract.task.id}`] : [];
+      const { accountedWorkUnitIds, repairAccountedWorkUnitIds } = resolveAccountedWorkUnitIds(requiredWorkUnitIds, waveAccountedWorkUnitIds, attempts);
       const validationRequirements = evidenceBundle.requirements.filter((requirement) => requirement.validationRequirementIds.length > 0);
       const reviewRequirements = evidenceBundle.requirements.filter((requirement) => requirement.reviewDimensions.length > 0);
       const evidenceForGate = (requirements: typeof validationRequirements, kind: "VALIDATION" | "REVIEW") => ({
@@ -1476,7 +1477,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         category: "objective-completion",
         status: objectiveCompletionDecision.complete ? "PASS" : "FAIL",
         message: objectiveCompletionDecision.complete ? "Complete objective evidence set satisfies the deterministic Definition of Done." : `Objective Definition of Done is blocked: ${objectiveCompletionDecision.blockers.map((item) => item.code).join(", ")}.`,
-        details: { identity, blockers: objectiveCompletionDecision.blockers, requiredWorkUnitIds, accountedWorkUnitIds }
+        details: { identity, blockers: objectiveCompletionDecision.blockers, requiredWorkUnitIds, accountedWorkUnitIds, repairAccountedWorkUnitIds }
       }]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2176,8 +2177,34 @@ function bindingForSelection(selection: AgentExecutionSelection) {
 }
 
 /**
+ * Work-unit accounting for the objective Definition of Done (MECHANISM:
+ * DETERMINISTIC). Wave-time verdicts freeze at dispatch, but a repair
+ * loop that converges to green re-verifies the whole candidate: units
+ * completed via repair would otherwise stay unaccounted forever,
+ * blocking DoD on a fully-green no-op whose wave barrier tripped
+ * transiently (observed on a green no-op). Repair turns re-verify every
+ * planned unit against the final candidate, so a repair-converged run
+ * accounts all planned units as repair-accounted (returned separately
+ * for audit). Substantive completeness still rests on the
+ * validation/review/acceptance gates; this only stops a stale wave
+ * verdict from vetoing a green run. With no wave pass and no repair
+ * turn, required units stay unaccounted and DoD blocks loudly.
+ * Exported for regression coverage.
+ */
+export function resolveAccountedWorkUnitIds(
+  requiredWorkUnitIds: readonly string[],
+  waveAccountedWorkUnitIds: readonly string[],
+  repairAttempts: number
+): { accountedWorkUnitIds: string[]; repairAccountedWorkUnitIds: string[] } {
+  const repairAccountedWorkUnitIds = repairAttempts > 0 ? [...new Set(requiredWorkUnitIds)] : [];
+  return {
+    accountedWorkUnitIds: [...new Set([...waveAccountedWorkUnitIds, ...repairAccountedWorkUnitIds])],
+    repairAccountedWorkUnitIds
+  };
+}
+
+/**
  * Failure summary for the `agent.execution` validation check. The wave
- * aggregate session is synthetic: its exit code mirrors the deterministic
  * barrier outcome, not an agent runtime crash (stderr is empty when every
  * real worker session exited 0). Reporting it as an agent runtime exit
  * misattributes barrier failures and has caused repair misdiagnosis, so the
