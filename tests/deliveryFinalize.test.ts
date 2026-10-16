@@ -244,10 +244,27 @@ describe("accepted no-Issue CHANGE delivery", () => {
     // bound candidate digest still matches while HEAD equals the base.
     await git(context.repo, "add", "-A");
     await git(context.repo, "commit", "-m", "accepted no-op");
+    // Token resolution falls back through GH_TOKEN, GITHUB_TOKEN, and
+    // GITHUB_PAT: clear all three (restoring afterward) so the test
+    // genuinely proves no credential source is consulted.
+    const savedTokens: Record<string, string | undefined> = {
+      GH_TOKEN: process.env.GH_TOKEN,
+      GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+      GITHUB_PAT: process.env.GITHUB_PAT
+    };
     delete process.env.GH_TOKEN;
-    const result = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
-    expect(result).toMatchObject({ status: "NO_CHANGES", committed: false, pushed: false });
-    expect(context.requests).toHaveLength(0);
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GITHUB_PAT;
+    try {
+      const result = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
+      expect(result).toMatchObject({ status: "NO_CHANGES", committed: false, pushed: false });
+      expect(context.requests).toHaveLength(0);
+    } finally {
+      for (const [name, value] of Object.entries(savedTokens)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 });
 
