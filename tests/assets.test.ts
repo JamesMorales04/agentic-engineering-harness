@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { reconcileHarnessAssets } from "../src/core/assets.js";
-import { generatedArtifactPaths, getChangedFiles } from "../src/core/git.js";
+import { generatedArtifactPaths, generatedIgnoreYieldedToExplicitRule, getChangedFiles } from "../src/core/git.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
 async function sourceRoot(version: string): Promise<string> {
@@ -57,11 +57,17 @@ describe("managed Harness assets", () => {
     await reconcileHarnessAssets(project, { packageRoot: v1, aehVersion: "0.6.0" });
     const manifestFile = path.join(project, ".harness/managed-assets.json");
     const before = await fs.readFile(manifestFile, "utf8");
+    // Pin mtime to the past: a no-op reconcile must not rewrite (mtime is the
+    // observable; byte comparison alone would pass even with a rewrite).
+    const past = new Date(Date.now() - 60_000);
+    await fs.utimes(manifestFile, past, past);
+    const beforeStat = await fs.stat(manifestFile);
     const second = await reconcileHarnessAssets(project, { packageRoot: v1, aehVersion: "0.6.0" });
     expect(second.created).toEqual([]);
     expect(second.updated).toEqual([]);
     expect(second.removed).toEqual([]);
     expect(await fs.readFile(manifestFile, "utf8")).toBe(before);
+    expect((await fs.stat(manifestFile)).mtimeMs).toBe(beforeStat.mtimeMs);
   });
 
   it("excludes the provisioned managed-asset manifest from validation changed files (D8)", async () => {
@@ -81,5 +87,15 @@ describe("managed Harness assets", () => {
     await fs.writeFile(path.join(repo, "src-util.js"), "v2\n");
     const changed = await getChangedFiles(repo, "HEAD", { ignoredPaths: generatedArtifactPaths(config) });
     expect(changed).toEqual(["src-util.js"]);
+  });
+
+  it("lets explicit frozen/forbidden rules override generated ignores (D8 Luna MEDIUM)", async () => {
+    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", [])).toBe(false);
+    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", ["src/**"])).toBe(false);
+    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", [".harness/managed-assets.json"])).toBe(true);
+    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", [".harness/**"])).toBe(true);
+    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", ["**"])).toBe(true);
+    expect(generatedIgnoreYieldedToExplicitRule(".serena", [".serena"])).toBe(true);
+    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", ["../outside"])).toBe(false);
   });
 });

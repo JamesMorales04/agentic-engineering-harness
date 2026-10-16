@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig, TaskContract, ValidationCheck, ValidationReport } from "./types.js";
 import { loadTaskContract } from "./config.js";
-import { generatedArtifactPaths, getChangedFiles, getDiffStats } from "./git.js";
+import { generatedArtifactPaths, generatedIgnoreYieldedToExplicitRule, getChangedFiles, getDiffStats } from "./git.js";
 import { deliveryWorkspacePath } from "../delivery/handoff.js";
 import { validateDiffScope } from "../validators/diffScope.js";
 import { validateDiffBudget } from "../validators/constraints.js";
@@ -34,7 +34,16 @@ export async function verifyTask(root: string, config: HarnessProjectConfig, con
   const candidateWorkspaceIdentity = candidate ? await assertWorkspaceMatchesCandidate(executionRoot, candidate) : undefined;
   const startedAt = new Date().toISOString(); const baseRef = contract.git?.baseRef ?? config.validation?.baseRef ?? "HEAD";
   await recordEvent(stateRoot, config, "harness.verify.start", { taskId: contract.task.id, baseRef, workspaceRoot: executionRoot === stateRoot ? undefined : executionRoot });
-  const gitOptions = { ignoredPaths: generatedArtifactPaths(config) };
+  const gitOptions = {
+    ignoredPaths: generatedArtifactPaths(config).filter(
+      (generated) =>
+        !generatedIgnoreYieldedToExplicitRule(generated, [
+          ...(contract.scope?.forbidden ?? []),
+          ...(contract.scope?.frozen ?? []),
+          ...(config.validation?.frozenPaths ?? []),
+        ]),
+    ),
+  };
   const changedFiles = await getChangedFiles(executionRoot, baseRef, gitOptions); const stats = await getDiffStats(executionRoot, baseRef, gitOptions); const checks: ValidationCheck[] = [];
   if (candidateWorkspaceIdentity) checks.push({ id: "candidate.workspace-identity", category: "candidate-identity", status: "PASS", message: `Workspace materializes ${candidate!.candidateId} r${candidate!.revision}.`, details: { ...candidateWorkspaceIdentity } });
   checks.push(await verifyTaskSeal(executionRoot, contract, config.validation?.requireSeal ?? true));

@@ -434,13 +434,38 @@ export function generatedArtifactPaths(config: HarnessProjectConfig): string[] {
   // toolchain setup rewrites inside isolated execution roots (version stamps,
   // asset refresh). Attributing those provision writes to worker candidates
   // fails validation scope gates on harness-owned files, so validation
-  // changed-file accounting ignores it. The manifest is in neither the
-  // forbidden nor the frozen sets, so those checks are unaffected; a worker
-  // writing managed files is still denied at assembly scope gates, and seals
-  // keep their own frozen verification.
+  // changed-file accounting ignores it by default (see
+  // effectiveValidationIgnores for the explicit-rule override). A worker
+  // writing managed files is denied at assembly scope gates (default hard
+  // protection in repairScope raw sources), and seals keep their own frozen
+  // verification.
   // MECHANISM: DETERMINISTIC (static list).
   paths.push(".harness/managed-assets.json");
   return paths;
+}
+
+/**
+ * D8 (Luna review MEDIUM): explicit user scope rules win over
+ * machine-generated ignores. If the project explicitly froze/forbade a
+ * generated path (exact entry or a covering parent glob/`**`), that entry
+ * stays visible in changed-file accounting so frozen/forbidden checks (and
+ * standalone `aeh verify`) still fire on it. Otherwise provision churn stays
+ * ignored. Pure DETERMINISTIC helper (normalized comparison, no I/O).
+ */
+export function generatedIgnoreYieldedToExplicitRule(generatedPath: string, explicitRules: readonly string[]): boolean {
+  const normalized = generatedPath.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  if (!normalized) return false;
+  for (const raw of explicitRules) {
+    if (typeof raw !== "string") continue;
+    const rule = raw.trim().replaceAll("\\", "/").replace(/^\.\//, "");
+    if (!rule || rule.includes("..")) continue;
+    if (rule === "**" || rule === normalized) return true;
+    if (rule.endsWith("/**")) {
+      const base = rule.slice(0, -"/**".length).replace(/\/+$/, "");
+      if (base && (normalized === base || normalized.startsWith(`${base}/`))) return true;
+    }
+  }
+  return false;
 }
 
 function isIgnoredPath(file: string, ignoredPaths: string[]): boolean {
