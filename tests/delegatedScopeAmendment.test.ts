@@ -104,6 +104,50 @@ describe("delegated Owner scope amendments (D1)", () => {
     expect(() => assertRepairScopeAmendment(amended.amendment)).not.toThrow();
   });
 
+  it("presented-decision mutation cannot inject artifact metadata: stored ledger truth wins", async () => {
+    const root = await createRepo();
+    const task = contract("DELEGATE-SCOPE");
+    const config = projectConfig();
+    await writeContractAndSeal(root, config, task);
+    const operationId = "OP-DELEGATE-MUTATED-1";
+    const blocker = createRepairScopeBlockerReceipt({
+      operationId,
+      taskId: task.task.id,
+      workUnitId: "validation-repair:delegate-mutated",
+      filesNeededOutsideScope: [{ path: "package-lock.json", reason: "trivy-mandated transitive bump requires lockfile update" }],
+    });
+    const grant = await issueScopeGrant(root);
+    const binding = syntheticBinding(operationId);
+    const ledger = await tempLedger();
+    const requestId = "request:delegate-mutated-1";
+    const decision = await ledger.recordProductChoice({
+      ...binding,
+      purpose: { kind: "PRODUCT_CHOICE", requestId, choiceId: REPAIR_SCOPE_APPROVE_CHOICE_ID },
+      kind: "CHOOSE",
+      actorId: DELEGATE,
+      delegatedFrom: { grantorOwnerId: GRANTOR, delegationId: grant.delegationId, profile: "FULL_PROJECT_OWNER" },
+      reason: "ledger truth reason",
+    }, requestId);
+    const stored = await ledger.consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+    expect(stored).toBeTruthy();
+
+    // Present a tampered copy (mutated reason): the amendment must still
+    // carry the STORED reason/timestamp/id, with a self-consistent digest.
+    const tampered = { ...decision, reason: "forged presentation reason" };
+    const amended = await applyRepairScopeAmendment({
+      root, config, contract: task, blocker,
+      authorization: { decision: tampered, binding, requestId },
+      ledger,
+    });
+    expect(amended.status).toBe("AMENDED");
+    if (amended.status !== "AMENDED") throw new Error("expected AMENDED");
+    expect(amended.amendment.decisionReason).toBe("ledger truth reason");
+    expect(amended.amendment.decidedAt).toBe(stored!.createdAt);
+    expect(amended.amendment.decisionId).toBe(stored!.decisionId);
+    expect(amended.amendment.decidedActor).toBe(DELEGATE);
+    expect(() => assertRepairScopeAmendment(amended.amendment)).not.toThrow();
+  });
+
   it("hard-path mint accepts a delegated Owner approval and preserves provenance in the grant", async () => {
     const root = await createRepo();
     const operationId = "OP-DELEGATE-MINT-1";
@@ -130,15 +174,21 @@ describe("delegated Owner scope amendments (D1)", () => {
       delegatedFrom: { grantorOwnerId: GRANTOR, delegationId: grant.delegationId, profile: "FULL_PROJECT_OWNER" },
       reason: "delegate approves exact hard set",
     }, requestId);
-    await ledger.consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+    const stored = await ledger.consumeExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+    expect(stored).toBeTruthy();
 
+    // Present a tampered copy: the grant must anchor the STORED reason and
+    // digest, so the anchored grant verifies against the ledger decision.
+    const tampered = { ...decision, reason: "forged mint reason" };
     const minted = await mintOwnerHardProtectionExemptionFromProductChoice({
-      root, operationId, paths: [specPath], decision, binding, requestId,
+      root, operationId, paths: [specPath], decision: tampered, binding, requestId,
     });
     expect(minted.decidedActor).toBe(DELEGATE);
     expect(minted.delegatedFrom).toMatchObject({
       grantorOwnerId: GRANTOR, delegationId: grant.delegationId, profile: "FULL_PROJECT_OWNER",
     });
+    expect(minted.decisionReason).toBe("delegate approves exact hard set");
+    expect(minted.decisionDigest).toBe(sha256Canonical(stored!));
   });
 
   it("amendment artifact assert accepts delegate provenance and rejects provenance-stripped delegates", async () => {

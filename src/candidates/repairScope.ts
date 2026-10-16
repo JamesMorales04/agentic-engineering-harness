@@ -1178,6 +1178,12 @@ export async function applyRepairScopeAmendment(input: {
   // Owner-authority gate at USE time (D1): human Owners pass; delegated
   // Owners re-verify their FULL_PROJECT_OWNER grant for `scope.amend` here.
   await assertDelegatedScopeAmendmentAuthority(root, decision, stored, "REPAIR_SCOPE_DECISION");
+  // Artifact claims below use the STORED decision (ledger truth), never the
+  // caller-presented object: a modified presentation must not inject
+  // misleading reason/timestamp metadata into the durable amendment.
+  if (!stored.reason.trim()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_DECISION_REASON_REQUIRED: a scope amendment decision requires a non-empty reason.");
+  }
   const existing = await listRepairScopeAmendments(root, config, contract.task.id);
   if (existing.length >= MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1) {
     throw new AehError(
@@ -1242,9 +1248,9 @@ export async function applyRepairScopeAmendment(input: {
     // Owner-approved, and the acting principal + grant provenance live in
     // decidedActor (delegate:*) + delegatedFrom below.
     decidedBy: "human" as const,
-    decisionReason: decision.reason.trim(),
-    decidedAt: decision.createdAt,
-    decisionId: decision.decisionId,
+    decisionReason: stored.reason.trim(),
+    decidedAt: stored.createdAt,
+    decisionId: stored.decisionId,
     requestId,
     decidedActor: stored.actorId,
     ...(stored.delegatedFrom ? { delegatedFrom: { ...stored.delegatedFrom } } : {}),
@@ -2120,6 +2126,9 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
     || live.controllerEpoch !== liveEpoch) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: minting binding does not match the live operation, candidate, execution revision, policy, or controller epoch.");
   }
+  // Presented-object pre-filters (fail-closed): the receipt lookup below
+  // binds presented purpose+id+actor to the stored record; currency/expiry/
+  // reason are re-evaluated against ledger truth after the stored load.
   if (decision.operationId !== live.operationId || !candidateRevisionsEqual(decision.candidate, live.candidate)
     || decision.operationExecutionRevision !== live.operationExecutionRevision
     || decision.policyDigest !== live.policyDigest || decision.controllerEpoch !== live.controllerEpoch) {
@@ -2142,6 +2151,20 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
   // so a grant revoked/expired/narrowed while the approval was pending fails
   // closed instead of minting a hard-protection exemption.
   await assertDelegatedScopeAmendmentAuthority(input.root, decision, storedMintDecision, "OWNER_EXEMPTION");
+  // Currency/expiry/reason re-evaluated against ledger truth (Luna D1
+  // re-review): a modified presentation can neither fake currency nor inject
+  // grant metadata; artifact claims below use the stored record only.
+  if (storedMintDecision.operationId !== live.operationId || !candidateRevisionsEqual(storedMintDecision.candidate, live.candidate)
+    || storedMintDecision.operationExecutionRevision !== live.operationExecutionRevision
+    || storedMintDecision.policyDigest !== live.policyDigest || storedMintDecision.controllerEpoch !== live.controllerEpoch) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_STALE: the approval does not match the current operation, candidate, execution revision, policy, or controller epoch.");
+  }
+  if (storedMintDecision.expiresAt && new Date(storedMintDecision.expiresAt).getTime() <= now.getTime()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EXPIRED: the hard-path approval expired before minting.");
+  }
+  if (!storedMintDecision.reason.trim()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_REASON_REQUIRED: a hard-protection grant requires the approving reason.");
+  }
   const normalized: string[] = [];
   if (!Array.isArray(input.paths) || input.paths.length < 1 || input.paths.length > 8) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_PATH_INVALID: an exemption requires 1 to 8 exact file paths.");
@@ -2196,13 +2219,13 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
     policyStableDigest: anchorStableDigest,
     operationExecutionRevision: live.operationExecutionRevision,
     paths,
-    decisionId: decision.decisionId,
-    decisionDigest: sha256Canonical(decision),
+    decisionId: storedMintDecision.decisionId,
+    decisionDigest: sha256Canonical(storedMintDecision),
     decidedActor: storedMintDecision.actorId,
     ...(storedMintDecision.delegatedFrom ? { delegatedFrom: { ...storedMintDecision.delegatedFrom } } : {}),
-    decisionReason: decision.reason.trim(),
+    decisionReason: storedMintDecision.reason.trim(),
     createdAt,
-    ...(decision.expiresAt ? { expiresAt: decision.expiresAt } : {}),
+    ...(storedMintDecision.expiresAt ? { expiresAt: storedMintDecision.expiresAt } : {}),
   };
   const grant: OwnerHardProtectionExemptionGrantV1 = { ...body, mac: computeOwnerExemptionMac(token, body) };
   await updateOperationMetadata(input.root, input.operationId, (currentOp) => {
