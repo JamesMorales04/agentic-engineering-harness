@@ -12,7 +12,7 @@ import { detectHumanException, detectRuntimeExternalException, diagnosisToExcept
 import type { HarnessProjectConfig, ReviewEscalationStage, TaskContract, ValidationCheck, ValidationReport, WorkerSession } from "../core/types.js";
 import { executeAgentPrompt } from "../workers/agentPrompt.js";
 import { executeRepairerCandidateMutation, rejectRepairCandidateChangeSet } from "../candidates/repair.js";
-import { applyAnchoredCoveringGrantForBlocker, repairScopeBlockerValidationCheck } from "../candidates/repairScope.js";
+import { applyAnchoredCoveringGrantForBlocker, applyReusableNonOwnerAmendmentForBlocker, repairScopeBlockerValidationCheck } from "../candidates/repairScope.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
 import { assertWorkspaceMatchesCandidate, type CandidateWorkspaceIdentityEvidenceV1 } from "../candidates/identity.js";
 import type { ExecutionCatalogV1 } from "../architecture/executionCatalog.js";
@@ -252,6 +252,12 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
     // no covering grant this path still propagates BLOCKED fail-closed citing
     // the exact blocker (no amendment, no silent ignore) so the canonical
     // channel remains the sole suspension writer.
+    // D12 non-owner reuse (consult-only honor, never grant-creation): when
+    // the owner consult above misses, a durable NON-OWNER amendment already
+    // covering the blocker is reused the same way (loaded amended contract,
+    // exactly one bounded remediation retry, no suspension). The wrapper
+    // never suspends/mints/consumes/writes; any non-AMENDED outcome keeps
+    // the BLOCKED propagation below bit-for-bit.
     if (mutation.scopeBlocker) {
       let honored: Awaited<ReturnType<typeof applyAnchoredCoveringGrantForBlocker>> | undefined;
       try {
@@ -265,18 +271,39 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
       } catch {
         honored = undefined;
       }
-      if (honored?.status === "AMENDED") {
-        contract = honored.contract;
-        onAmendedContract?.(honored.contract);
+      let reuseHonored: Awaited<ReturnType<typeof applyReusableNonOwnerAmendmentForBlocker>> | undefined;
+      if (honored?.status !== "AMENDED") {
+        try {
+          reuseHonored = await applyReusableNonOwnerAmendmentForBlocker({
+            root,
+            controlRoot: stateRoot,
+            config,
+            contract,
+            blocker: mutation.scopeBlocker,
+          });
+        } catch {
+          reuseHonored = undefined;
+        }
+      }
+      const honoredResolution =
+        honored?.status === "AMENDED"
+          ? { contract: honored.contract, amendment: honored.amendment, reused: honored.reused, nonOwner: false as const }
+          : reuseHonored?.status === "AMENDED"
+            ? { contract: reuseHonored.contract, amendment: reuseHonored.amendment, reused: reuseHonored.reused, nonOwner: true as const }
+            : undefined;
+      if (honoredResolution) {
+        contract = honoredResolution.contract;
+        onAmendedContract?.(honoredResolution.contract);
         await recordEvent(stateRoot, config, "harness.quality.repair-scope-amended", {
           taskId: contract.task.id,
           round: remediationRounds,
           blockerDigest: mutation.scopeBlocker.digest,
-          exemptedPaths: honored.amendment.exemptedPaths,
-          decisionId: honored.amendment.decisionId,
-          requestId: honored.amendment.requestId,
-          decidedActor: honored.amendment.decidedActor,
-          reused: honored.reused,
+          exemptedPaths: honoredResolution.amendment.exemptedPaths,
+          decisionId: honoredResolution.amendment.decisionId,
+          requestId: honoredResolution.amendment.requestId,
+          decidedActor: honoredResolution.amendment.decidedActor,
+          reused: honoredResolution.reused,
+          ...(honoredResolution.nonOwner ? { source: "review-remediation-nonowner-reuse" as const } : {}),
         }).catch(() => undefined);
         const retryPrompt = `${buildRemediationPrompt(contract, stage, state, deduped.findings, replanContext)}\n\nYou are the canonical Repairer. Change implementation only within the frozen task scope. Do not change requirements, acceptance, validators, policy, or review outcomes. You cannot approve or accept the candidate. Out-of-scope blocker path (report, don't expand): if the fix needs files outside scope, return no changes and declare them via AEH_RESULT_JSON filesNeededOutsideScope[{path, reason}].`;
         // AEH-V2-0133 P1 (controller-written, fail-closed): the scope-amended retry replacement
@@ -299,7 +326,7 @@ export async function runReviewLifecycle(input: { root: string; stateRoot?: stri
           prompt: retryPrompt,
           prepareWorkspace: prepareRepairWorkspace,
           semanticAssessment: input.candidateImpactAssessment,
-          scopeAmendment: honored.amendment,
+          scopeAmendment: honoredResolution.amendment,
           execute: (isolatedRoot, participantId, prompt) => executeAgentPrompt(isolatedRoot, config, contract, remediationSelection, prompt, { outputContract: remediationSelection.outputContract ?? "implementer", phase: "repair", operationKind: currentOperationContext().kind, participantId, requireExecutionAuthority: true, ...(blockedAttemptId ? { parentAgentId: blockedAttemptId } : {}) })
         });
         remediation = mutation.session;
