@@ -592,7 +592,7 @@ try {
     const requirement = { version: 1, id: "verification:ASSERT-DELIVERY", assertionId: "ASSERT-DELIVERY", statement: "delivery candidate is ready", minimumAssurance: "STANDARD", validationRequirementIds: ["REQ-DELIVERY"], reviewDimensions: ["architecture"], leadRequired: false };
     const bundleBody = { version: 1, identity, candidate: bound.candidateRevision, impactDigest: digest.sha256Canonical("delivery-impact"), compilationDigest: digest.sha256Canonical("delivery-compilation"), requirements: [requirement], evidence };
     const bundle = { ...bundleBody, digest: digest.sha256Canonical(bundleBody) };
-    const disposition = acceptance.evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "ELEVATED", minimumIndependentReviewers: 1, providerDiversity: false, requiredDimensions: ["architecture"] });
+    const disposition = acceptance.evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "ELEVATED", minimumIndependentReviewers: 1, providerDiversity: false, requiredDimensions: ["architecture"] }, undefined, [changePath]);
     if (disposition.disposition !== "ACCEPTED") throw new Error(`delivery fixture acceptance oracle did not accept: ${disposition.blockers.map((blocker) => blocker.code).join(", ")}`);
     const acceptanceArtifact = await acceptance.persistAcceptanceOracleArtifactV1(state.resolveOperationStateRoot(deliveryRoot), bundle, disposition);
 

@@ -1349,7 +1349,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       const current = await loadOperation(operationStateRoot, operationId);
       assertCurrentControllerOwner(current, "AcceptanceOracle persistence");
       evidenceBundle = buildAcceptanceEvidenceBundleV1({ operation: current, compilation, report, implementationIdentity: selection?.logicalAgent ?? "<missing-implementation-identity>", leadEvidence });
-      acceptanceOracle = evaluateAcceptanceOracleV1(evidenceBundle, compilation.evidenceStrength);
+      acceptanceOracle = evaluateAcceptanceOracleV1(evidenceBundle, compilation.evidenceStrength, undefined, report.changedFiles);
       acceptanceOracleArtifact = await persistAcceptanceOracleArtifactV1(operationStateRoot, evidenceBundle, acceptanceOracle);
       report = mergeChecks(report, [{
         id: "acceptance.oracle",

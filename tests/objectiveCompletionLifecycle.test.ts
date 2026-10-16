@@ -86,7 +86,7 @@ async function prepareAcceptedOperation(id: string): Promise<{ root: string; ope
     evidence: [{ version: 1 as const, id: `validation:validation:unit:${assertionId}`, assertionId, kind: "VALIDATION" as const, status: "PASS" as const, identity, strength: "STANDARD" as const, provenance: { sourceId: "unit-test", digest: sha256Canonical({ result: "PASS" }) } }]
   };
   const bundle: EvidenceBundleV1 = { ...bundleBody, digest: sha256Canonical(bundleBody) };
-  const acceptanceOracle: AcceptanceOracleDispositionV1 = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "STANDARD", minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] });
+  const acceptanceOracle: AcceptanceOracleDispositionV1 = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "STANDARD", minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] }, undefined, []);
   expect(acceptanceOracle.disposition).toBe("ACCEPTED");
   const artifact = await persistAcceptanceOracleArtifactV1(resolveOperationStateRoot(root), bundle, acceptanceOracle);
   const objectiveCompletion: ObjectiveCompletionInputV1 = {
@@ -212,7 +212,7 @@ async function prepareLineageAcceptedOperation(id: string): Promise<{ root: stri
     evidence: [{ version: 1 as const, id: `validation:validation:unit:${assertionId}`, assertionId, kind: "VALIDATION" as const, status: "PASS" as const, identity, strength: "STANDARD" as const, provenance: { sourceId: "unit-test", digest: sha256Canonical({ result: "PASS" }) } }]
   };
   const bundle: EvidenceBundleV1 = { ...bundleBody, digest: sha256Canonical(bundleBody) };
-  const acceptanceOracle: AcceptanceOracleDispositionV1 = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "STANDARD", minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] });
+  const acceptanceOracle: AcceptanceOracleDispositionV1 = evaluateAcceptanceOracleV1(bundle, { minimumAssurance: "STANDARD", minimumIndependentReviewers: 0, providerDiversity: false, requiredDimensions: [] }, undefined, ["src/feature.mjs"]);
   expect(acceptanceOracle.disposition).toBe("ACCEPTED");
   const acceptanceArtifact = await persistAcceptanceOracleArtifactV1(resolveOperationStateRoot(root), bundle, acceptanceOracle);
   const objectiveCompletion: ObjectiveCompletionInputV1 = {

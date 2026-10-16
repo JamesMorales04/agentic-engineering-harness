@@ -234,7 +234,7 @@ describe("AEH-V2-0099 base contract assertion validation path", () => {
     const requirements = resolveVerificationRequirementsV1(compilation, currentOperation.resolvedOperationPolicy!);
     expect(requirements.find((item) => item.assertionId === "AC-1")?.validationRequirementIds).toEqual([]);
     const bundle = bundleFor(compilation, reportWithChecks(compilation, [], current), current);
-    const oracle = evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength);
+    const oracle = evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength, undefined, ["src/greeting.mjs"]);
     expect(oracle.disposition).toBe("REJECTED");
     expect(oracle.blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_PATH_MISSING");
   });
@@ -267,7 +267,7 @@ describe("AEH-V2-0099 base contract assertion validation path", () => {
     const failing = await compileFixture({ contractValidators: ["capability:visual-test"], providers, checks: [{ id: passingId, category: "candidate-impact-validation", status: "FAIL", message: "visual evidence failed", details: { requirementId: "capability:visual-test", kind: "visual-test", candidate: candidate() } }] });
     const failingBundle = bundleFor(failing.compilation, failing.report, failing.current);
     expect(failingBundle.evidence.find((item) => item.assertionId === "AC-1" && item.kind === "VALIDATION")).toMatchObject({ provenance: { sourceId: passingId }, status: "FAIL" });
-    expect(evaluateAcceptanceOracleV1(failingBundle, failing.compilation.evidenceStrength).blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
+    expect(evaluateAcceptanceOracleV1(failingBundle, failing.compilation.evidenceStrength, undefined, ["src/greeting.mjs"]).blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
   });
 
   it("replaces a plan requirement that names the same check id with the frozen contract-derived one (AEH-V2-0118)", () => {
@@ -334,7 +334,7 @@ describe("AEH-V2-0099 base contract assertion validation path", () => {
       ["command.fixture-greeting", "PASS"],
       ["contract-test", "PASS"]
     ]);
-    const codes = evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength).blockers.map((item) => item.code);
+    const codes = evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength, undefined, ["src/greeting.mjs"]).blockers.map((item) => item.code);
     expect(codes).not.toContain("VERIFICATION_VALIDATION_PATH_MISSING");
     expect(codes).not.toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
   });
@@ -344,7 +344,7 @@ describe("AEH-V2-0099 base contract assertion validation path", () => {
     const report = reportWithChecks(compilation, [commandCheck("command.other")], current);
     const bundle = bundleFor(compilation, report, current);
     expect(bundle.evidence.filter((item) => item.assertionId === "AC-1" && item.kind === "VALIDATION" && item.status === "PASS")).toEqual([]);
-    const oracle = evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength);
+    const oracle = evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength, undefined, ["src/greeting.mjs"]);
     expect(oracle.blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
     expect(oracle.blockers.some((item) => item.message.includes("command.other"))).toBe(false);
   });
@@ -353,13 +353,13 @@ describe("AEH-V2-0099 base contract assertion validation path", () => {
     const missing = await compileFixture({ contractValidators: ["command.fixture-greeting"], checks: [] });
     const missingBundle = bundleFor(missing.compilation, missing.report, missing.current);
     expect(missingBundle.requirements.find((item) => item.assertionId === "AC-1")?.validationRequirementIds).toEqual(["command.fixture-greeting"]);
-    expect(evaluateAcceptanceOracleV1(missingBundle, missing.compilation.evidenceStrength).blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
+    expect(evaluateAcceptanceOracleV1(missingBundle, missing.compilation.evidenceStrength, undefined, ["src/greeting.mjs"]).blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
 
     const unknown = await compileFixture({ contractValidators: ["mystery-validator"], checks: [] });
     expect(unknown.compilation.validationRequirements.map((item) => item.id)).toEqual(["impact-review-public-api"]);
     const unknownBundle = bundleFor(unknown.compilation, unknown.report, unknown.current);
     expect(unknownBundle.requirements.find((item) => item.assertionId === "AC-1")?.validationRequirementIds).toEqual([]);
-    expect(evaluateAcceptanceOracleV1(unknownBundle, unknown.compilation.evidenceStrength).blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_PATH_MISSING");
+    expect(evaluateAcceptanceOracleV1(unknownBundle, unknown.compilation.evidenceStrength, undefined, ["src/greeting.mjs"]).blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_PATH_MISSING");
   });
 
   it("candidate-stale validation evidence cannot satisfy the assertion", async () => {
@@ -368,7 +368,7 @@ describe("AEH-V2-0099 base contract assertion validation path", () => {
     const report = reportWithChecks(compilation, [commandCheck("command.fixture-greeting"), impactValidationCheck(compilation, "impact-review-public-api", "PASS", stale)], current);
     const bundle = bundleFor(compilation, report, current);
     expect(bundle.evidence.find((item) => item.assertionId === "impact-acceptance-public-api" && item.kind === "VALIDATION")?.status).toBe("FAIL");
-    expect(evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength).blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
+    expect(evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength, undefined, ["src/greeting.mjs"]).blockers.map((item) => item.code)).toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
   });
 
   it("executes a resolved plan requirement with a model-authored id so the oracle sees exactly one check (AEH-V2-0123)", async () => {
@@ -401,7 +401,7 @@ describe("AEH-V2-0099 base contract assertion validation path", () => {
     const checks = await runCandidateImpactValidations({ root, config, contract, report, impact: impactBody, compilation, resolution, requirements: base.filter((requirement) => requirement.id === "architecture-boundary") });
     expect(checks.map((check) => [check.id, check.status])).toEqual([["candidate.assurance.validation.architecture-boundary", "PASS"]]);
     const bundle = bundleFor(compilation, reportWithChecks(compilation, [...report.checks, ...checks], current), current);
-    const codes = evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength).blockers.map((item) => item.code);
+    const codes = evaluateAcceptanceOracleV1(bundle, compilation.evidenceStrength, undefined, ["src/greeting.mjs"]).blockers.map((item) => item.code);
     expect(codes).not.toContain("VERIFICATION_VALIDATION_EVIDENCE_INSUFFICIENT");
     expect(codes).not.toContain("VERIFICATION_VALIDATION_PATH_MISSING");
   });
