@@ -1442,6 +1442,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             requiredWorkUnitIds,
             waveResult.waves.flatMap((wave) => wave.results),
             Object.values(operation.participantReceipts ?? {}),
+            identity.candidate,
             report.status === "PASS"
           )
         : { accountedWorkUnitIds: worker.exitCode === 0 ? [`direct:${effectiveContract.task.id}`] : [], sessionAccountedWorkUnitIds: [] as string[] };
@@ -2189,21 +2190,21 @@ function bindingForSelection(selection: AgentExecutionSelection) {
  * challenge: they are written only for contract-valid completions
  * (vacuous output fails contract validation and yields no success
  * receipt), so unlike bare exit codes they cannot credit empty work.
- * Wave-time verdicts freeze at dispatch including barrier (validator)
- * outcomes: a transient barrier flake fails the wave even though the
- * unit's worker completed successfully, and the receipt arm covers
- * exactly that case once later revalidation passes. Sessions join to
- * receipts by session id (falling back to participant id); repair-loop
- * sessions are candidate-scoped and deliberately do NOT attest units.
- * Dropped or crashed units with no success receipt stay unaccounted
- * and DoD blocks loudly. Substantive completeness additionally rests on
- * the validation/review/acceptance gates. Exported for regression
- * coverage.
+ * The receipt must additionally bind the current candidate: without a
+ * candidate check, a rerun of the same unit could be credited by a
+ * prior session's receipt from an older candidate revision. Sessions
+ * join to receipts by session id (falling back to participant id);
+ * repair-loop sessions are candidate-scoped and deliberately do NOT
+ * attest units. Dropped or crashed units with no success receipt stay
+ * unaccounted and DoD blocks loudly. Substantive completeness
+ * additionally rests on the validation/review/acceptance gates.
+ * Exported for regression coverage.
  */
 export function resolveAccountedWorkUnitIds(
   requiredWorkUnitIds: readonly string[],
   waveResults: ReadonlyArray<{ task: { id: string }; status: string; session?: { id?: string; participantId?: string; exitCode: number } }>,
-  receipts: ReadonlyArray<Pick<ParticipantReceiptV1, "participantId" | "sessionId" | "outcome">>,
+  receipts: ReadonlyArray<Pick<ParticipantReceiptV1, "participantId" | "sessionId" | "outcome" | "candidate">>,
+  currentCandidate: CandidateRevisionV1 | undefined,
   finalReportPass: boolean
 ): { accountedWorkUnitIds: string[]; sessionAccountedWorkUnitIds: string[] } {
   const accounted = new Set<string>();
@@ -2214,13 +2215,15 @@ export function resolveAccountedWorkUnitIds(
       accounted.add(result.task.id);
       continue;
     }
-    if (!finalReportPass) continue;
+    if (!finalReportPass || !currentCandidate) continue;
     const sessionId = result.session?.id;
     const participantId = result.session?.participantId;
     const evidenced = succeeded.some(
       (receipt) =>
-        (sessionId !== undefined && receipt.sessionId === sessionId) ||
-        (participantId !== undefined && receipt.participantId === participantId)
+        ((sessionId !== undefined && receipt.sessionId === sessionId) ||
+          (participantId !== undefined && receipt.participantId === participantId)) &&
+        receipt.candidate !== undefined &&
+        candidateRevisionsEqual(receipt.candidate, currentCandidate)
     );
     if (evidenced) {
       accounted.add(result.task.id);
