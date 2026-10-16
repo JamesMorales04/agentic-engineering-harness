@@ -189,7 +189,8 @@ describe("DIRECT escape-correction declaration routing (behavioral)", () => {
     expect(result.report.checks.find((c) => c.id === "repair.scope-blocker")).toBeUndefined();
   });
 
-  it("correction re-escape with covering declarations amends and re-assembles (carve-out applies the patch)", async () => {    const { root, task, config } = await setup("CORRECTION-REESCAPE-1");
+  it("correction re-escape with covering declarations amends and re-assembles (carve-out applies the patch)", async () => {
+    const { root, task, config } = await setup("CORRECTION-REESCAPE-1");
     mocks.start.mockImplementation(async (isolatedRoot: string) => {
       await fs.mkdir(path.join(isolatedRoot, "tests"), { recursive: true });
       await fs.writeFile(path.join(isolatedRoot, ESCAPING_FILE), "export const x = 1;\n");
