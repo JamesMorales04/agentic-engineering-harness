@@ -147,15 +147,14 @@ describe("RuntimeSupervisorV1", () => {
       const newLease = await second.acquireProviderLease({ provider: "paseo", workspaceId: "operation-ws", mode: "write" });
       expect(newLease.ownerId).toBe("controller-new");
       expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([newLease.leaseId]);
-      // Past the TTL the taken-over WRITE lease expires but is RETAINED as a
-      // fencing marker (Luna D6 P1: expiry never proves the session stopped):
-      // renewal is refused, the snapshot keeps the marker, and the same owner
-      // re-acquires alongside it (same owner never conflicts with itself).
+      // Past the TTL the taken-over WRITE lease expires. Renewal is refused;
+      // the same owner re-acquiring reaps its OWN expired marker (resume
+      // hygiene) so the snapshot holds exactly the fresh lease.
       now = new Date("2026-01-01T00:01:00.001Z");
       await expect(second.renewProviderLease(newLease.leaseId)).rejects.toThrow(RuntimeOwnershipError);
       expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([newLease.leaseId]);
       const revived = await second.acquireProviderLease({ provider: "paseo", workspaceId: "operation-ws", mode: "write" });
-      expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([newLease.leaseId, revived.leaseId]);
+      expect((await second.snapshot()).providerLeases.map((lease) => lease.leaseId)).toEqual([revived.leaseId]);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -179,6 +178,23 @@ describe("RuntimeSupervisorV1", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("lets an owner reap its own expired writer marker on resume without disturbing other owners (Luna D6 round 3)", () => {
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const supervisor = new RuntimeSupervisorV1({ clock: () => now, leaseTtlMs: 100 });
+    const own = supervisor.acquireProviderLease({ provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "task-a" });
+    now = new Date("2026-01-01T00:00:00.101Z");
+    // Same owner resumes beside its own expired marker: the dead marker is
+    // reaped (crash-recovery resume) and the fresh lease is the only record.
+    // Rationale: the controller serializes attempts per owner (one wave
+    // execution per task with retry-after-return plus finally-release; one
+    // uuid reservation per provider turn), so an owner replacing its own dead
+    // marker can never overlap another owner. Cross-owner fencing is
+    // unaffected (see the retained-marker test above).
+    const resumed = supervisor.acquireProviderLease({ provider: "paseo", projectId: "p", canonicalRoot: "/r", workspaceId: "w", mode: "write", ownerId: "task-a" });
+    expect(resumed.leaseId).not.toBe(own.leaseId);
+    expect(supervisor.snapshot().providerLeases.map((lease) => lease.leaseId)).toEqual([resumed.leaseId]);
   });
 
   it("rejects persisted snapshots that contain conflicting active provider writers", async () => {

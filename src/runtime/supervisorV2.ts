@@ -289,6 +289,16 @@ export class RuntimeSupervisorV1 {
       mode: input.mode,
     }, now.getTime());
     if (conflicting.length) throw new RuntimeOwnershipError(`provider ${input.provider} is already leased in ${input.workspaceId} by ${conflicting[0]!.ownerId}.`);
+    // Crash-recovery hygiene (Luna D6 round 3): reap the CALLER'S OWN expired
+    // markers. Same-owner re-acquire is the legitimate resume path (the
+    // controller serializes attempts per owner: one wave execution per task
+    // with retry-after-return plus finally-release, and one uuid reservation
+    // per provider turn) — the owner replacing its own dead marker can never
+    // overlap ANOTHER owner. Other owners' markers are never touched here;
+    // writers still meet them through the quiescence-gated takeover path.
+    for (const [leaseId, lease] of this.leases) {
+      if (lease.ownerId === input.ownerId && Date.parse(lease.expiresAt) <= now.getTime()) this.leases.delete(leaseId);
+    }
     const ttlMs = input.ttlMs ?? this.leaseTtlMs;
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new RuntimeOwnershipError("provider lease ttl must be a positive integer.");
     const lease: ProviderLeaseV1 = {
@@ -334,6 +344,11 @@ export class RuntimeSupervisorV1 {
     }, now.getTime());
     if (conflicting.length) {
       return queuedForConflictingLeases(input.provider, input.workspaceId, conflicting, now.getTime());
+    }
+    // Same crash-recovery hygiene as acquireProviderLease: reap the CALLER'S
+    // OWN expired markers (same-owner resume; never another owner's).
+    for (const [leaseId, lease] of this.leases) {
+      if (lease.ownerId === input.ownerId && Date.parse(lease.expiresAt) <= now.getTime()) this.leases.delete(leaseId);
     }
     const ttlMs = input.ttlMs ?? this.leaseTtlMs;
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new RuntimeOwnershipError("provider lease ttl must be a positive integer.");
