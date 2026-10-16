@@ -959,6 +959,89 @@ export async function listRepairScopeAmendments(
   return found.sort((a, b) => a.amendmentPath.localeCompare(b.amendmentPath));
 }
 
+/**
+ * DETERMINISTIC durable-amendment loader for initial assemblies (D15).
+ *
+ * Scope-amendment ARTIFACTS do not travel with amended contracts: a
+ * planning-phase delegated approval persists amendment-1 + reseals the
+ * contract (allowlist gains the exempted path), but the INITIAL
+ * post-approval assembly enforces hard-protection BEYOND allowlist
+ * membership and needs the amendment OBJECT for carve-outs
+ * (effectiveRepairScope / filterForbiddenScopeForAmendment /
+ * exactScopeExemptions). Live: op CHANGE-20261016T135028Z-989e10d1 —
+ * amendment-1 for tests/range.spec.js (new-test tier) propagated as a
+ * contract, but the initial repair assembly received scopeAmendment: none
+ * and threw terminal escape on the approved file.
+ *
+ * This helper is the single durable fallback: listRepairScopeAmendments,
+ * filter to the SAME op+task, assertRepairScopeAmendment each (skip
+ * invalid digests/shapes), return the LATEST (highest numeric index parsed
+ * from amendmentPath, localeCompare order is NOT numeric for 10+), or
+ * undefined when none verifies.
+ *
+ * Consult-only + cap-stable: pure durable-read + digest gates
+ * (DETERMINISTIC), never suspends/mints/consumes/writes, loading consumes
+ * no per-task cap (creation unchanged). Verification semantics downstream
+ * are untouched: effectiveRepairScope NOT_SEALED (amended allowlist
+ * membership), verifiedOwnerExemptionForRetry re-verification (owner),
+ * leadAmendable shape projection (non-owner), digest asserts — all still
+ * run. Uncovered silent ChangeSets stay terminal; only exact
+ * amendment.exemptedPaths carve-outs can lift a deny.
+ *
+ * Precedence (double-application hazard): an explicitly-passed amendment
+ * object ALWAYS wins — it is newer by construction (a retry amendment was
+ * minted after any durable the loader could see). Callers MUST use
+ * `explicit ?? await loadCurrentTaskAmendmentForAssembly(...)`, never the
+ * reverse. Sites inside retry loops MUST re-resolve per attempt (call the
+ * loader fresh each turn — amendments can land mid-loop via a suspend/
+ * resume between attempts).
+ *
+ * Mechanism: DETERMINISTIC (durable reads + digest/shape gates).
+ */
+export async function loadCurrentTaskAmendmentForAssembly(
+  root: string,
+  config: HarnessProjectConfig,
+  operationId: string,
+  taskId: string,
+): Promise<RepairScopeAmendmentV1 | undefined> {
+  if (!operationId.trim() || !taskId.trim()) return undefined;
+  let all: RepairScopeAmendmentV1[];
+  try {
+    all = await listRepairScopeAmendments(root, config, taskId);
+  } catch {
+    // Scan/digest failure (tampered/truncated/unaccountable state): skip to
+    // no-amendment behavior and let the caller stay terminal fail-closed.
+    // Mirrors findReusableNonOwnerAmendmentForBlocker catch-and-miss.
+    return undefined;
+  }
+  let latest: RepairScopeAmendmentV1 | undefined;
+  let latestIndex = -1;
+  for (const candidate of all) {
+    try {
+      assertRepairScopeAmendment(candidate);
+    } catch {
+      continue;
+    }
+    if (candidate.operationId !== operationId) continue;
+    if (candidate.taskId !== taskId) continue;
+    const index = amendmentIndexForAssembly(candidate.amendmentPath);
+    if (index > latestIndex) {
+      latestIndex = index;
+      latest = candidate;
+    }
+  }
+  return latest;
+}
+
+/** DETERMINISTIC numeric index parse for amendmentPath (`...-scope-amendment-<N>.json`); unparseable maps to 0 (never wins over a numbered entry). */
+function amendmentIndexForAssembly(amendmentPath: unknown): number {
+  if (typeof amendmentPath !== "string") return 0;
+  const match = /-scope-amendment-(\d+)\.json$/.exec(amendmentPath.trim());
+  if (!match) return 0;
+  const parsed = Number(match[1]);
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 0;
+}
+
 export function assertRepairScopeAmendment(value: unknown): asserts value is RepairScopeAmendmentV1 {
   if (!value || typeof value !== "object") throw new AehError("PARTICIPANT_PLAN_INVALID", "Repair scope amendment is not an object.");
   const record = value as Record<string, unknown>;
