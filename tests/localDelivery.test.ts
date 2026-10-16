@@ -305,6 +305,40 @@ describe("D25 local delivery for accepted plain CHANGE (GitHub disabled)", () =>
     }
   });
 
+  it("P2-receipt: a tampered receipt pointing at a wrong-content ancestor tip never reports success", async () => {
+    // Pinned base stays at B1 while main advances: the wrong-content tip can
+    // be an ancestor of HEAD without tripping the base-moved gate.
+    const context = await createLocalFixture({ pinnedBase: "delivery-base" });
+    const first = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
+    expect(first.status).toBe("BLOCKED_LOCAL");
+    await git(context.repo, "checkout", "--", ".");
+
+    // Main advances with content that is NOT the accepted candidate; the
+    // delivery branch shell points at that wrong tip (ancestor of HEAD).
+    await fs.writeFile(path.join(context.repo, "README.md"), "wrong content\n");
+    await git(context.repo, "add", "README.md");
+    await git(context.repo, "commit", "-m", "unrelated wrong advance");
+    const wrongTip = await git(context.repo, "rev-parse", "HEAD");
+    expect(wrongTip).not.toBe(context.baseSha);
+    await git(context.repo, "branch", context.branch, "HEAD");
+
+    // Tamper ONLY the receipt pointer: patch bytes and candidate binding
+    // stay valid, so the freeze re-verification passes and the receipt path
+    // is genuinely exercised.
+    const recordFile = frozenRecordFile(context.repo, context.operationId);
+    const record = JSON.parse(await fs.readFile(recordFile, "utf8")) as Record<string, unknown>;
+    await fs.writeFile(recordFile, `${JSON.stringify({ ...record, deliveredCommitSha: wrongTip }, null, 2)}\n`);
+
+    const result = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
+    // Receipt + ancestry without tree proof must not bless foreign content:
+    // no false FINALIZED — converge or BLOCKED loudly instead.
+    expect(result.status).toBe("BLOCKED_LOCAL");
+    expect(result.message).toMatch(/LOCAL_DELIVERY_BLOCKED: /);
+    // No new commit was created on the stale branch, HEAD is untouched.
+    expect(await git(context.repo, "rev-parse", context.branch)).toBe(wrongTip);
+    expect(await git(context.repo, "rev-parse", "HEAD")).toBe(wrongTip);
+  });
+
   it("P2: a stale manually-created branch tip never reports success for the wrong content", async () => {
     // Pinned base stays at B1 while main advances: the stale branch tip can
     // be an ancestor of HEAD without tripping the base-moved gate.

@@ -385,31 +385,15 @@ export async function finalizeLocalChangeDelivery(
   const headSha = await revParse(controlRoot, "HEAD");
   const candidateTreeDigest = boundCandidate.sourceDigest;
 
-  // Post-success rerun probe: the stored delivery receipt for this exact
-  // candidate (patch digest already re-verified by the freeze above) whose
-  // commit HEAD already contains is a no-op success.
+  // No-op success requires ALL THREE: the durable delivery receipt for this
+  // exact candidate (patch digest re-verified by the freeze above), tree
+  // proof that the tip materializes the accepted candidate, and ancestry
+  // (HEAD already contains the tip). Receipt + ancestry alone never report
+  // success: a tampered receipt pointing at a wrong-content tip already
+  // contained in HEAD, or a stale branch that merely happens to be an
+  // ancestor, falls through to the normal apply/verify flow below
+  // (converge or BLOCKED loudly), never silent success.
   const branchExists = await refExists(controlRoot, quoteRef(branch));
-  if (frozen.deliveredCommitSha && branchExists) {
-    const tip = await revParse(controlRoot, quoteRef(branch));
-    if (tip === frozen.deliveredCommitSha && (await isAncestor(controlRoot, tip, headSha))) {
-      return {
-        status: "FINALIZED",
-        humanRequired: false,
-        committed: false,
-        pushed: false,
-        commitSha: tip,
-        candidate: boundCandidate,
-        localBranch: branch,
-        message: `Accepted CHANGE already delivered locally on ${branch} (${tip.slice(0, 12)}); HEAD already contains the delivery commit (no-op).`,
-      };
-    }
-  }
-  // P2: branch ancestry alone never reports success. A no-op success
-  // requires BOTH the durable delivery receipt for this exact candidate
-  // (re-verified above) AND tree proof that the tip materializes the
-  // accepted candidate. Otherwise fall through to the normal apply/verify
-  // flow below, which converges or BLOCKEDs loudly instead of blessing
-  // foreign content.
   if (branchExists) {
     const tip = await revParse(controlRoot, quoteRef(branch));
     const receiptDelivered = frozen.deliveredCommitSha === tip;
