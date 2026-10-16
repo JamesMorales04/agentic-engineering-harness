@@ -64,6 +64,13 @@ Within the delegated project, `FULL_PROJECT_OWNER` covers `decision.resolve`,
   binding checks plus grant verification. Delegated decisions are recorded
   under the delegate actor with `delegatedFrom` provenance — never as human
   decisions, never force-approved (the delegate approves or rejects).
+- Repair scope amendments accept delegated approvals: a delegate product
+  choice with valid `delegatedFrom` provenance authorizes both regular and
+  hard (owner-exempted) scope widening exactly like a human approval. The
+  grant is re-verified for `scope.amend` at apply/mint time (recording only
+  checked `decision.resolve`), and the provenance is preserved into the
+  amendment artifact and exemption grant; deny choices still leave BLOCKED
+  standing.
 - Fresh operations and Owner-boundary resolutions run through explicit CLI
   starts with `--as-delegate <delegationId>`; the verified provenance is
   frozen into the operation origin. Linked recoveries cannot silently extend
