@@ -430,6 +430,16 @@ export function generatedArtifactPaths(config: HarnessProjectConfig): string[] {
   const codeIntelligence = config.codeIntelligence;
   const paths = config.context?.semanticRetrieval?.provider === "serena" ? [".serena"] : [];
   if (codeIntelligence?.provider === "graphify") paths.push("graphify-out", codeIntelligence.graphPath ?? "graphify-out/graph.json", codeIntelligence.snapshotDir ?? ".harness/graphify");
+  // D8: the harness-provisioned managed-asset manifest is machine state that
+  // toolchain setup rewrites inside isolated execution roots (version stamps,
+  // asset refresh). Attributing those provision writes to worker candidates
+  // fails validation scope gates on harness-owned files, so validation
+  // changed-file accounting ignores it. The manifest is in neither the
+  // forbidden nor the frozen sets, so those checks are unaffected; a worker
+  // writing managed files is still denied at assembly scope gates, and seals
+  // keep their own frozen verification.
+  // MECHANISM: DETERMINISTIC (static list).
+  paths.push(".harness/managed-assets.json");
   return paths;
 }
 

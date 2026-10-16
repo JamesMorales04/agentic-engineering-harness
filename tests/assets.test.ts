@@ -1,8 +1,11 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { reconcileHarnessAssets } from "../src/core/assets.js";
+import { generatedArtifactPaths, getChangedFiles } from "../src/core/git.js";
+import type { HarnessProjectConfig } from "../src/core/types.js";
 
 async function sourceRoot(version: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), `aeh-assets-source-${version}-`));
@@ -46,5 +49,37 @@ describe("managed Harness assets", () => {
 
     expect(result.preservedOverrides).toContain(".harness/skills/engineering-workflow/SKILL.md");
     expect(await fs.readFile(skill, "utf8")).toBe("local override\n");
+  });
+
+  it("leaves the manifest byte-identical on a no-op reconcile (D8 mtime hygiene)", async () => {
+    const project = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-assets-idempotent-"));
+    const v1 = await sourceRoot("v1");
+    await reconcileHarnessAssets(project, { packageRoot: v1, aehVersion: "0.6.0" });
+    const manifestFile = path.join(project, ".harness/managed-assets.json");
+    const before = await fs.readFile(manifestFile, "utf8");
+    const second = await reconcileHarnessAssets(project, { packageRoot: v1, aehVersion: "0.6.0" });
+    expect(second.created).toEqual([]);
+    expect(second.updated).toEqual([]);
+    expect(second.removed).toEqual([]);
+    expect(await fs.readFile(manifestFile, "utf8")).toBe(before);
+  });
+
+  it("excludes the provisioned managed-asset manifest from validation changed files (D8)", async () => {
+    const config = { version: 1, project: { name: "d8" } } as unknown as HarnessProjectConfig;
+    expect(generatedArtifactPaths(config)).toContain(".harness/managed-assets.json");
+
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-assets-changedfiles-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: repo });
+    await fs.mkdir(path.join(repo, ".harness"), { recursive: true });
+    await fs.writeFile(path.join(repo, ".harness/managed-assets.json"), '{}\n');
+    await fs.writeFile(path.join(repo, "src-util.js"), "v1\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], { cwd: repo });
+    // Provision-style rewrite (version stamp churn) plus a genuine source edit.
+    await fs.writeFile(path.join(repo, ".harness/managed-assets.json"), '{"version":1}\n');
+    await fs.writeFile(path.join(repo, "src-util.js"), "v2\n");
+    const changed = await getChangedFiles(repo, "HEAD", { ignoredPaths: generatedArtifactPaths(config) });
+    expect(changed).toEqual(["src-util.js"]);
   });
 });
