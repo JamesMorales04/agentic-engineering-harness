@@ -186,6 +186,11 @@ export async function compilePaseoAgentLaunchSpec(root: string, config: HarnessP
   if (workspaceId) labels["aeh.workspace.id"] = workspaceId;
   if (selection?.profile) labels["aeh.profile"] = selection.profile;
   if (selection?.outputContract) labels["aeh.output.contract"] = selection.outputContract;
+  // D6: carry the frozen write authority into the turn labels so the provider
+  // lease choke point (withProviderSessionLease) can take a read lease for
+  // read-only roles. Only an explicit "deny" reads as read; absent/"allow"/
+  // "ask" stay write (fail-closed). MECHANISM: DETERMINISTIC.
+  if (selection?.permissions?.write) labels["aeh.permissions.write"] = selection.permissions.write;
   if (durable) labels["aeh.operation.revision"] = String(durable.revision);
   if (parentAgentId) labels["aeh.parent-agent"] = parentAgentId;
   if (supervisorGeneration !== undefined) labels["aeh.supervisor.generation"] = String(supervisorGeneration);

@@ -447,6 +447,13 @@ async function withProviderSessionLease<T>(
   const supervisorAgentId = participantId && labels?.["aeh.supervisor"] === "true" ? participantId : undefined;
   const leadAgentId = participantId ? undefined : labels?.["aeh.lead.agentId"]?.trim();
   const leadGeneration = leadAgentId ? Number(labels?.["aeh.lead.generation"]) : undefined;
+  // D6: read-only turns take a read lease so concurrent readers on one shared
+  // workspace (audit reviewers) never conflict. Signals, in order: the frozen
+  // write authority carried in the turn labels, then the canonical Reviewer
+  // role as backstop for labels compiled without the authority field.
+  // Anything else (including absent signals) stays "write" (fail-closed).
+  // MECHANISM: DETERMINISTIC. No model judgment.
+  const leaseMode = labels?.["aeh.permissions.write"] === "deny" || labels?.["aeh.canonical.role"] === "Reviewer" ? "read" as const : "write" as const;
   const stateRoot = context.controlRoot ?? process.env.AEH_CONTROL_ROOT?.trim() ?? root;
   const operation = await loadOperation(stateRoot, operationId);
   const binding = executionBindingFromLabels(labels);
@@ -460,6 +467,7 @@ async function withProviderSessionLease<T>(
     workspaceId: providerLeaseWorkspaceKeyV1({ explicitWorkspaceId: workspaceId, labelWorkspaceId: labels?.["aeh.workspace.id"], launchRoot: root, stateRoot, operationWorkspaceId: operation.workspaceId, operationId }),
     operationId,
     ...(supervisorAgentId ? { supervisorAgentId } : participantId ? { participantId } : { leadAgentId, leadGeneration }),
+    mode: leaseMode,
     sessionId,
     executionBinding: binding,
     inspect: async (agentId) => deps.sdk.inspect(root, agentId),
