@@ -101,6 +101,7 @@ import { compileOperationOriginV1, type OperationDelegationProvenanceV1, type Op
 import { resolveRecoveryAuthorityV1 } from "./recoveryAuthority.js";
 import { verifyDelegatedOwnerGrantV1 } from "../security/ownerAuthority.js";
 import { createTrustedOperationToolError } from "./toolDiagnostics.js";
+import { resolveStartLeadBinding, tryResolveDurableLeadIdentity } from "./leadBinding.js";
 
 export { bindBootstrapOperationPolicy };
 
@@ -307,10 +308,29 @@ export async function startDetachedOperation(
   const controllerToken = controllerTokenFromEnvironment() ?? "";
 
   const completionAgentId = options.completionAgentId?.trim() || process.env.PASEO_AGENT_ID?.trim() || undefined;
+  const completionSource = options.completionSource ?? (options.completionAgentId ? "explicit" : "environment");
   if (completionAgentId) {
-    const source = options.completionSource ?? (options.completionAgentId ? "explicit" : "environment");
-    await registerOperationCompletionTarget(absoluteRoot, id, completionAgentId, source);
-    record = await bindOperationLead(absoluteRoot, id, completionAgentId, source);
+    // The starter identity is a COMPLETION NOTIFICATION target only.
+    // Operation-lead authority binds solely to the verified durable managed
+    // lead (D17): an ambient PASEO_AGENT_ID (e.g. an external Director shell)
+    // or an unverified explicit id must never become operation.lead, or the
+    // S6 managed-lead-acceptance turn would solicit semantic acceptance from
+    // the wrong principal.
+    await registerOperationCompletionTarget(absoluteRoot, id, completionAgentId, completionSource);
+    const leadBinding = resolveStartLeadBinding(
+      { agentId: completionAgentId, source: completionSource },
+      await tryResolveDurableLeadIdentity(absoluteRoot)
+    );
+    if (leadBinding.status === "UNBOUND") {
+      await recordPaseoTrace(absoluteRoot, "operation.lead.unbound", { operationId: id, reason: leadBinding.reason, starterAgentId: completionAgentId, starterSource: completionSource }).catch(() => undefined);
+    } else {
+      if (leadBinding.status === "DURABLE") {
+        await recordPaseoTrace(absoluteRoot, "operation.lead.durable-fallback", { operationId: id, agentId: leadBinding.agentId, starterAgentId: completionAgentId, starterSource: completionSource }).catch(() => undefined);
+      } else {
+        await recordPaseoTrace(absoluteRoot, "operation.lead.verified", { operationId: id, agentId: leadBinding.agentId, source: leadBinding.source }).catch(() => undefined);
+      }
+      record = await bindOperationLead(absoluteRoot, id, leadBinding.agentId, leadBinding.source);
+    }
   }
   if (config) await syncOperationPortfolio(absoluteRoot, config.project.name, record);
 

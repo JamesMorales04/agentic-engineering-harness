@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveContextAgentIdentity } from "../src/operations/mcp.js";
 import { handleOperationMcpRequest } from "../src/operations/mcp.js";
 import { saveOperation, type OperationRecordV2 } from "../src/operations/state.js";
-import { PASEO_BOOTSTRAP_VERSION } from "../src/paseo/start.js";
+import { PASEO_BOOTSTRAP_VERSION } from "../src/paseo/leadState.js";
 import { VERSION } from "../src/version.js";
 
 const roots: string[] = [];

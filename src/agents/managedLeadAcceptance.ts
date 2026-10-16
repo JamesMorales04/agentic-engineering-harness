@@ -6,6 +6,7 @@ import type { CandidateAssuranceCompilationV1 } from "../architecture/candidateA
 import { sha256Canonical } from "../core/digest.js";
 import type { ValidationReport } from "../core/types.js";
 import { loadOperation, resolveOperationStateRoot } from "../operations/state.js";
+import { assertDurableLeadBinding } from "../operations/leadBinding.js";
 
 const leadOutputSchema = z.object({
   assertions: z.array(z.object({ assertionId: z.string().trim().min(1), verdict: z.enum(["PASS", "FAIL"]), rationale: z.string().trim().min(1) }).strict()),
@@ -48,6 +49,12 @@ export async function requestManagedLeadAcceptance(input: {
   if (!binding?.agentId || !Number.isSafeInteger(binding.generation) || binding.generation < 1) {
     throw new Error("ACCEPTANCE_LEAD_REQUIRED: managed operation has no current bound Lead generation.");
   }
+  // D17 defense in depth (MECHANISM: DETERMINISTIC): the bound lead must BE
+  // the durable managed lead for the control root. operation.root is the
+  // persisted control root even when S6 runs from a workspace execution root.
+  // A mismatch fails closed here instead of dispatching the acceptance turn
+  // to a non-lead session.
+  await assertDurableLeadBinding(operation.root ?? input.root, binding);
   if (binding.agentId === input.implementationIdentity || operation.participants[binding.agentId]?.logicalAgent === input.implementationIdentity) {
     throw new Error("ACCEPTANCE_LEAD_NOT_INDEPENDENT: bound managed Lead is the implementation actor.");
   }

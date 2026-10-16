@@ -32,6 +32,7 @@ import {
   operationEventsFile,
   operationFile,
   acknowledgeOperationLead,
+  bindOperationLead,
   patchOperation,
   patchOperationMetadata,
   registerOperationAgent,
@@ -1244,6 +1245,7 @@ describe("operation controller state", () => {
       initiator: { kind: "LEAD", agentId: "lead-old", userTurnId: "owner-turn-A", requestEventId: "jsonrpc:failed-parent" },
       spawnProcess: vi.fn(() => ({ pid: 4200, unref: vi.fn() })) as never
     });
+    await bindOperationLead(root, parent.id, "lead-old");
     const terminal = await transitionOperationToTerminal(root, parent.id, { status: "FAILED", phase: "failed", error: "bounded Explorer failure" });
     const sameTurnRequest = createIntentDecision("audit", "Retry the failed task in a new operation.", "lead-semantic");
     await expect(startDetachedOperation(root, "audit", { request: "Retry the same Owner turn as an independent root.", intentDecision: sameTurnRequest }, {
@@ -1265,8 +1267,16 @@ describe("operation controller state", () => {
     expect(Date.parse(independent.origin!.rootHardDeadlineAt)).toBeGreaterThan(Date.parse(terminal.record.origin!.rootHardDeadlineAt));
     expect((await loadOperation(root, parent.id)).revision).toBe(terminal.record.revision);
 
-    await syncOperationPortfolio(root, "demo", terminal.record);
-    await syncOperationPortfolio(root, "demo", independent);
+    // D17: operation start no longer confers lead authority on unverified
+    // starter identities, so the two-lead portfolio scenario is established
+    // through the lead-binding state primitive (the same one lead rotation
+    // uses) instead of relying on start-time binding of arbitrary starters.
+    // (The parent lead binds before terminalization: terminal records are
+    // immutable to custom mutations.)
+    await bindOperationLead(root, independent.id, "lead-current");
+
+    await syncOperationPortfolio(root, "demo", await loadOperation(root, parent.id));
+    await syncOperationPortfolio(root, "demo", await loadOperation(root, independent.id));
     const portfolio = await loadOperationPortfolio(root, "demo", { currentLeadAgentId: "lead-current", currentUserTurnId: "owner-turn-B" });
     expect(portfolio.operations[parent.id]).toMatchObject({ leadRelationship: "BOUND_OTHER_LEAD", lineageRelationship: "HISTORICAL_UNRELATED", ownerAttention: "CHAIN_SCOPED_BOUNDARY" });
     expect(portfolio.operations[independent.id]).toMatchObject({ leadRelationship: "BOUND_CURRENT_LEAD", lineageRelationship: "CURRENT_ROOT", ownerAttention: "NONE" });

@@ -10,9 +10,8 @@ import { answerInformationalRequest } from "../informational/answer.js";
 import { retrieveInformationalEvidence } from "../informational/evidence.js";
 import { statusLeadContext } from "../paseo/context.js";
 import { inspectPaseoNativeAgent } from "../paseo/native.js";
-import { PASEO_BOOTSTRAP_VERSION } from "../paseo/start.js";
 import { recordPaseoTrace } from "../paseo/trace.js";
-import { VERSION } from "../version.js";
+import { resolveDurableLeadIdentity } from "./leadBinding.js";
 import { decideParticipantRecoveryV1, readExecutionActivityEventsV1 } from "./executionLiveness.js";
 import { assertSameSessionResumeCompatibleV1 } from "./recoveryIdentity.js";
 import { dispatchSameSessionResumeV1 } from "./supervisorMcp.js";
@@ -397,32 +396,9 @@ export async function resolveContextAgentIdentity(
   const environment = safeOptionalString(env.PASEO_AGENT_ID);
   if (environment) return { agentId: environment, source: "environment" };
 
-  const absoluteRoot = path.resolve(root);
-  const config = await loadProjectConfig(absoluteRoot);
-  const stateDir = path.resolve(absoluteRoot, config.orchestration?.interactive?.stateDir ?? ".harness/paseo");
-  const stateFile = path.join(stateDir, "lead-session.json");
-  let value: unknown;
-  try { value = JSON.parse(await fs.readFile(stateFile, "utf8")); }
-  catch (error) {
-    throw new Error(`AEH could not resolve the current managed lead agent: neither an explicit agentId nor PASEO_AGENT_ID is available, and ${stateFile} could not be read as durable lead state. Start a fresh managed lead with aeh start or pass agentId explicitly for diagnostics. (${error instanceof Error ? error.message : String(error)})`);
-  }
-
-  const state = object(value);
-  const agentId = safeOptionalString(state.agentId);
-  const projectRoot = safeOptionalString(state.projectRoot);
-  const projectName = safeOptionalString(state.projectName);
-  const aehVersion = safeOptionalString(state.aehVersion);
-  const version = typeof state.version === "number" ? state.version : undefined;
-  const bootstrapVersion = typeof state.bootstrapVersion === "number" ? state.bootstrapVersion : undefined;
-  const mismatches: string[] = [];
-  if (version !== 2) mismatches.push(`state version ${String(version ?? "missing")} != 2`);
-  if (bootstrapVersion !== PASEO_BOOTSTRAP_VERSION) mismatches.push(`bootstrap ${String(bootstrapVersion ?? "missing")} != ${PASEO_BOOTSTRAP_VERSION}`);
-  if (aehVersion !== VERSION) mismatches.push(`AEH ${aehVersion ?? "missing"} != ${VERSION}`);
-  if (!projectRoot || path.resolve(projectRoot) !== absoluteRoot) mismatches.push("project root does not match AEH_CONTROL_ROOT");
-  if (projectName !== config.project.name) mismatches.push(`project ${projectName ?? "missing"} != ${config.project.name}`);
-  if (!agentId) mismatches.push("agentId is missing");
-  if (mismatches.length) throw new Error(`AEH refused incompatible durable lead state at ${stateFile}: ${mismatches.join("; ")}. Start a fresh managed lead with aeh start or pass agentId explicitly for diagnostics.`);
-  return { agentId: agentId!, source: "lead-state" };
+  // Durable lead-session authority lives in operations/leadBinding.ts (D17:
+  // single reader shared with operation-start binding and S6 verification).
+  return resolveDurableLeadIdentity(root);
 }
 
 function digestToolResult(operation: OperationRecordV2): Record<string, unknown> {

@@ -13,8 +13,7 @@ import { detectPaseoDaemonCapabilities, observePaseoDaemonStatus } from "./capab
 import { launchManagedPaseoAgent, probeManagedPaseoAgent } from "./runtime.js";
 import type { PaseoSdkAgentOptions } from "./sdk.js";
 import { createManagedRuntime, runtimeProjectId, type ManagedRuntimeSupervisorV1 } from "../runtime/index.js";
-
-export const PASEO_BOOTSTRAP_VERSION = 14;
+import { PASEO_BOOTSTRAP_VERSION, type PaseoLeadState } from "./leadState.js";
 export type PaseoSessionPolicy = "fresh-on-start" | "reuse-compatible" | "resume-explicit";
 
 export interface PaseoStartOptions {
@@ -25,22 +24,6 @@ export interface PaseoStartOptions {
   leadAgent?: string;
   title?: string;
   aehCommand?: string;
-  handoffPath?: string;
-}
-export interface PaseoLeadState {
-  version: 2;
-  bootstrapVersion: number;
-  aehVersion: string;
-  aehCommand: string;
-  projectRoot: string;
-  projectName: string;
-  agentId: string;
-  title: string;
-  leadAgent: string;
-  provider: string;
-  model: string;
-  createdAt: string;
-  generation?: number;
   handoffPath?: string;
 }
 export interface PaseoStartResult {
