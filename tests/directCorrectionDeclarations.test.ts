@@ -3,6 +3,7 @@ import { AehError } from "../src/core/errors.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 import {
   DirectCorrectionScopeBlockedError,
+  deriveDirectRetryExemptionsV1,
   directCorrectionDeclarationsCoverEscapeV1,
   routeDirectScopeDeclarationsV1,
 } from "../src/core/run.js";
@@ -71,5 +72,32 @@ describe("DIRECT escape-correction declaration routing", () => {
     expect(error.code).toBe("DIRECT_CORRECTION_SCOPE_BLOCKED");
     expect(error.check).toBe(check);
     expect(error.session).toBe(session);
+  });
+
+  it("exemptions: lead amendment projects only new-test-tier paths (no owner grant)", async () => {
+    const exemptions = await deriveDirectRetryExemptionsV1({
+      stateRoot: "/nonexistent",
+      operation: undefined as never,
+      amendment: { exemptedPaths: ["tests/new-live.test.ts"] } as never,
+    });
+    expect(exemptions).toEqual(["tests/new-live.test.ts"]);
+  });
+
+  it("exemptions: lead amendment drops non-tier hard paths (fail-closed, no carve-out)", async () => {
+    const exemptions = await deriveDirectRetryExemptionsV1({
+      stateRoot: "/nonexistent",
+      operation: undefined as never,
+      amendment: { exemptedPaths: ["src/validators/rules.ts"] } as never,
+    });
+    expect(exemptions).toBeUndefined();
+  });
+
+  it("exemptions: missing amendment yields no carve-out", async () => {
+    const exemptions = await deriveDirectRetryExemptionsV1({
+      stateRoot: "/nonexistent",
+      operation: undefined as never,
+      amendment: undefined,
+    });
+    expect(exemptions).toBeUndefined();
   });
 });

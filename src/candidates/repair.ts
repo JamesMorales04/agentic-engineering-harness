@@ -723,7 +723,7 @@ function effectiveRepairScope(
  * as before (fail closed). The in-memory amendment is never trusted on its
  * own: only a MAC-verified durable grant authorizes the projection.
  */
-async function verifiedOwnerExemptionForRetry(
+export async function verifiedOwnerExemptionForRetry(
   stateRoot: string,
   operation: Awaited<ReturnType<typeof loadOperation>>,
   amendment: RepairScopeAmendmentV1 | undefined,

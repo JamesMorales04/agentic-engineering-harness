@@ -53,17 +53,19 @@ import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperation
 import type { CandidateImpactAssessmentRuntimeV1, CandidateScopeEscapeV1, ChangeSetV1 } from "../candidates/assembler.js";
 import { synthesizeNoChangeImpactV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
-import { executeRepairerCandidateMutation, partitionRepairScopeBlockerFiles, repairProtectedPaths } from "../candidates/repair.js";
+import { executeRepairerCandidateMutation, partitionRepairScopeBlockerFiles, repairProtectedPaths, verifiedOwnerExemptionForRetry } from "../candidates/repair.js";
 import {
   applyAnchoredCoveringGrantForBlocker,
   assertRepairScopeBlockerReceipt,
   createRepairScopeBlockerReceipt,
+  isNewTestCreationTierPath,
   isSafeRepairScopePath,
   listRepairScopeAmendments,
   normalizeRepairScopePath,
   parseRepairScopeBlockerFromSession,
   repairScopeBlockerValidationCheck,
   resolveRepairScopeBlockerViaProductChoice,
+  type RepairScopeAmendmentV1,
   type RepairScopeNeededFileV1,
   writeRepairScopeBlockerReceipt,
 } from "../candidates/repairScope.js";
@@ -256,14 +258,17 @@ export async function withBoundedRepairStallRetryV1<T extends { session: WorkerS
   }
 }
 
-/** Marker for a DIRECT escape-correction whose declarations were declined/timed-out (fail-closed suspend boundary). */
+/** Marker for a DIRECT escape-correction whose declarations were declined/expired/unanswered (fail-closed suspend boundary).
+ * NOTE: the message must never contain timeout/deadline/stall/exit-124
+ * patterns: withOneScopeEscapeCorrectionTurnV1 maps those to the ORIGINAL
+ * escape kill, which would swallow this marker and strand the suspend. */
 export class DirectCorrectionScopeBlockedError extends AehError {
   readonly check: ValidationCheck;
   readonly session: WorkerSession;
   constructor(check: ValidationCheck, session: WorkerSession) {
     super(
       "DIRECT_CORRECTION_SCOPE_BLOCKED",
-      "direct escape-correction scope declarations were declined, timed out, expired, or went unanswered; refusing validation and repair while suspended",
+      "direct escape-correction scope declarations were declined, expired, or went unanswered; refusing validation and repair while suspended",
     );
     this.name = "DirectCorrectionScopeBlockedError";
     this.check = check;
@@ -273,7 +278,7 @@ export class DirectCorrectionScopeBlockedError extends AehError {
 
 export type DirectScopeDeclarationRoutingV1 =
   | { status: "NONE" }
-  | { status: "AMENDED"; contract: TaskContract; exemptedPaths: readonly string[] }
+  | { status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1; exemptedPaths: readonly string[] }
   | { status: "BLOCKED"; check: ValidationCheck };
 
 /**
@@ -397,7 +402,36 @@ export async function routeDirectScopeDeclarationsV1(input: {
     exemptedPaths: resolution.amendment.exemptedPaths, decisionId: resolution.amendment.decisionId,
     requestId: resolution.amendment.requestId, decidedActor: resolution.amendment.decidedActor,
   }).catch(() => undefined);
-  return { status: "AMENDED", contract: resolution.contract, exemptedPaths: resolution.amendment.exemptedPaths };
+  return { status: "AMENDED", contract: resolution.contract, amendment: resolution.amendment, exemptedPaths: resolution.amendment.exemptedPaths };
+}
+
+/**
+ * DETERMINISTIC derivation of assembler exact-scope exemptions for a DIRECT
+ * amended retry (mirrors the repair-path derivation in repair.ts).
+ * Exact files only; the assembler independently re-validates shape plus
+ * amended-allowlist membership, so a carve-out can only ever lift a
+ * forbidden deny, never grant allow. Authority stays in the amendment:
+ * owner-cited paths require a re-verified live owner grant (TOCTOU-safe),
+ * and non-owner amendments project only H-NEW-13 new-test-tier paths
+ * (verified non-existent under tests/ at apply time, trusted without
+ * re-stat exactly like the repair path). Anything else yields no
+ * exemptions (fail-closed: the retry assembles against the amended scope
+ * with no carve-out).
+ */
+export async function deriveDirectRetryExemptionsV1(input: {
+  stateRoot: string;
+  operation: Awaited<ReturnType<typeof loadOperation>>;
+  amendment: RepairScopeAmendmentV1 | undefined;
+}): Promise<readonly string[] | undefined> {
+  const ownerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, input.operation, input.amendment);
+  const exactFromOwner = ownerScope && input.amendment ? [...input.amendment.exemptedPaths] : [];
+  const leadAmendableNewTestPaths = input.amendment && !input.amendment.ownerExemption
+    ? input.amendment.exemptedPaths.filter((filePath) =>
+      isNewTestCreationTierPath(normalizeRepairScopePath(String(filePath ?? "").trim())),
+    )
+    : [];
+  const merged = [...new Set([...exactFromOwner, ...leadAmendableNewTestPaths])];
+  return merged.length ? merged : undefined;
 }
 
 /**
@@ -871,7 +905,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           2;
         const allowDirectCorrection =
           Boolean(selection) && directMaxRepairsForCorrection >= 1 && !directEscapeCorrectionUsed;
-        const assembleDirectChangeSet = (changeSet: ChangeSetV1) =>
+        const assembleDirectChangeSet = (changeSet: ChangeSetV1, exactScopeExemptions?: readonly string[]) =>
           assembleAndBindCandidateChangeSet({
             root: workspaceRoot,
             stateRoot: controlRoot,
@@ -886,6 +920,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             workspace: currentCandidate.workspace,
             worktree: workspaceRoot,
             semanticAssessment: impactAssessmentRuntime,
+            ...(exactScopeExemptions?.length ? { exactScopeExemptions } : {}),
             onScopeEscape,
           });
         const initialChangeSet = isolated.changeSet;
@@ -1019,7 +1054,19 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
                   if (routing.status === "AMENDED") {
                     effectiveContract = routing.contract;
                     directScopes = computeDirectScopes(effectiveContract);
-                    correctionAssembled = await assembleDirectChangeSet(correctionIsolated.changeSet);
+                    // Amendment-path exact carve-out: the resealed allowlist
+                    // alone cannot lift hard subtree denies (tests/**), so
+                    // the verified exact files travel as assembler
+                    // exemptions (assembler re-validates shape plus
+                    // amended-allowlist membership; authority stays in the
+                    // amendment verified below).
+                    const retryOperation = await loadOperation(operationStateRoot, operationId);
+                    const retryExemptions = await deriveDirectRetryExemptionsV1({
+                      stateRoot: controlRoot,
+                      operation: retryOperation,
+                      amendment: routing.amendment,
+                    });
+                    correctionAssembled = await assembleDirectChangeSet(correctionIsolated.changeSet, retryExemptions);
                     return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, assembled: correctionAssembled };
                   }
                   if (routing.status === "BLOCKED") {
