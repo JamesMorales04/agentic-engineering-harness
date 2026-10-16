@@ -197,6 +197,24 @@ describe("RuntimeSupervisorV1", () => {
     expect(supervisor.snapshot().providerLeases.map((lease) => lease.leaseId)).toEqual([resumed.leaseId]);
   });
 
+  it("scopes own-marker reap to the acquisition scope: another operation's fence for the same owner survives (Luna D6 round 4)", () => {
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const supervisor = new RuntimeSupervisorV1({ clock: () => now, leaseTtlMs: 100 });
+    // Wave path uses bare task.id as ownerId across operations: task-a holds
+    // a marker in op-a's workspace.
+    const markerA = supervisor.acquireProviderLease({ provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "ws-op-a", mode: "write", ownerId: "task-a" });
+    now = new Date("2026-01-01T00:00:00.101Z");
+    // Same owner acquiring in op-b's workspace must NOT reap op-a's expired
+    // marker (scope-blind reap would delete another operation's fence).
+    const other = supervisor.acquireProviderLease({ provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "ws-op-b", mode: "write", ownerId: "task-a" });
+    expect(supervisor.snapshot().providerLeases.map((lease) => lease.leaseId).sort()).toEqual([markerA.leaseId, other.leaseId].sort());
+    // A different task in op-a's workspace is still fenced by the retained
+    // marker (quiescence-gated takeover path in production); readers bypass.
+    expect(() => supervisor.acquireProviderLease({ provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "ws-op-a", mode: "write", ownerId: "task-b" })).toThrow(RuntimeOwnershipError);
+    const reader = supervisor.acquireProviderLease({ provider: "wave", projectId: "p", canonicalRoot: "/r", workspaceId: "ws-op-a", mode: "read", ownerId: "task-b" });
+    expect(reader.mode).toBe("read");
+  });
+
   it("rejects persisted snapshots that contain conflicting active provider writers", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-managed-runtime-conflict-"));
     try {

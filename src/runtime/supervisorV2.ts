@@ -289,15 +289,20 @@ export class RuntimeSupervisorV1 {
       mode: input.mode,
     }, now.getTime());
     if (conflicting.length) throw new RuntimeOwnershipError(`provider ${input.provider} is already leased in ${input.workspaceId} by ${conflicting[0]!.ownerId}.`);
-    // Crash-recovery hygiene (Luna D6 round 3): reap the CALLER'S OWN expired
-    // markers. Same-owner re-acquire is the legitimate resume path (the
-    // controller serializes attempts per owner: one wave execution per task
-    // with retry-after-return plus finally-release, and one uuid reservation
-    // per provider turn) — the owner replacing its own dead marker can never
-    // overlap ANOTHER owner. Other owners' markers are never touched here;
+    // Crash-recovery hygiene (Luna D6 round 3+4): reap the CALLER'S OWN
+    // expired markers IN THIS SCOPE ONLY (same provider/project/root/
+    // workspace as the acquisition — the same key the conflict predicate
+    // uses). Same-owner re-acquire is the legitimate resume path, but the
+    // wave path uses bare task.id as ownerId across operations, so a
+    // scope-blind reap could delete another operation's fence for the same
+    // task id. Own markers in other scopes are left for their own scope's
+    // next acquisition. Other owners' markers are never touched here;
     // writers still meet them through the quiescence-gated takeover path.
+    const ownScope = key(input.provider, input.projectId, root, input.workspaceId);
     for (const [leaseId, lease] of this.leases) {
-      if (lease.ownerId === input.ownerId && Date.parse(lease.expiresAt) <= now.getTime()) this.leases.delete(leaseId);
+      if (lease.ownerId === input.ownerId
+        && key(lease.provider, lease.projectId, lease.canonicalRoot, lease.workspaceId) === ownScope
+        && Date.parse(lease.expiresAt) <= now.getTime()) this.leases.delete(leaseId);
     }
     const ttlMs = input.ttlMs ?? this.leaseTtlMs;
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new RuntimeOwnershipError("provider lease ttl must be a positive integer.");
@@ -345,10 +350,13 @@ export class RuntimeSupervisorV1 {
     if (conflicting.length) {
       return queuedForConflictingLeases(input.provider, input.workspaceId, conflicting, now.getTime());
     }
-    // Same crash-recovery hygiene as acquireProviderLease: reap the CALLER'S
-    // OWN expired markers (same-owner resume; never another owner's).
+    // Same crash-recovery hygiene as acquireProviderLease, scoped to this
+    // acquisition's key (Luna D6 round 4): own expired markers only.
+    const ownScope = key(input.provider, input.projectId, root, input.workspaceId);
     for (const [leaseId, lease] of this.leases) {
-      if (lease.ownerId === input.ownerId && Date.parse(lease.expiresAt) <= now.getTime()) this.leases.delete(leaseId);
+      if (lease.ownerId === input.ownerId
+        && key(lease.provider, lease.projectId, lease.canonicalRoot, lease.workspaceId) === ownScope
+        && Date.parse(lease.expiresAt) <= now.getTime()) this.leases.delete(leaseId);
     }
     const ttlMs = input.ttlMs ?? this.leaseTtlMs;
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new RuntimeOwnershipError("provider lease ttl must be a positive integer.");
