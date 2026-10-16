@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { HarnessProjectConfig, TaskContract } from "../core/types.js";
 import type { CandidateRevisionV1 } from "../operations/v2Contracts.js";
@@ -41,10 +42,25 @@ import type { DeliveryFinalizationResult } from "./finalize.js";
  *  (e) control-root HEAD equals the recorded delivery base.
  * On success the frozen patch is applied onto the op's delivery branch
  * (`aeh/op-change-<sanitized-opid>`, created from base when missing), the
+ * staged index tree is re-verified against the deterministically computed
+ * expected tree (frozen base + frozen patch, no worktree reads that could
+ * race) BEFORE the commit — any mismatch resets the index (worktree
+ * untouched) and BLOCKEDs naming the race with no commit created — then the
  * applied tree digest is verified against the accepted candidate, and the
  * checked-out branch is fast-forwarded to it. Re-running after success is
- * a no-op success (HEAD already contains the delivery commit, or the patch
- * is already applied so apply is skipped and the branch is fast-forwarded).
+ * a no-op success only when BOTH the durable delivery receipt and
+ * candidate-tree proof agree (never on branch ancestry alone); otherwise
+ * delivery proceeds through the normal apply/verify flow (converge or
+ * BLOCKED loudly).
+ *
+ * Residual micro-window (accepted risk, documented): a concurrent `git add`
+ * landing strictly between the staged-tree verification and `git commit`
+ * completion could still alter the index. That residual is caught by the
+ * post-commit applied-tree digest check, which fails closed — but by then a
+ * tainted commit exists on the delivery branch. It is left in place with
+ * its SHA in the error for inspection; the frozen receipt is NOT updated,
+ * so reruns never treat it as delivered and instead converge or BLOCKED
+ * loudly.
  *
  * The frozen ChangeSet is a durable artifact (patch bytes + digests) stored
  * under the operation artifact dir. It is frozen from the candidate-bound
@@ -104,8 +120,8 @@ function blocked(message: string, candidate?: CandidateRevisionV1, localBranch?:
   };
 }
 
-async function git(root: string, args: string[], stdin?: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  return runExecutable("git", args, { cwd: root, timeoutMs: 120_000, ...(stdin !== undefined ? { stdin } : {}) });
+async function git(root: string, args: string[], stdin?: string, env?: Record<string, string | undefined>): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return runExecutable("git", args, { cwd: root, timeoutMs: 120_000, ...(stdin !== undefined ? { stdin } : {}), ...(env !== undefined ? { env } : {}) });
 }
 
 async function revParse(root: string, ref: string): Promise<string> {
@@ -137,6 +153,42 @@ function quoteRef(value: string): string {
     throw new Error(`Unsafe git ref: ${value}`);
   }
   return value;
+}
+
+/**
+ * Write the current index to a tree object (DETERMINISTIC, no worktree
+ * reads that could race): `git write-tree` snapshots the staged index
+ * only, so the returned SHA is exactly what a commit right now would
+ * record — including any content a concurrent edit smuggled into the
+ * index after the clean-tree check.
+ */
+async function writeStagedTree(controlRoot: string): Promise<string> {
+  const result = await git(controlRoot, ["write-tree"]);
+  if (result.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: cannot write staged tree during delivery verification: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
+}
+
+/**
+ * Compute the exact expected delivery tree (DETERMINISTIC): the frozen
+ * base commit plus the frozen patch hunks, built in an isolated throwaway
+ * index (`GIT_INDEX_FILE`) so no worktree state — raced or otherwise — can
+ * influence it. The throwaway index directory is always removed.
+ */
+async function computeExpectedDeliveryTree(controlRoot: string, baseSha: string, patch: string, taskId: string): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-local-delivery-"));
+  const indexFile = path.join(dir, "index");
+  try {
+    const env = { GIT_INDEX_FILE: indexFile };
+    const read = await git(controlRoot, ["read-tree", baseSha], undefined, env);
+    if (read.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: cannot read delivery base ${baseSha.slice(0, 12)} into the expected-tree index: ${read.stderr || read.stdout}`);
+    const apply = await git(controlRoot, ["apply", "--cached", "--binary", "--whitespace=nowarn", "-"], patch, env);
+    if (apply.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: frozen patch for ${taskId} does not apply to its own recorded base ${baseSha.slice(0, 12)}: ${apply.stderr || apply.stdout}`);
+    const written = await git(controlRoot, ["write-tree"], undefined, env);
+    if (written.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: cannot write expected delivery tree for ${taskId}: ${written.stderr || written.stdout}`);
+    return written.stdout.trim();
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -331,6 +383,7 @@ export async function finalizeLocalChangeDelivery(
   }
 
   const headSha = await revParse(controlRoot, "HEAD");
+  const candidateTreeDigest = boundCandidate.sourceDigest;
 
   // Post-success rerun probe: the stored delivery receipt for this exact
   // candidate (patch digest already re-verified by the freeze above) whose
@@ -351,9 +404,17 @@ export async function finalizeLocalChangeDelivery(
       };
     }
   }
+  // P2: branch ancestry alone never reports success. A no-op success
+  // requires BOTH the durable delivery receipt for this exact candidate
+  // (re-verified above) AND tree proof that the tip materializes the
+  // accepted candidate. Otherwise fall through to the normal apply/verify
+  // flow below, which converges or BLOCKEDs loudly instead of blessing
+  // foreign content.
   if (branchExists) {
     const tip = await revParse(controlRoot, quoteRef(branch));
-    if (await isAncestor(controlRoot, tip, headSha)) {
+    const receiptDelivered = frozen.deliveredCommitSha === tip;
+    const treeProven = (await computeCommitTreeDigest(controlRoot, quoteRef(branch))) === candidateTreeDigest;
+    if (receiptDelivered && treeProven && (await isAncestor(controlRoot, tip, headSha))) {
       return {
         status: "FINALIZED",
         humanRequired: false,
@@ -382,8 +443,6 @@ export async function finalizeLocalChangeDelivery(
   if (!currentBranch) {
     return blocked("control-root checkout is detached (no checked-out branch to fast-forward); refusing delivery.", boundCandidate, branch);
   }
-
-  const candidateTreeDigest = boundCandidate.sourceDigest;
 
   // Delivery branch already materializes the accepted candidate tree (a
   // previous run applied and committed but never fast-forwarded): skip the
@@ -441,6 +500,27 @@ export async function finalizeLocalChangeDelivery(
     if (applied.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: frozen patch does not apply to delivery base ${baseSha.slice(0, 12)}: ${applied.stderr || applied.stdout}`);
     const added = await git(controlRoot, ["add", "-A"]);
     if (added.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: cannot stage delivered changes: ${added.stderr || added.stdout}`);
+    // P1: re-verify the staged index tree against the deterministically
+    // computed expected tree (frozen base + frozen patch hunks, built in an
+    // isolated temp index — no worktree reads that could race) BEFORE any
+    // commit exists. On ANY mismatch a concurrent edit entered the index
+    // after the clean-tree check: reset the index (worktree untouched) and
+    // BLOCKED_LOCAL naming the race. No commit is created on this path.
+    // (Residual micro-window documented in the module docblock: a `git add`
+    // landing strictly between this verification and commit completion is
+    // caught instead by the post-commit applied-tree check, which fails
+    // closed but leaves the tainted commit for inspection.)
+    const stagedTree = await writeStagedTree(controlRoot);
+    const expectedTree = await computeExpectedDeliveryTree(controlRoot, baseSha, patch, contract.task.id);
+    if (stagedTree !== expectedTree) {
+      const reset = await git(controlRoot, ["reset"]);
+      if (reset.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: concurrent edit raced delivery staging and the delivery index cannot be reset: ${reset.stderr || reset.stdout}`);
+      return blocked(
+        `concurrent modification raced delivery staging for ${contract.task.id}: staged tree ${stagedTree.slice(0, 12)} does not match the frozen expected tree ${expectedTree.slice(0, 12)}; index reset (worktree untouched), no commit created.`,
+        boundCandidate,
+        branch
+      );
+    }
     const commitMessage = `${contract.task.id}: ${contract.task.title}`;
     const committed = await commitWithHarnessIdentity(controlRoot, commitMessage);
     if (committed.exitCode !== 0) throw new Error(`SYSTEM_FAILURE: git commit failed during local delivery: ${committed.stderr || committed.stdout}`);

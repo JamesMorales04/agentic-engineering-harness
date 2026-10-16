@@ -47,7 +47,7 @@ interface LocalFixture {
 }
 
 /** Plain local CHANGE op: base commit on main, tracked fix applied (dirty), candidate bound over it. */
-async function createLocalFixture(options: { fix?: boolean; untracked?: boolean } = {}): Promise<LocalFixture> {
+async function createLocalFixture(options: { fix?: boolean; untracked?: boolean; pinnedBase?: string } = {}): Promise<LocalFixture> {
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-local-delivery-"));
   roots.push(baseDir);
   const repo = path.join(baseDir, "repo");
@@ -60,6 +60,10 @@ async function createLocalFixture(options: { fix?: boolean; untracked?: boolean 
   await git(repo, "add", "README.md", ".gitignore");
   await git(repo, "commit", "-m", "base");
   const baseSha = await git(repo, "rev-parse", "HEAD");
+  // Optional pinned base ref that never moves while main advances: lets a
+  // test advance HEAD past the recorded base without tripping the
+  // base-moved gate for the wrong reason.
+  if (options.pinnedBase) await git(repo, "branch", options.pinnedBase);
   if (options.fix !== false) {
     await fs.writeFile(path.join(repo, "README.md"), "accepted local fix\n");
   }
@@ -74,10 +78,11 @@ async function createLocalFixture(options: { fix?: boolean; untracked?: boolean 
     validation: { baseRef: "main" },
     delivery: { stateDir: ".harness/delivery" },
   };
+  const baseRef = options.pinnedBase ?? "main";
   const contract: TaskContract = {
     version: 1,
     task: { id: "CHANGE-LOCAL-1", title: "Apply local fix" },
-    git: { baseRef: "main", originatingBranch: "main" },
+    git: { baseRef, originatingBranch: baseRef },
     routing: { route: "DIRECT", assurance: "STANDARD" },
   };
   await saveOperation(repo, { version: 1, id: operationId, kind: "change", status: "RUNNING", phase: "delivery", root: repo, payload: { taskId: contract.task.id } });
@@ -249,5 +254,82 @@ describe("D25 local delivery for accepted plain CHANGE (GitHub disabled)", () =>
     const result = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
     expect(result.status).toBe("NO_CHANGES");
     expect(await branchExists(context.repo, context.branch)).toBe(false);
+  });
+
+  it("P1: a concurrent edit racing staging BLOCKEDs with no commit created", async () => {
+    const context = await createLocalFixture();
+    // Freeze the accepted ChangeSet on the first (dirty) attempt.
+    const first = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
+    expect(first.status).toBe("BLOCKED_LOCAL");
+    await git(context.repo, "checkout", "--", ".");
+
+    // Simulate a concurrent user edit landing strictly after the
+    // clean-tree check: a fake `git` that plants an extra modification
+    // whenever `git add` runs, then delegates to the real git. The raced
+    // content enters the index via `git add -A`, so the pre-commit
+    // staged-tree verification must catch it.
+    const fakeBin = path.join(path.dirname(context.repo), "fake-bin");
+    await fs.mkdir(fakeBin, { recursive: true });
+    const realGit = await runExecutable("which", ["git"], { cwd: context.repo, timeoutMs: 10_000 }).then((result) => result.stdout.trim());
+    await fs.writeFile(
+      path.join(fakeBin, "git"),
+      `#!/bin/sh\nif [ "$1" = "add" ]; then printf 'raced concurrent edit\\n' >> "${context.repo}/README.md"; fi\nexec "${realGit}" "$@"\n`,
+      { mode: 0o755 }
+    );
+    await fs.chmod(path.join(fakeBin, "git"), 0o755);
+    // Hermetic migration: ambient PATH no longer reaches managed children,
+    // so the fake git is pinned via toolchain state at the fixture parent
+    // (kept out of the repo tree so the candidate worktree digest is
+    // untouched).
+    const { clearToolchainEnvCache } = await import("../src/utils/process.js");
+    await fs.mkdir(path.join(path.dirname(context.repo), ".harness"), { recursive: true });
+    await fs.writeFile(path.join(path.dirname(context.repo), ".harness", "toolchain.state.json"), JSON.stringify({ version: 1, binPaths: [fakeBin] }));
+    clearToolchainEnvCache();
+    try {
+      const result = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
+      expect(result.status).toBe("BLOCKED_LOCAL");
+      expect(result.message).toMatch(/concurrent modification raced delivery staging/);
+      expect(result.message).toMatch(/no commit created/);
+      // The delivery branch shell exists but holds NO commit: the race was
+      // caught before commit creation.
+      expect(await git(context.repo, "rev-parse", context.branch)).toBe(context.baseSha);
+      const record = JSON.parse(await fs.readFile(frozenRecordFile(context.repo, context.operationId), "utf8")) as { deliveredCommitSha?: string };
+      expect(record.deliveredCommitSha).toBeUndefined();
+      // The index was reset but the worktree was left untouched.
+      expect(await fs.readFile(path.join(context.repo, "README.md"), "utf8")).toContain("raced concurrent edit");
+      expect(await git(context.repo, "branch", "--show-current")).toBe("main");
+    } finally {
+      clearToolchainEnvCache();
+      await fs.rm(fakeBin, { recursive: true, force: true });
+      await fs.rm(path.join(path.dirname(context.repo), ".harness", "toolchain.state.json"), { force: true });
+    }
+  });
+
+  it("P2: a stale manually-created branch tip never reports success for the wrong content", async () => {
+    // Pinned base stays at B1 while main advances: the stale branch tip can
+    // be an ancestor of HEAD without tripping the base-moved gate.
+    const context = await createLocalFixture({ pinnedBase: "delivery-base" });
+    const first = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
+    expect(first.status).toBe("BLOCKED_LOCAL");
+    await git(context.repo, "checkout", "--", ".");
+
+    // Main advances with content that is NOT the accepted candidate.
+    await fs.writeFile(path.join(context.repo, "README.md"), "wrong content\n");
+    await git(context.repo, "add", "README.md");
+    await git(context.repo, "commit", "-m", "unrelated wrong advance");
+    const wrongTip = await git(context.repo, "rev-parse", "HEAD");
+    expect(wrongTip).not.toBe(context.baseSha);
+    // Stale branch shell pointing at the wrong tip: ancestor of HEAD, wrong
+    // tree, and no delivery receipt.
+    await git(context.repo, "branch", context.branch, "HEAD");
+
+    const result = await finalizeAcceptedChange(context.repo, context.config, context.contract, { candidate: context.candidate });
+    // Ancestry alone must not bless foreign content: no false success.
+    expect(result.status).toBe("BLOCKED_LOCAL");
+    // No new commit was created on the stale branch, HEAD is untouched.
+    expect(await git(context.repo, "rev-parse", context.branch)).toBe(wrongTip);
+    expect(await git(context.repo, "rev-parse", "HEAD")).toBe(wrongTip);
+    const record = JSON.parse(await fs.readFile(frozenRecordFile(context.repo, context.operationId), "utf8")) as { deliveredCommitSha?: string };
+    expect(record.deliveredCommitSha).toBeUndefined();
   });
 });
