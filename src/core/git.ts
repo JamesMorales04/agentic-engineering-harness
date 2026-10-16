@@ -444,30 +444,6 @@ export function generatedArtifactPaths(config: HarnessProjectConfig): string[] {
   return paths;
 }
 
-/**
- * D8 (Luna review MEDIUM): explicit user scope rules win over
- * machine-generated ignores. If the project explicitly froze/forbade a
- * generated path (exact entry or a covering parent glob/`**`), that entry
- * stays visible in changed-file accounting so frozen/forbidden checks (and
- * standalone `aeh verify`) still fire on it. Otherwise provision churn stays
- * ignored. Pure DETERMINISTIC helper (normalized comparison, no I/O).
- */
-export function generatedIgnoreYieldedToExplicitRule(generatedPath: string, explicitRules: readonly string[]): boolean {
-  const normalized = generatedPath.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
-  if (!normalized) return false;
-  for (const raw of explicitRules) {
-    if (typeof raw !== "string") continue;
-    const rule = raw.trim().replaceAll("\\", "/").replace(/^\.\//, "");
-    if (!rule || rule.includes("..")) continue;
-    if (rule === "**" || rule === normalized) return true;
-    if (rule.endsWith("/**")) {
-      const base = rule.slice(0, -"/**".length).replace(/\/+$/, "");
-      if (base && (normalized === base || normalized.startsWith(`${base}/`))) return true;
-    }
-  }
-  return false;
-}
-
 function isIgnoredPath(file: string, ignoredPaths: string[]): boolean {
   const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
   return ignoredPaths.some((ignored) => {

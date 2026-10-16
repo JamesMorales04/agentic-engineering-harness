@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { reconcileHarnessAssets } from "../src/core/assets.js";
-import { generatedArtifactPaths, generatedIgnoreYieldedToExplicitRule, getChangedFiles } from "../src/core/git.js";
+import { generatedArtifactPaths, getChangedFiles } from "../src/core/git.js";
 import type { HarnessProjectConfig } from "../src/core/types.js";
 
 async function sourceRoot(version: string): Promise<string> {
@@ -87,15 +87,5 @@ describe("managed Harness assets", () => {
     await fs.writeFile(path.join(repo, "src-util.js"), "v2\n");
     const changed = await getChangedFiles(repo, "HEAD", { ignoredPaths: generatedArtifactPaths(config) });
     expect(changed).toEqual(["src-util.js"]);
-  });
-
-  it("lets explicit frozen/forbidden rules override generated ignores (D8 Luna MEDIUM)", async () => {
-    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", [])).toBe(false);
-    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", ["src/**"])).toBe(false);
-    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", [".harness/managed-assets.json"])).toBe(true);
-    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", [".harness/**"])).toBe(true);
-    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", ["**"])).toBe(true);
-    expect(generatedIgnoreYieldedToExplicitRule(".serena", [".serena"])).toBe(true);
-    expect(generatedIgnoreYieldedToExplicitRule(".harness/managed-assets.json", ["../outside"])).toBe(false);
   });
 });
