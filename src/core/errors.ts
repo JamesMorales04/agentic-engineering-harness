@@ -20,7 +20,8 @@ export const aehErrorCodeValues = [
   "FAILURE_ASSESSMENT_INVALID",
   "VALIDATION_REQUIREMENT_BLOCKED",
   "SPEC_MANAGER_CONTENT_NOT_CANONICAL",
-  "RESOURCE_CEILING_EXHAUSTED"
+  "RESOURCE_CEILING_EXHAUSTED",
+  "DIRECT_CORRECTION_SCOPE_BLOCKED"
 ] as const;
 
 export type AehErrorCode = (typeof aehErrorCodeValues)[number];

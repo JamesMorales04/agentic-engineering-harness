@@ -53,17 +53,20 @@ import { assertCapabilityRegistryV1, discoverCapabilityRegistryV1, loadOperation
 import type { CandidateImpactAssessmentRuntimeV1, CandidateScopeEscapeV1, ChangeSetV1 } from "../candidates/assembler.js";
 import { synthesizeNoChangeImpactV1 } from "../candidates/assembler.js";
 import { executeIsolatedCandidateMutation } from "../candidates/direct.js";
-import { executeRepairerCandidateMutation, partitionRepairScopeBlockerFiles, repairProtectedPaths } from "../candidates/repair.js";
+import { executeRepairerCandidateMutation, partitionRepairScopeBlockerFiles, repairProtectedPaths, verifiedOwnerExemptionForRetry } from "../candidates/repair.js";
 import {
   applyAnchoredCoveringGrantForBlocker,
   assertRepairScopeBlockerReceipt,
   createRepairScopeBlockerReceipt,
+  isNewTestCreationTierPath,
   isSafeRepairScopePath,
   listRepairScopeAmendments,
   normalizeRepairScopePath,
   parseRepairScopeBlockerFromSession,
   repairScopeBlockerValidationCheck,
   resolveRepairScopeBlockerViaProductChoice,
+  type RepairScopeAmendmentV1,
+  type RepairScopeNeededFileV1,
   writeRepairScopeBlockerReceipt,
 } from "../candidates/repairScope.js";
 import { assembleAndBindCandidateChangeSet } from "../candidates/binding.js";
@@ -253,6 +256,210 @@ export async function withBoundedRepairStallRetryV1<T extends { session: WorkerS
     }
     return result;
   }
+}
+
+/** Marker for a DIRECT escape-correction whose declarations were declined/expired/unanswered (fail-closed suspend boundary).
+ * NOTE: the message must never contain timeout/deadline/stall/exit-124
+ * patterns: withOneScopeEscapeCorrectionTurnV1 maps those to the ORIGINAL
+ * escape kill, which would swallow this marker and strand the suspend. */
+export class DirectCorrectionScopeBlockedError extends AehError {
+  readonly check: ValidationCheck;
+  readonly session: WorkerSession;
+  constructor(check: ValidationCheck, session: WorkerSession) {
+    super(
+      "DIRECT_CORRECTION_SCOPE_BLOCKED",
+      "direct escape-correction scope declarations were declined, expired, or went unanswered; refusing validation and repair while suspended",
+    );
+    this.name = "DirectCorrectionScopeBlockedError";
+    this.check = check;
+    this.session = session;
+  }
+}
+
+export type DirectScopeDeclarationRoutingV1 =
+  | { status: "NONE" }
+  | { status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1; exemptedPaths: readonly string[] }
+  | { status: "BLOCKED"; check: ValidationCheck };
+
+/**
+ * DETERMINISTIC shared routing for DIRECT worker scope declarations
+ * (initial no-ChangeSet declarations AND escape-correction declarations).
+ * Declared paths are partitioned (in-scope confusion stripped and traced);
+ * genuinely-blocked files flow to the existing product-choice amendment
+ * machinery (durable receipt with write-then-verify, suspend HUMAN_REQUIRED
+ * with bounded approve-exact-set/decline, Owner approval, amendment +
+ * reseal). A declaration never widens scope: silent expansion is still
+ * rejected in the assembler. On AMENDED the caller adopts the resealed
+ * contract; on BLOCKED the caller stops before validation/repair.
+ * The `source` label traces which declaration channel produced the routing.
+ */
+export async function routeDirectScopeDeclarationsV1(input: {
+  root: string;
+  controlRoot: string;
+  operationId: string;
+  config: HarnessProjectConfig;
+  contract: TaskContract;
+  declared: readonly RepairScopeNeededFileV1[];
+  workUnitId: string;
+  participantId?: string;
+  role?: string;
+  source: string;
+}): Promise<DirectScopeDeclarationRoutingV1> {
+  if (!input.declared.length) return { status: "NONE" };
+  const blockerAllowed = input.contract.scope?.allowed ?? ["**"];
+  const blockerForbidden = [
+    ...(input.contract.scope?.forbidden ?? []),
+    ...(input.contract.scope?.frozen ?? []),
+    ...(input.config.validation?.frozenPaths ?? []),
+    ...repairProtectedPaths(input.config, input.contract),
+  ];
+  const partitioned = partitionRepairScopeBlockerFiles(input.declared, blockerAllowed, blockerForbidden);
+  if (partitioned.stripped.length) {
+    await recordPaseoTrace(input.root, "candidate.repair.blocker.stripped", {
+      operationId: input.operationId,
+      taskId: input.contract.task.id,
+      workUnitId: input.workUnitId,
+      ...(input.participantId ? { participantId: input.participantId } : {}),
+      mechanism: "DETERMINISTIC",
+      source: input.source,
+      declared: partitioned.declared,
+      declaredCount: partitioned.declared.length,
+      stripped: partitioned.stripped,
+      strippedFiles: partitioned.stripped.map((entry) => entry.path),
+      strippedCount: partitioned.stripped.length,
+      genuinelyBlocked: partitioned.genuinelyBlocked,
+      genuinelyBlockedFiles: partitioned.genuinelyBlocked.map((entry) => entry.path),
+      genuinelyBlockedCount: partitioned.genuinelyBlocked.length,
+    }).catch(() => undefined);
+  }
+  if (!partitioned.genuinelyBlocked.length) return { status: "NONE" };
+  const blocker = createRepairScopeBlockerReceipt({
+    operationId: input.operationId,
+    taskId: input.contract.task.id,
+    workUnitId: input.workUnitId,
+    ...(input.participantId ? { participantId: input.participantId } : {}),
+    filesNeededOutsideScope: partitioned.genuinelyBlocked,
+  });
+  const receiptFile = await writeRepairScopeBlockerReceipt(input.controlRoot, input.config, blocker);
+  // Write-then-verify: the BLOCKED/AMENDED outcome is only valid with a
+  // durable, digest-matching receipt (mirrors repair write-then-verify).
+  const persistedBlocker: unknown = JSON.parse(await fs.readFile(receiptFile, "utf8"));
+  assertRepairScopeBlockerReceipt(persistedBlocker);
+  if (persistedBlocker.digest !== blocker.digest) {
+    throw new AehError(
+      "PARTICIPANT_PLAN_INVALID",
+      `REPAIR_SCOPE_RECEIPT_NOT_DURABLE: persisted blocker receipt digest does not match the declared blocker (${receiptFile}).`,
+    );
+  }
+  await recordEvent(input.controlRoot, input.config, "harness.candidate.repair-scope-blocked", {
+    taskId: input.contract.task.id,
+    workUnitId: input.workUnitId,
+    ...(input.participantId ? { participantId: input.participantId } : {}),
+    role: input.role ?? "Implementer",
+    source: input.source,
+    blockerDigest: blocker.digest,
+    filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+  }).catch(() => undefined);
+  let resolution: Awaited<ReturnType<typeof resolveRepairScopeBlockerViaProductChoice>>;
+  try {
+    resolution = await resolveRepairScopeBlockerViaProductChoice({
+      root: input.root,
+      controlRoot: input.controlRoot,
+      operationId: input.operationId,
+      config: input.config,
+      contract: input.contract,
+      blocker,
+    });
+  } catch (error) {
+    const check = repairScopeBlockerValidationCheck(blocker);
+    await recordEvent(input.controlRoot, input.config, "harness.repair.scope-blocked", {
+      taskId: input.contract.task.id, attempt: 0, status: "BLOCKED",
+      source: input.source,
+      blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+      error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+    }).catch(() => undefined);
+    // Suspend boundary: BLOCKED (throw Fail closed on suspend/apply/
+    // budget/expired-WAITING) STOPS — no fallthrough to validation or
+    // the repair loop. The caller builds the blocked report.
+    return { status: "BLOCKED", check };
+  }
+  if (resolution.status === "BLOCKED") {
+    await recordEvent(input.controlRoot, input.config, "harness.repair.scope-blocked", {
+      taskId: input.contract.task.id, attempt: 0, status: "BLOCKED",
+      source: input.source,
+      blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+      choiceId: (resolution as { choiceId?: string }).choiceId ?? "denied-or-timed-out",
+    }).catch(() => undefined);
+    // Suspend boundary: BLOCKED (declined/timed-out/expired/unanswered
+    // WAITING) STOPS — the caller returns the blocked result BEFORE
+    // validation/repair (no repair turns while suspended/waiting/declined/
+    // expired).
+    return { status: "BLOCKED", check: resolution.check };
+  }
+  await recordEvent(input.controlRoot, input.config, "harness.repair.scope-amended", {
+    taskId: resolution.contract.task.id, attempt: 0, blockerDigest: blocker.digest,
+    source: input.source,
+    exemptedPaths: resolution.amendment.exemptedPaths, decisionId: resolution.amendment.decisionId,
+    requestId: resolution.amendment.requestId, decidedActor: resolution.amendment.decidedActor,
+  }).catch(() => undefined);
+  return { status: "AMENDED", contract: resolution.contract, amendment: resolution.amendment, exemptedPaths: resolution.amendment.exemptedPaths };
+}
+
+/**
+ * DETERMINISTIC derivation of assembler exact-scope exemptions for a DIRECT
+ * amended retry (mirrors the repair-path derivation in repair.ts).
+ * Exact files only; the assembler independently re-validates shape plus
+ * amended-allowlist membership, so a carve-out can only ever lift a
+ * forbidden deny, never grant allow. Authority stays in the amendment:
+ * owner-cited paths require a re-verified live owner grant (TOCTOU-safe),
+ * and non-owner amendments project only H-NEW-13 new-test-tier paths
+ * (verified non-existent under tests/ at apply time, trusted without
+ * re-stat exactly like the repair path). Anything else yields no
+ * exemptions (fail-closed: the retry assembles against the amended scope
+ * with no carve-out).
+ */
+export async function deriveDirectRetryExemptionsV1(input: {
+  stateRoot: string;
+  operation: Awaited<ReturnType<typeof loadOperation>>;
+  amendment: RepairScopeAmendmentV1 | undefined;
+}): Promise<readonly string[] | undefined> {
+  const ownerScope = await verifiedOwnerExemptionForRetry(input.stateRoot, input.operation, input.amendment);
+  const exactFromOwner = ownerScope && input.amendment ? [...input.amendment.exemptedPaths] : [];
+  const leadAmendableNewTestPaths = input.amendment && !input.amendment.ownerExemption
+    ? input.amendment.exemptedPaths.filter((filePath) =>
+      isNewTestCreationTierPath(normalizeRepairScopePath(String(filePath ?? "").trim())),
+    )
+    : [];
+  const merged = [...new Set([...exactFromOwner, ...leadAmendableNewTestPaths])];
+  return merged.length ? merged : undefined;
+}
+
+/**
+ * DETERMINISTIC pure coverage check for DIRECT escape-correction
+ * declarations: true only when every escaped file is covered by an exact
+ * declaration. A correction that re-escapes with files it did not declare
+ * stays terminal (no laundering of undeclared escapes through the
+ * declaration channel). Normalization uses the single scope-string
+ * identity; unsafe entries never match (fail-closed).
+ */
+export function directCorrectionDeclarationsCoverEscapeV1(
+  declared: readonly { path: string }[],
+  escaped: readonly string[],
+): boolean {
+  if (!escaped.length) return true;
+  if (!declared.length) return false;
+  const declaredPaths = new Set<string>();
+  for (const entry of declared) {
+    const raw = typeof entry?.path === "string" ? entry.path.trim() : "";
+    if (!raw || !isSafeRepairScopePath(raw)) continue;
+    declaredPaths.add(normalizeRepairScopePath(raw));
+  }
+  for (const file of escaped) {
+    const raw = typeof file === "string" ? file.trim() : "";
+    if (!raw || !isSafeRepairScopePath(raw)) return false;
+    if (!declaredPaths.has(normalizeRepairScopePath(raw))) return false;
+  }
+  return true;
 }
 
 export async function runTask(root: string, config: HarnessProjectConfig, contract: TaskContract, options?: { profile?: string; planning?: PlannerOutput; semanticRuntime?: SemanticAssessmentRuntimeV1 }): Promise<TaskRunResult> {
@@ -592,109 +799,32 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         // expired). Throws fail-closed on conflict/invalid (never swallowed as undefined).
         const needed = parseRepairScopeBlockerFromSession(worker);
         if (needed?.length) {
-          const blockerAllowed = effectiveContract.scope?.allowed ?? ["**"];
-          const blockerForbidden = [
-            ...(effectiveContract.scope?.forbidden ?? []),
-            ...(effectiveContract.scope?.frozen ?? []),
-            ...(effectiveConfig.validation?.frozenPaths ?? []),
-            ...repairProtectedPaths(effectiveConfig, effectiveContract),
-          ];
-          const partitioned = partitionRepairScopeBlockerFiles(needed, blockerAllowed, blockerForbidden);
-          if (partitioned.stripped.length) {
-            await recordPaseoTrace(workspaceRoot, "candidate.repair.blocker.stripped", {
-              operationId,
-              taskId: effectiveContract.task.id,
-              workUnitId: `direct:${effectiveContract.task.id}`,
-              participantId: worker.participantId,
-              mechanism: "DETERMINISTIC",
-              declared: partitioned.declared,
-              declaredCount: partitioned.declared.length,
-              stripped: partitioned.stripped,
-              strippedFiles: partitioned.stripped.map((entry) => entry.path),
-              strippedCount: partitioned.stripped.length,
-              genuinelyBlocked: partitioned.genuinelyBlocked,
-              genuinelyBlockedFiles: partitioned.genuinelyBlocked.map((entry) => entry.path),
-              genuinelyBlockedCount: partitioned.genuinelyBlocked.length,
-            }).catch(() => undefined);
-          }
-          if (partitioned.genuinelyBlocked.length) {
-            const blocker = createRepairScopeBlockerReceipt({
-              operationId,
-              taskId: effectiveContract.task.id,
-              workUnitId: `direct:${effectiveContract.task.id}`,
-              ...(worker.participantId ? { participantId: worker.participantId } : {}),
-              filesNeededOutsideScope: partitioned.genuinelyBlocked,
-            });
-            const receiptFile = await writeRepairScopeBlockerReceipt(controlRoot, effectiveConfig, blocker);
-            // Write-then-verify: the BLOCKED/AMENDED outcome is only valid with a
-            // durable, digest-matching receipt (mirrors repair write-then-verify).
-            const persistedBlocker: unknown = JSON.parse(await fs.readFile(receiptFile, "utf8"));
-            assertRepairScopeBlockerReceipt(persistedBlocker);
-            if (persistedBlocker.digest !== blocker.digest) {
-              throw new AehError(
-                "PARTICIPANT_PLAN_INVALID",
-                `REPAIR_SCOPE_RECEIPT_NOT_DURABLE: persisted blocker receipt digest does not match the declared blocker (${receiptFile}).`,
-              );
-            }
-            await recordEvent(controlRoot, effectiveConfig, "harness.candidate.repair-scope-blocked", {
-              taskId: effectiveContract.task.id,
-              workUnitId: `direct:${effectiveContract.task.id}`,
-              participantId: worker.participantId,
-              role: selection?.role ?? "Implementer",
-              blockerDigest: blocker.digest,
-              filesNeededOutsideScope: blocker.filesNeededOutsideScope,
-            }).catch(() => undefined);
-            let resolution: Awaited<ReturnType<typeof resolveRepairScopeBlockerViaProductChoice>>;
-            try {
-              resolution = await resolveRepairScopeBlockerViaProductChoice({
-                root: workspaceRoot,
-                controlRoot,
-                operationId,
-                config: effectiveConfig,
-                contract: effectiveContract,
-                blocker,
-              });
-            } catch (error) {
-              const check = repairScopeBlockerValidationCheck(blocker);
-              await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-blocked", {
-                taskId: effectiveContract.task.id, attempt: 0, status: "BLOCKED",
-                blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
-                error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
-              }).catch(() => undefined);
-              // Suspend boundary: BLOCKED (throw Fail closed on suspend/apply/
-              // budget/expired-WAITING) STOPS — no fallthrough to validation or
-              // the repair loop. The blocked report is built below.
-              implementerScopeBlockedCheck = check;
-              resolution = { status: "BLOCKED", blocker, check } as typeof resolution;
-            }
-            if (resolution.status === "BLOCKED") {
-              await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-blocked", {
-                taskId: effectiveContract.task.id, attempt: 0, status: "BLOCKED",
-                blockerDigest: blocker.digest, filesNeededOutsideScope: blocker.filesNeededOutsideScope,
-                choiceId: (resolution as { choiceId?: string }).choiceId ?? "denied-or-timed-out",
-              }).catch(() => undefined);
-              // Suspend boundary: BLOCKED (declined/timed-out/expired/unanswered
-              // WAITING) STOPS — return the blocked result BEFORE validation/
-              // repair (no repair turns while suspended/waiting/declined/expired).
-              implementerScopeBlockedCheck = resolution.check;
-            } else {
-              effectiveContract = resolution.contract;
-              await recordEvent(controlRoot, effectiveConfig, "harness.repair.scope-amended", {
-                taskId: effectiveContract.task.id, attempt: 0, blockerDigest: blocker.digest,
-                exemptedPaths: resolution.amendment.exemptedPaths, decisionId: resolution.amendment.decisionId,
-                requestId: resolution.amendment.requestId, decidedActor: resolution.amendment.decidedActor,
-              }).catch(() => undefined);
-            }
+          const routing = await routeDirectScopeDeclarationsV1({
+            root: workspaceRoot,
+            controlRoot,
+            operationId,
+            config: effectiveConfig,
+            contract: effectiveContract,
+            declared: needed,
+            workUnitId: `direct:${effectiveContract.task.id}`,
+            ...(worker.participantId ? { participantId: worker.participantId } : {}),
+            role: selection?.role ?? "Implementer",
+            source: "direct-implementer-declaration",
+          });
+          if (routing.status === "AMENDED") {
+            effectiveContract = routing.contract;
+          } else if (routing.status === "BLOCKED") {
+            implementerScopeBlockedCheck = routing.check;
           }
         }
       }
-      if (implementerScopeBlockedCheck) {
-        // Suspend boundary terminal: BLOCKED (declined/timed-out/expired/
-        // unanswered WAITING) returns BEFORE validation/repair — no validation
-        // workspace prep, no verifyAfterWorker, no Repairer turns while
-        // suspended/waiting/declined/expired. The blocked check cites the exact
-        // needed files fail-closed; attempts stays 0 and the repair loop below
-        // is skipped via the same flag.
+      // Shared suspend-boundary terminal: BLOCKED (declined/timed-out/
+      // expired/unanswered WAITING) returns BEFORE validation/repair — no
+      // validation workspace prep, no verifyAfterWorker, no Repairer turns
+      // while suspended/waiting/declined/expired. The blocked check cites
+      // the exact needed files fail-closed; attempts stays 0 and the repair
+      // loop below is skipped via the same flag.
+      const buildImplementerBlockedReport = (): ValidationReport => {
         const blockedBase: ValidationReport = {
           version: 1,
           taskId: effectiveContract.task.id,
@@ -706,7 +836,10 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           candidate: currentCandidate,
           metadata: { project: effectiveConfig.project.name, baseRef: effectiveConfig.validation?.baseRef ?? "main" },
         };
-        report = withWorkerExecutionCheck(mergeChecks(blockedBase, [implementerScopeBlockedCheck]), worker);
+        return withWorkerExecutionCheck(mergeChecks(blockedBase, [implementerScopeBlockedCheck!]), worker);
+      };
+      if (implementerScopeBlockedCheck) {
+        report = buildImplementerBlockedReport();
       } else {
         if (isolated.changeSet) {
         // C1 scope-gate coherence: the normal Implementer assembly must deny
@@ -724,19 +857,27 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         // never broaden allowed scope; legitimate patterns are unaffected.
         // Post-hoc `validateDiffScope` (frozen only) is not relied
         // upon for seal/validator/policy denial.
-        const directAllowedScope = (effectiveContract.scope?.allowed ?? ["**"])
-          .map((entry) => entry.trim())
-          .filter((entry) => isSafeRepairScopePath(entry))
-          .map((entry) => normalizeRepairScopePath(entry));
-        const directForbiddenScope = [
-          ...(effectiveContract.scope?.forbidden ?? []),
-          ...(effectiveContract.scope?.frozen ?? []),
-          ...(effectiveConfig.validation?.frozenPaths ?? []),
-          ...repairProtectedPaths(effectiveConfig, effectiveContract),
-        ]
-          .map((entry) => entry.trim())
-          .filter((entry) => isSafeRepairScopePath(entry))
-          .map((entry) => normalizeRepairScopePath(entry));
+        // Scopes are recomputable from the effective contract: a scope
+        // amendment adopted mid-attempt (escape-correction declarations)
+        // rebinds them before re-assembly so the amended allowlist takes
+        // effect on the retry.
+        const computeDirectScopes = (contract: TaskContract) => {
+          const allowed = (contract.scope?.allowed ?? ["**"])
+            .map((entry) => entry.trim())
+            .filter((entry) => isSafeRepairScopePath(entry))
+            .map((entry) => normalizeRepairScopePath(entry));
+          const forbidden = [
+            ...(contract.scope?.forbidden ?? []),
+            ...(contract.scope?.frozen ?? []),
+            ...(effectiveConfig.validation?.frozenPaths ?? []),
+            ...repairProtectedPaths(effectiveConfig, contract),
+          ]
+            .map((entry) => entry.trim())
+            .filter((entry) => isSafeRepairScopePath(entry))
+            .map((entry) => normalizeRepairScopePath(entry));
+          return { allowed, forbiddenSorted: [...new Set(forbidden)].sort() };
+        };
+        let directScopes = computeDirectScopes(effectiveContract);
         // Serialized under the per-operation coordination lock (re-validated
         // inside): a concurrent assembly that advanced the candidate first
         // turns this into a clean CANDIDATE_STALE instead of tearing the
@@ -748,19 +889,23 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         // correction turn with a precise diagnostic (escaped + hard/amendable
         // + declare-via-filesNeededOutsideScope + second-escape-terminal).
         // NEVER echoes full allowed/forbidden patterns ((a)=FALSE guard in
-        // scopeEscapeCorrection.ts). Second escape or correction timeout →
-        // ORIGINAL terminal kill. Correction counts against the existing
-        // repair budget (no new budget knob): allowed only when budget
-        // remains; when used, the repair loop below allows one fewer repair.
-        // Assembly re-validates fully on re-attempt (never apply unapproved).
-        const directForbiddenSorted = [...new Set(directForbiddenScope)].sort();
+        // scopeEscapeCorrection.ts). An UNDECLARED second escape or a
+        // correction timeout → ORIGINAL terminal kill. A second escape whose
+        // files the correction session exactly declared routes once to the
+        // product-choice amendment channel (approve-exact-set/decline, Owner
+        // approval, amendment + reseal); declined/timed-out suspends
+        // fail-closed via DirectCorrectionScopeBlockedError. Correction
+        // counts against the existing repair budget (no new budget knob):
+        // allowed only when budget remains; when used, the repair loop below
+        // allows one fewer repair. Assembly re-validates fully on re-attempt
+        // (never apply unapproved).
         const directMaxRepairsForCorrection =
           effectiveContract.repair?.maxAttempts ??
           effectiveConfig.orchestration?.worker?.maxRepairAttempts ??
           2;
         const allowDirectCorrection =
           Boolean(selection) && directMaxRepairsForCorrection >= 1 && !directEscapeCorrectionUsed;
-        const assembleDirectChangeSet = (changeSet: ChangeSetV1) =>
+        const assembleDirectChangeSet = (changeSet: ChangeSetV1, exactScopeExemptions?: readonly string[]) =>
           assembleAndBindCandidateChangeSet({
             root: workspaceRoot,
             stateRoot: controlRoot,
@@ -769,12 +914,13 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             taskId: effectiveContract.task.id,
             baseCandidate: currentCandidate,
             changeSet,
-            allowedScope: directAllowedScope,
-            forbiddenScope: directForbiddenSorted,
+            allowedScope: directScopes.allowed,
+            forbiddenScope: directScopes.forbiddenSorted,
             candidateId: `candidate:${operationId}:r${currentCandidate.revision + 1}`,
             workspace: currentCandidate.workspace,
             worktree: workspaceRoot,
             semanticAssessment: impactAssessmentRuntime,
+            ...(exactScopeExemptions?.length ? { exactScopeExemptions } : {}),
             onScopeEscape,
           });
         const initialChangeSet = isolated.changeSet;
@@ -797,7 +943,9 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
             changeSet?: ChangeSetV1;
             assembled?: { candidate: CandidateRevisionV1; impact: CandidateImpactV1 };
           };
-          const outcome = await withOneScopeEscapeCorrectionTurnV1<DirectCorrectionOutcome>({
+          let outcome: { result: DirectCorrectionOutcome; correctionUsed: boolean } | undefined;
+          try {
+            outcome = await withOneScopeEscapeCorrectionTurnV1<DirectCorrectionOutcome>({
             attempt: async () => {
               const assembled = await assembleDirectChangeSet(initialChangeSet);
               return { session: worker, changeSet: initialChangeSet, assembled };
@@ -845,25 +993,120 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
                 );
               }
               if (!correctionIsolated.changeSet) {
+                // The correction followed the declare-first instruction
+                // (no changes, declarations only): route the declarations to
+                // the product-choice amendment channel instead of validating
+                // the unchanged tree. AMENDED adopts the resealed contract
+                // (the repair loop completes the missing implementation);
+                // BLOCKED suspends fail-closed via the marker below.
+                const correctionDeclared = parseRepairScopeBlockerFromSession(correctionIsolated.session) ?? [];
+                if (correctionDeclared.length) {
+                  const routing = await routeDirectScopeDeclarationsV1({
+                    root: workspaceRoot,
+                    controlRoot,
+                    operationId,
+                    config: effectiveConfig,
+                    contract: effectiveContract,
+                    declared: correctionDeclared,
+                    workUnitId: `direct:${effectiveContract.task.id}:escape-correction`,
+                    ...(correctionIsolated.session.participantId ? { participantId: correctionIsolated.session.participantId } : {}),
+                    role: correctionSelection?.role ?? selection?.role ?? "Implementer",
+                    source: "direct-correction-declaration",
+                  });
+                  if (routing.status === "AMENDED") {
+                    effectiveContract = routing.contract;
+                    directScopes = computeDirectScopes(effectiveContract);
+                  } else if (routing.status === "BLOCKED") {
+                    throw new DirectCorrectionScopeBlockedError(routing.check, correctionIsolated.session);
+                  }
+                }
                 return { session: correctionIsolated.session };
               }
-              const assembled = await assembleDirectChangeSet(correctionIsolated.changeSet);
-              return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, assembled };
+              let correctionAssembled;
+              try {
+                correctionAssembled = await assembleDirectChangeSet(correctionIsolated.changeSet);
+              } catch (error) {
+                // Second escape with covering declarations: the worker
+                // declared exactly the files it still needs, so route to the
+                // amendment channel (one bounded Owner decision) instead of
+                // dying with the original kill. Undeclared re-escapes stay
+                // terminal; a parse conflict also stays terminal fail-closed.
+                const correctionDetails = isScopeEscapeError(error) ? getScopeEscapeDetails(error) : undefined;
+                const correctionDeclared = correctionDetails
+                  ? (parseRepairScopeBlockerFromSession(correctionIsolated.session) ?? [])
+                  : [];
+                if (
+                  correctionDetails &&
+                  directCorrectionDeclarationsCoverEscapeV1(correctionDeclared, correctionDetails.escapedFiles)
+                ) {
+                  const routing = await routeDirectScopeDeclarationsV1({
+                    root: workspaceRoot,
+                    controlRoot,
+                    operationId,
+                    config: effectiveConfig,
+                    contract: effectiveContract,
+                    declared: correctionDeclared,
+                    workUnitId: `direct:${effectiveContract.task.id}:escape-correction`,
+                    ...(correctionIsolated.session.participantId ? { participantId: correctionIsolated.session.participantId } : {}),
+                    role: correctionSelection?.role ?? selection?.role ?? "Implementer",
+                    source: "direct-correction-declaration",
+                  });
+                  if (routing.status === "AMENDED") {
+                    effectiveContract = routing.contract;
+                    directScopes = computeDirectScopes(effectiveContract);
+                    // Amendment-path exact carve-out: the resealed allowlist
+                    // alone cannot lift hard subtree denies (tests/**), so
+                    // the verified exact files travel as assembler
+                    // exemptions (assembler re-validates shape plus
+                    // amended-allowlist membership; authority stays in the
+                    // amendment verified below).
+                    const retryOperation = await loadOperation(operationStateRoot, operationId);
+                    const retryExemptions = await deriveDirectRetryExemptionsV1({
+                      stateRoot: controlRoot,
+                      operation: retryOperation,
+                      amendment: routing.amendment,
+                    });
+                    correctionAssembled = await assembleDirectChangeSet(correctionIsolated.changeSet, retryExemptions);
+                    return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, assembled: correctionAssembled };
+                  }
+                  if (routing.status === "BLOCKED") {
+                    throw new DirectCorrectionScopeBlockedError(routing.check, correctionIsolated.session);
+                  }
+                }
+                throw error;
+              }
+              return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, assembled: correctionAssembled };
             },
             isTimeoutResult: (result) => isRepairStallKill(undefined, result.session),
           });
-          if (outcome.correctionUsed) {
+          } catch (error) {
+            // Suspend boundary from the correction declaration channel: the
+            // correction's declarations were declined, timed out, expired, or
+            // went unanswered. Adopt the correction session (forensics +
+            // worker-execution check), record the consumed correction budget,
+            // and stop before validation/repair. Any other correction error
+            // (original escape kill, timeout kill, parse conflict) propagates
+            // unchanged fail-closed.
+            if (!(error instanceof DirectCorrectionScopeBlockedError)) throw error;
             directEscapeCorrectionUsed = true;
-            worker = outcome.result.session;
+            worker = error.session;
             executionSessions.push(worker);
-            if (outcome.result.changeSet) {
-              isolated = { session: worker, changeSet: outcome.result.changeSet };
+            implementerScopeBlockedCheck = error.check;
+          }
+          const correctionOutcome: { result: DirectCorrectionOutcome; correctionUsed: boolean } | undefined =
+            implementerScopeBlockedCheck ? undefined : outcome;
+          if (correctionOutcome?.correctionUsed) {
+            directEscapeCorrectionUsed = true;
+            worker = correctionOutcome.result.session;
+            executionSessions.push(worker);
+            if (correctionOutcome.result.changeSet) {
+              isolated = { session: worker, changeSet: correctionOutcome.result.changeSet };
             } else {
               isolated = { session: worker };
             }
           }
-          const finalChangeSet = outcome.result.changeSet;
-          const finalAssembled = outcome.result.assembled;
+          const finalChangeSet = correctionOutcome?.result.changeSet;
+          const finalAssembled = correctionOutcome?.result.assembled;
           if (finalChangeSet && finalAssembled) {
             const boundCandidate = finalAssembled.candidate;
             candidateImpact = finalAssembled.impact;
@@ -879,8 +1122,12 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           }
         }
         }
-        await prepareValidationWorkspace();
-        report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
+        if (implementerScopeBlockedCheck) {
+          report = buildImplementerBlockedReport();
+        } else {
+          await prepareValidationWorkspace();
+          report = withWorkerExecutionCheck(await verifyAfterWorker(workspaceRoot, controlRoot, effectiveConfig, effectiveContract, controller, selection), worker);
+        }
       }
     }
   }
