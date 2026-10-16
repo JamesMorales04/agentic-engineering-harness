@@ -107,7 +107,13 @@ export async function reconcileHarnessAssets(root: string, options: HarnessAsset
   }
 
   await fs.mkdir(path.dirname(manifestFile), { recursive: true });
-  await fs.writeFile(manifestFile, `${JSON.stringify(next, null, 2)}\n`);
+  // D8: skip the manifest write when bytes are identical. Reconcile runs on
+  // every setup/start (including inside isolated execution roots), and an
+  // unconditional write dirties mtime on every run even when nothing changed.
+  // MECHANISM: DETERMINISTIC (byte comparison).
+  const serialized = `${JSON.stringify(next, null, 2)}\n`;
+  const previousBytes = await fs.readFile(manifestFile, "utf8").catch(() => undefined);
+  if (previousBytes !== serialized) await fs.writeFile(manifestFile, serialized);
   return result;
 }
 

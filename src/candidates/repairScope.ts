@@ -127,6 +127,14 @@ function rawRepairHardProtectedSources(
   paths.add(`${config.sdd?.contractsDir ?? ".harness/contracts"}/${contract.task.id}.yaml`);
   paths.add(`.harness/seals/${contract.task.id}.json`);
   paths.add(".harness/project.yaml");
+  // D8: the harness-provisioned managed-asset manifest is machine state that
+  // workers must never author (toolchain setup owns it). Default-deny here
+  // so assembly scope gates refuse worker ChangeSets touching it even under
+  // broad allowlists (Luna D8 review: validation-side ignores must not become
+  // an authoring channel). Owner-exempted amendments can still cover it via
+  // the verified grant path (explicit Owner choice), and provision writes
+  // happen pre-scope so normal operations are unaffected.
+  paths.add(".harness/managed-assets.json");
   paths.add("test");
   paths.add("specs");
   paths.add("acceptance");

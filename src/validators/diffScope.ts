@@ -19,6 +19,21 @@ function matches(file: string, patterns: string[]): boolean {
   });
 }
 
+/**
+ * D8 (Luna review MEDIUM, round 3): explicit user scope rules win over
+ * machine-generated validation ignores. Uses the SAME matches() semantics as
+ * validateDiffScope above (raw-traversal rejection, single scope-string
+ * identity, minimatch with dot:true) — never a divergent predicate — so
+ * every explicit rule covering the generated path re-exposes it, including
+ * glob forms like `.harness/*.json`, redundant separators, and `**`.
+ * Unsafe rules (traversal/absolute) never match, so they cannot re-expose.
+ * Pure DETERMINISTIC helper (no I/O).
+ */
+export function generatedIgnoreYieldedToExplicitRule(generatedPath: string, explicitRules: readonly string[]): boolean {
+  if (typeof generatedPath !== "string") return false;
+  return explicitRules.some((rule) => typeof rule === "string" && matches(generatedPath, [rule]));
+}
+
 export function validateDiffScope(changedFiles: string[], contract: TaskContract, globalFrozen: string[] = []): ValidationCheck[] {
   const checks: ValidationCheck[] = [];
   const allowed = contract.scope?.allowed ?? [];
