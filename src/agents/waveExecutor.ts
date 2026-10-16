@@ -1644,6 +1644,16 @@ export async function autoDeclarePlannerNewTestScopes(input: {
   if (!exact.length) return null;
   const byPath = new Map<string, { workUnitId: string; objective: string }>();
   for (const item of exact) {
+    // Luna D10 round 2 (MEDIUM): gate on the RAW scope BEFORE normalization.
+    // `isExactRepairScopeFilePath` accepts traversal spellings (`..` is not a
+    // glob char), so a raw `src/../tests/x.test.ts` normalizes to a safe
+    // `tests/x.test.ts` that would tier as creatable. `isSafeRepairScopePath`
+    // rejects `..`/absolute/drive forms in the RAW input (normalization must
+    // never launder them into safe paths), so traversal spellings stay
+    // ineligible for synthesis and keep the original terminal outcome. The
+    // validator above is untouched (byte-identical diagnostics): it still
+    // reports the raw traversal scope as an undeclared issue.
+    if (!isSafeRepairScopePath(item.scope)) continue;
     if (!byPath.has(item.normalizedScope)) {
       byPath.set(item.normalizedScope, { workUnitId: item.workUnitId, objective: item.objective });
     }

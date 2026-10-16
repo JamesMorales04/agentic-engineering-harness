@@ -229,6 +229,20 @@ describe("D10 planner new-test auto-declare (DETERMINISTIC, no providers)", () =
     expect(await autoDeclarePlannerNewTestScopes({ contract: task, plan: raw, config: cfg, root })).toBeNull();
   });
 
+  it("traversal spellings are never auto-declared even when they normalize into tests/ (stay TERMINAL, Luna D10 round 2)", async () => {
+    const root = await createRepo();
+    const task = wideContract();
+    const cfg = config();
+    const raw = planWithObjectives([{ scope: ["src/../tests/new-traversal.test.ts"], objective: "Sneak coverage through traversal" }]);
+    // The validator still reports the raw traversal scope as an undeclared
+    // issue (byte-identical gate behavior, terminal).
+    const issues = validatePlannerWavePlan(task, raw, cfg);
+    expect(issues.some((issue) => issue.includes("PLANNER_PROTECTED_SCOPE_UNDECLARED"))).toBe(true);
+    // But auto-declare must NOT synthesize the normalized path: raw safety is
+    // checked before tiering, so traversal can never reach amendment routing.
+    expect(await autoDeclarePlannerNewTestScopes({ contract: task, plan: raw, config: cfg, root })).toBeNull();
+  });
+
   it("non-test hard paths are never auto-declared (validators stay TERMINAL)", async () => {
     const root = await createRepo();
     const task = wideContract();
