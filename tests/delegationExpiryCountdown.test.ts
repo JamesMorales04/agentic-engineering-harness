@@ -14,6 +14,15 @@ describe("delegation expiry countdown (deterministic formatting)", () => {
     expect(formatDelegationCountdown(iso(NOW + 30_000), NOW)).toBe("expires in <1m");
   });
 
+  it("rolls over exact unit boundaries downward", () => {
+    expect(formatDelegationCountdown(iso(NOW + 60_000), NOW)).toBe("expires in 1m");
+    expect(formatDelegationCountdown(iso(NOW + HOUR), NOW)).toBe("expires in 1h");
+    expect(formatDelegationCountdown(iso(NOW + DAY), NOW)).toBe("expires in 1d");
+    expect(formatDelegationCountdown(iso(NOW - 60_000), NOW)).toBe("expired 1m ago");
+    expect(formatDelegationCountdown(iso(NOW - HOUR), NOW)).toBe("expired 1h ago");
+    expect(formatDelegationCountdown(iso(NOW - DAY), NOW)).toBe("expired 1d ago");
+  });
+
   it("renders past expiries as ago with a just-now edge", () => {
     expect(formatDelegationCountdown(iso(NOW - 30_000), NOW)).toBe("expired just now");
     expect(formatDelegationCountdown(iso(NOW - 5 * 60_000), NOW)).toBe("expired 5m ago");
