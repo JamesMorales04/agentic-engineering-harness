@@ -189,8 +189,7 @@ describe("DIRECT escape-correction declaration routing (behavioral)", () => {
     expect(result.report.checks.find((c) => c.id === "repair.scope-blocker")).toBeUndefined();
   });
 
-  it("correction re-escape with covering declarations amends and re-assembles (carve-out applies the patch)", async () => {
-    const { root, task, config } = await setup("CORRECTION-REESCAPE-1");
+  it("correction re-escape with covering declarations amends and re-assembles (carve-out applies the patch)", async () => {    const { root, task, config } = await setup("CORRECTION-REESCAPE-1");
     mocks.start.mockImplementation(async (isolatedRoot: string) => {
       await fs.mkdir(path.join(isolatedRoot, "tests"), { recursive: true });
       await fs.writeFile(path.join(isolatedRoot, ESCAPING_FILE), "export const x = 1;\n");
@@ -217,6 +216,47 @@ describe("DIRECT escape-correction declaration routing (behavioral)", () => {
     expect(mocks.setupToolchain).toHaveBeenCalled();
     expect(result.report.checks.find((c) => c.id === "repair.scope-blocker")).toBeUndefined();
     expect(result.report.changedFiles.join(",")).toContain(ESCAPING_FILE);
+  });
+
+  it("correction touching an UNDECLARED extra path stays terminal (no laundering, no routing)", async () => {
+    const UNDECLARED_FILE = "tests/undeclared-extra.test.ts";
+    const { root, task, config } = await setup("CORRECTION-UNDECLARED-1");
+    mocks.start.mockImplementation(async (isolatedRoot: string) => {
+      await fs.mkdir(path.join(isolatedRoot, "tests"), { recursive: true });
+      await fs.writeFile(path.join(isolatedRoot, ESCAPING_FILE), "export const x = 1;\n");
+      return initialSession();
+    });
+    // The correction declares file A but its patch also touches file B,
+    // which it did not declare: partial coverage must not route or
+    // authorize anything — the original escape kill stands terminal.
+    mocks.executeAgentPrompt.mockImplementationOnce(async (correctionRoot: string) => {
+      await fs.mkdir(path.join(correctionRoot, "tests"), { recursive: true });
+      await fs.writeFile(path.join(correctionRoot, ESCAPING_FILE), "export const x = 1;\n");
+      await fs.writeFile(path.join(correctionRoot, UNDECLARED_FILE), "export const y = 2;\n");
+      return correctionSession();
+    });
+    mocks.executeAgentPrompt.mockImplementation(async () => {
+      throw new Error("REPAIR_TURN_RAN_AFTER_UNDECLARED_ESCAPE: no turn may run after an undeclared re-escape");
+    });
+    mocks.resolveBlocker.mockImplementation(async () => {
+      throw new Error("RESOLVER_CALLED_FOR_UNDECLARED_ESCAPE: undeclared escapes must never reach the amendment channel");
+    });
+
+    let failure: unknown;
+    try {
+      await runTask(root, config, task, { semanticRuntime: testSemanticRuntime() });
+    } catch (error) {
+      failure = error;
+    }
+    expect(String((failure as Error)?.message ?? failure)).toMatch(/ChangeSet escaped its assigned scope/);
+    // Terminal kill names the FIRST escape per the single-correction
+    // convention (second escape rethrows the original); the guarantee
+    // pinned here is that the undeclared extra path is never routed
+    // (resolver silent), never validated, and no turn runs after.
+    expect(mocks.resolveBlocker).not.toHaveBeenCalled();
+    expect(mocks.setupToolchain).not.toHaveBeenCalled();
+    // Exactly one agent turn (the correction); nothing runs after.
+    expect(mocks.executeAgentPrompt).toHaveBeenCalledTimes(1);
   });
 });
 
