@@ -358,7 +358,33 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
   // set and still fails the scope gates below unchanged.
   const declaredFiles = [...new Set(changeSet.changedFiles.map(normalizePath))].sort();
   const managedDropped = new Set(declaredFiles.filter((file) => isManagedProvisionedPath(file) && !exactExempt.has(file)));
-  const effectivePatch = managedDropped.size ? stripManagedProvisionedPathsFromPatch(changeSet.patch, managedDropped) : changeSet.patch;
+  let effectivePatch = managedDropped.size ? stripManagedProvisionedPathsFromPatch(changeSet.patch, managedDropped) : changeSet.patch;
+  // A droppings-only ChangeSet strips to an empty patch: fail here with the
+  // pre-existing empty-patch terminal (no new states, no correction turn —
+  // `isScopeEscapeError` stays false for it). Droppings-only turns from
+  // controller-computed creation sites never reach here (they return
+  // `{ session }` no-change at capture, e.g. direct.ts). Checked before
+  // `pathsTouchedByPatch` because `git apply` rejects empty stdin (exit
+  // 128), which would otherwise surface as CANDIDATE_STALE.
+  if (!effectivePatch.trim()) throw new AehError("PARTICIPANT_PLAN_INVALID", "ChangeSet patch is empty.");
+  // D22-P1 undeclared-managed sweep (DETERMINISTIC): the declared-derived
+  // strip above cannot see patch hunks the worker did NOT declare, and the
+  // filtered `pathsTouchedByPatch` call below excludes managed paths — so an
+  // undeclared managed hunk is invisible to the declared==observed equality
+  // gate yet still applied and delivered (pre-existing blindness). Observe
+  // the effective patch UNFILTERED (same isolated-index technique, no
+  // pathspec excludes), fold every observed non-exempt managed path into the
+  // drop set, re-strip and recompute the digest. Exempt-managed observed
+  // paths keep today's observed-only re-add behavior downstream, so an
+  // observed-but-undeclared exempt file still fails equality (declaration
+  // discipline preserved).
+  const observedUnfiltered = await unfilteredPathsTouchedByPatch(input.root, effectivePatch);
+  const patchManaged = observedUnfiltered.filter((file) => isManagedProvisionedPath(file) && !exactExempt.has(file));
+  if (patchManaged.length > 0) {
+    for (const file of patchManaged) managedDropped.add(file);
+    effectivePatch = stripManagedProvisionedPathsFromPatch(effectivePatch, managedDropped);
+    if (!effectivePatch.trim()) throw new AehError("PARTICIPANT_PLAN_INVALID", "ChangeSet patch is empty.");
+  }
   const effective: ChangeSetV1 = managedDropped.size
     ? {
       ...changeSet,
@@ -367,14 +393,6 @@ export async function assembleCandidateChangeSet(input: CandidateAssemblyInputV1
       patchDigest: sha256Utf8(effectivePatch)
     }
     : { ...changeSet, changedFiles: declaredFiles };
-  // A droppings-only ChangeSet strips to an empty patch: fail here with the
-  // pre-existing empty-patch terminal (no new states, no correction turn —
-  // `isScopeEscapeError` stays false for it). Droppings-only turns from
-  // controller-computed creation sites never reach here (they return
-  // `{ session }` no-change at capture, e.g. direct.ts). Checked before
-  // `pathsTouchedByPatch` because `git apply` rejects empty stdin (exit
-  // 128), which would otherwise surface as CANDIDATE_STALE.
-  if (!effective.patch.trim()) throw new AehError("PARTICIPANT_PLAN_INVALID", "ChangeSet patch is empty.");
   const changedFiles = effective.changedFiles;
   const patchFiles = await pathsTouchedByPatch(input.root, effective.patch, exactExempt);
   if (JSON.stringify(changedFiles) !== JSON.stringify(patchFiles)) {
@@ -1111,6 +1129,35 @@ function decodeCQuotedPathInner(inner: string): string {
   }
   flushLiteral(index);
   return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * D22-P1 unfiltered twin of `pathsTouchedByPatch`: the SAME isolated-index
+ * technique (read-tree HEAD, stage worktree, write base tree, apply patch to
+ * the index) but WITHOUT pathspec excludes, so EVERY path the patch touches
+ * is observed — including managed-provisioned hunks the filtered call hides.
+ * The filtered call below is untouched (byte-identical for the common path);
+ * this runs once per assembly as the undeclared-managed sweep.
+ */
+async function unfilteredPathsTouchedByPatch(root: string, patch: string): Promise<string[]> {
+  const validationRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-candidate-index-"));
+  const indexFile = path.join(validationRoot, "index");
+  const env = { GIT_INDEX_FILE: indexFile };
+  try {
+    const readTree = await runExecutable("git", ["read-tree", "HEAD"], { cwd: root, timeoutMs: 30_000, env });
+    if (readTree.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to prepare isolated patch validation: ${readTree.stderr || readTree.stdout}`);
+    const stageCurrent = await runExecutable("git", ["add", "-A"], { cwd: root, timeoutMs: 60_000, env });
+    if (stageCurrent.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to snapshot the bound candidate for patch validation: ${stageCurrent.stderr || stageCurrent.stdout}`);
+    const baseTree = await runExecutable("git", ["write-tree"], { cwd: root, timeoutMs: 30_000, env });
+    if (baseTree.exitCode !== 0 || !baseTree.stdout.trim()) throw new AehError("CANDIDATE_STALE", `Unable to identify the patch validation base: ${baseTree.stderr || baseTree.stdout}`);
+    const applied = await runExecutable("git", ["apply", "--cached", "--binary", "-"], { cwd: root, timeoutMs: 60_000, stdin: patch, env });
+    if (applied.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `ChangeSet patch cannot be applied to the current candidate: ${applied.stderr || applied.stdout}`);
+    const changed = await runExecutable("git", ["diff", "--cached", "--name-only", "--no-renames", "-z", baseTree.stdout.trim(), "--"], { cwd: root, timeoutMs: 30_000, env });
+    if (changed.exitCode !== 0) throw new AehError("CANDIDATE_STALE", `Unable to derive paths touched by ChangeSet patch: ${changed.stderr || changed.stdout}`);
+    return [...new Set(changed.stdout.split("\0").filter(Boolean).map(normalizePath))].sort();
+  } finally {
+    await fs.rm(validationRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 async function pathsTouchedByPatch(root: string, patch: string, keepManaged: ReadonlySet<string> = new Set()): Promise<string[]> {

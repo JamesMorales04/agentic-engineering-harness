@@ -107,6 +107,55 @@ describe("assembler managed-provisioned hygiene (D22)", () => {
     }
   });
 
+  it("D22-P1: an UNDECLARED managed hunk is stripped from the patch, never silently delivered", async () => {
+    const root = await initRepo();
+    try {
+      const current = await baseCandidate(root, "OP-D22-UNDECLARED");
+      // Worker declares ONLY the real file, but the patch smuggles a managed
+      // hunk the declaration omits (invisible to declared==observed, which
+      // excludes managed paths from observation).
+      await fs.writeFile(path.join(root, "src", "tasks.js"), "export const range = (n) => [...Array(n).keys()];\n");
+      await fs.mkdir(path.join(root, ".config", "mise", "locks"), { recursive: true });
+      await fs.writeFile(path.join(root, ".config", "mise", "locks", "x"), "lock\n");
+      await runShell("git add -N --all", { cwd: root });
+      const patch = (await runShell("git diff --binary --no-ext-diff HEAD -- .", { cwd: root })).stdout;
+      expect(patch).toContain(".config/mise/locks/x");
+      await runShell("git reset -q", { cwd: root });
+      await runShell("git checkout -- src/tasks.js", { cwd: root });
+      await fs.rm(path.join(root, ".config"), { recursive: true, force: true });
+      const changeSet: ChangeSetV1 = {
+        version: 1,
+        operationId: "OP-D22-UNDECLARED",
+        taskId: "TASK-D22",
+        workUnitId: "WU-1",
+        participantId: "participant:WU-1",
+        baseCandidateRevision: current.revision,
+        baseCandidateDigest: current.identityDigest,
+        changedFiles: ["src/tasks.js"],
+        patch,
+        patchDigest: sha256Utf8(patch),
+      };
+
+      const result = await assembleCandidateChangeSet({
+        root,
+        operationId: "OP-D22-UNDECLARED",
+        taskId: "TASK-D22",
+        currentCandidate: current,
+        changeSet,
+        allowedScope: ["src/**"],
+        candidateId: "candidate:OP-D22-UNDECLARED:r2",
+      });
+
+      expect(result.changeSet.changedFiles).toEqual(["src/tasks.js"]);
+      expect(result.changeSet.patch).not.toContain(".config/mise");
+      expect(result.changeSet.patchDigest).toBe(sha256Utf8(result.changeSet.patch));
+      expect(await fs.readFile(path.join(root, "src", "tasks.js"), "utf8")).toContain("Array(n)");
+      await expect(fs.access(path.join(root, ".config", "mise", "locks", "x"))).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("droppings-only ChangeSet yields the pre-existing empty-patch terminal (no new states)", async () => {
     const root = await initRepo();
     try {
