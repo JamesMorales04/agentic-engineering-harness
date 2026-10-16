@@ -4,7 +4,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import { minimatch } from "minimatch";
-import { sha256Canonical } from "../core/digest.js";
+import { sha256Canonical, canonicalSerialize } from "../core/digest.js";
 import { AehError } from "../core/errors.js";
 import { sealTask } from "../core/seal.js";
 import { extractMarkedJson, StructuredOutputError } from "../agents/structuredOutput.js";
@@ -31,9 +31,15 @@ import {
   HumanDecisionLedgerV2,
   assertDecisionV2,
   type DecisionChoiceV1,
+  type DelegatedDecisionProvenanceV1,
   type HumanDecisionBindingV2,
   type HumanDecisionV2,
 } from "../security/humanDecision.js";
+import {
+  isDelegatedOwnerActor,
+  isHumanOwnerActor,
+  reverifyDelegatedDecisionForUse,
+} from "../security/ownerAuthority.js";
 import {
   assertOwnerHardProtectionExemptionGrant,
   computeOwnerExemptionMac,
@@ -49,9 +55,12 @@ import {
  * Mechanism classification (decision-mechanism invariant):
  * - Blocker parsing/validation, amendment bounding, contract amendment,
  *   reseal and forbidden-scope filtering are DETERMINISTIC.
- * - Scope-amendment authority is HUMAN via the canonical HumanDecisionLedgerV2
- *   product-choice channel (suspendOperationForProductChoice +
- *   productChoiceForRequest with binding + consumeExact). A caller-supplied
+ * - Scope-amendment authority is Owner authority via the canonical
+ *   HumanDecisionLedgerV2 product-choice channel (suspendOperationForProductChoice +
+ *   productChoiceForRequest with binding + consumeExact): the human Owner OR a
+ *   delegated Owner acting under a currently-valid FULL_PROJECT_OWNER grant
+ *   (decision.resolve at record time, scope.amend re-verified at apply/mint
+ *   USE time, delegatedFrom provenance preserved into artifacts). A caller-supplied
  *   `{approved, decidedBy}` string alone NEVER authorizes an amendment; only a
  *   ledger-consumed CHOOSE decision with a matching operation/candidate/policy/
  *   epoch binding for the exact blocker paths authorizes
@@ -499,6 +508,14 @@ export interface RepairScopeAmendmentV1 {
   decisionId: string;
   requestId: string;
   decidedActor: string;
+  /**
+   * Delegated-Owner provenance (D1): present ONLY when the authorizing
+   * ledger decision was recorded by a `delegate:*` principal under a verified
+   * FULL_PROJECT_OWNER grant. Digest-bound with the amendment body, so
+   * provenance cannot be stripped or swapped without killing the amendment
+   * digest. Human approvals carry none.
+   */
+  delegatedFrom?: DelegatedDecisionProvenanceV1;
   /**
    * Owner-exemption provenance: present ONLY when a verified owner-scoped
    * hard-protection grant authorized hard paths in this amendment. `requestId`
@@ -987,15 +1004,103 @@ export function assertRepairScopeAmendment(value: unknown): asserts value is Rep
       throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment ownerExemption decisionDigest must be a lowercase SHA-256 digest.");
     }
   }
-  if (typeof record["decidedActor"] !== "string" || !record["decidedActor"].startsWith("human:")) {
-    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment decidedActor must be the ledger human authority.");
+  if (typeof record["decidedActor"] !== "string") {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment decidedActor must be the ledger Owner authority.");
   }
+  const amendmentActor = record["decidedActor"] as string;
+  const isHumanAmendmentActor = amendmentActor.startsWith("human:") && amendmentActor.length > "human:".length;
+  const isDelegateAmendmentActor = amendmentActor.startsWith("delegate:") && amendmentActor.length > "delegate:".length;
+  if (!isHumanAmendmentActor && !isDelegateAmendmentActor) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment decidedActor must be the ledger Owner authority ('human:*' or 'delegate:*').");
+  }
+  assertAmendmentDelegatedProvenance(record, isDelegateAmendmentActor);
   const { amendmentDigest, ...body } = record as unknown as RepairScopeAmendmentV1 & { amendmentDigest: string };
   if (typeof amendmentDigest !== "string" || !/^[a-f0-9]{64}$/.test(amendmentDigest)) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment digest is malformed.");
   }
   if (sha256Canonical(body) !== amendmentDigest) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "Repair scope amendment digest does not match its typed claims.");
+  }
+}
+
+/**
+ * DETERMINISTIC Owner-authority gate for scope-amendment effects (D1).
+ *
+ * Capability mapping: recording a product choice verifies `decision.resolve`
+ * (decision.ts, at record time). APPLYING the widening is a different effect
+ * and re-verifies `scope.amend` HERE at USE time — the grant in force when
+ * the amendment lands, not the grant in force when the choice was recorded.
+ * A grant revoked, expired, narrowed, or forged in between fails closed.
+ *
+ * - `human:*` passes (authentication happened at the paired/CLI surface;
+ *   neither the stored nor the presented decision may carry provenance).
+ * - `delegate:*` must present ledger-stored `delegatedFrom` provenance that
+ *   canonically equals the stored decision's provenance (a forged
+ *   delegatedFrom on an otherwise-consumed decision cannot select another
+ *   grant), AND the bound grant must currently verify for `scope.amend`.
+ * - Anything else throws fail-closed. Mechanism: DETERMINISTIC (prefix
+ *   classification + keyed-MAC/scope/capability/expiry/revocation gates, no
+ *   model judgment).
+ */
+async function assertDelegatedScopeAmendmentAuthority(
+  root: string,
+  decision: HumanDecisionV2,
+  stored: HumanDecisionV2,
+  denialPrefix: "REPAIR_SCOPE_DECISION" | "OWNER_EXEMPTION",
+): Promise<void> {
+  if (canonicalSerialize(stored.delegatedFrom ?? null) !== canonicalSerialize(decision.delegatedFrom ?? null)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `${denialPrefix}_PROVENANCE_MISMATCH: presented delegated provenance does not match the ledger-stored decision; failing closed — provenance cannot be swapped onto a consumed approval.`);
+  }
+  if (isHumanOwnerActor(stored.actorId)) return;
+  if (!isDelegatedOwnerActor(stored.actorId)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `${denialPrefix}_ACTOR_INVALID: only a ledger Owner authority (human:* or a verified delegated Owner) may authorize a scope amendment.`);
+  }
+  if (!stored.delegatedFrom) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `${denialPrefix}_PROVENANCE_INVALID: delegated Owner decisions must carry ledger-stored delegatedFrom provenance (grantor, delegation id, profile).`);
+  }
+  try {
+    await reverifyDelegatedDecisionForUse(root, {
+      actorId: stored.actorId,
+      delegatedFrom: stored.delegatedFrom,
+      requiredCapability: "scope.amend",
+    });
+  } catch (error) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `${denialPrefix}_DELEGATION_DENIED: delegated Owner authority failed re-verification at apply time: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500));
+  }
+}
+
+/**
+ * DETERMINISTIC delegated-provenance gate for amendment artifacts (D1).
+ * Mirrors the ledger `assertDelegatedProvenance` rules
+ * (`src/security/humanDecision.ts`): human amendments carry no provenance;
+ * delegated amendments MUST carry exactly grantorOwnerId (`human:*`),
+ * delegationId (`delegation:<uuid>`), and profile FULL_PROJECT_OWNER.
+ */
+function assertAmendmentDelegatedProvenance(record: Record<string, unknown>, isDelegate: boolean): void {
+  const provenance = record["delegatedFrom"];
+  if (!isDelegate) {
+    if (provenance !== undefined) {
+      throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment delegatedFrom provenance is only valid for delegated Owner (delegate:*) amendments.");
+    }
+    return;
+  }
+  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment delegatedFrom provenance is required for delegated Owner amendments (grantor, delegation id, profile).");
+  }
+  const entry = provenance as Record<string, unknown>;
+  const keys = Object.keys(entry).sort();
+  if (keys.join(",") !== "delegationId,grantorOwnerId,profile") {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment delegatedFrom provenance must cite exactly grantorOwnerId, delegationId, and profile.");
+  }
+  const grantor = entry["grantorOwnerId"];
+  if (typeof grantor !== "string" || !grantor.startsWith("human:") || !grantor.slice("human:".length).trim()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment delegatedFrom.grantorOwnerId must be the authenticated human grantor ('human:*').");
+  }
+  if (typeof entry["delegationId"] !== "string" || !/^delegation:[0-9a-f-]{36}$/i.test(entry["delegationId"])) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment delegatedFrom.delegationId must be 'delegation:<uuid>'.");
+  }
+  if (entry["profile"] !== "FULL_PROJECT_OWNER") {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "Amendment delegatedFrom.profile must be FULL_PROJECT_OWNER.");
   }
 }
 
@@ -1048,8 +1153,8 @@ export async function applyRepairScopeAmendment(input: {
   if (binding.operationId !== blocker.operationId) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_DECISION_OPERATION_MISMATCH: ledger binding does not match the blocker operation.");
   }
-  if (!decision.actorId.startsWith("human:")) {
-    throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_DECISION_ACTOR_INVALID: only a ledger human authority may authorize a scope amendment.");
+  if (!isHumanOwnerActor(decision.actorId) && !isDelegatedOwnerActor(decision.actorId)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_DECISION_ACTOR_INVALID: only a ledger Owner authority (human:* or a verified delegated Owner) may authorize a scope amendment.");
   }
   if (!decision.reason.trim()) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_DECISION_REASON_REQUIRED: a scope amendment decision requires a non-empty reason.");
@@ -1063,9 +1168,21 @@ export async function applyRepairScopeAmendment(input: {
   }
   // Durable-receipt gate: the decision must already be one-time consumed under
   // the exact binding+purpose+actor. A missing receipt means no authority.
-  const receipt = await ledger.consumedExact(binding, decision.purpose, decision.decisionId, decision.actorId);
-  if (!receipt) {
+  // The STORED decision (ledger truth, not the caller-presented object)
+  // anchors the delegation re-verification below, so forged provenance on an
+  // otherwise-consumed decision cannot select another grant.
+  const stored = await ledger.consumedExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+  if (!stored) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_DECISION_UNCONSUMED: the ledger HumanDecision has no exact one-time consumption receipt; the BLOCKED outcome stands.");
+  }
+  // Owner-authority gate at USE time (D1): human Owners pass; delegated
+  // Owners re-verify their FULL_PROJECT_OWNER grant for `scope.amend` here.
+  await assertDelegatedScopeAmendmentAuthority(root, decision, stored, "REPAIR_SCOPE_DECISION");
+  // Artifact claims below use the STORED decision (ledger truth), never the
+  // caller-presented object: a modified presentation must not inject
+  // misleading reason/timestamp metadata into the durable amendment.
+  if (!stored.reason.trim()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_DECISION_REASON_REQUIRED: a scope amendment decision requires a non-empty reason.");
   }
   const existing = await listRepairScopeAmendments(root, config, contract.task.id);
   if (existing.length >= MAX_REPAIR_SCOPE_AMENDMENTS_PER_TASK_V1) {
@@ -1125,12 +1242,18 @@ export async function applyRepairScopeAmendment(input: {
     taskId: contract.task.id,
     blockerDigest: blocker.digest,
     exemptedPaths,
+    // decidedBy "human" is the Owner-authority channel: the human Owner OR a
+    // verified delegated Owner acting under a FULL_PROJECT_OWNER grant. No
+    // new decidedBy value is introduced (D1): every consumer treats this as
+    // Owner-approved, and the acting principal + grant provenance live in
+    // decidedActor (delegate:*) + delegatedFrom below.
     decidedBy: "human" as const,
-    decisionReason: decision.reason.trim(),
-    decidedAt: decision.createdAt,
-    decisionId: decision.decisionId,
+    decisionReason: stored.reason.trim(),
+    decidedAt: stored.createdAt,
+    decisionId: stored.decisionId,
     requestId,
-    decidedActor: decision.actorId,
+    decidedActor: stored.actorId,
+    ...(stored.delegatedFrom ? { delegatedFrom: { ...stored.delegatedFrom } } : {}),
     amendedScope,
     contractPath: path.relative(root, contractPath).replaceAll("\\", "/"),
     sealPath: path.relative(root, sealPath).replaceAll("\\", "/"),
@@ -1532,6 +1655,20 @@ export async function applyOwnerExemptedRepairScopeAmendment(input: {
     grant,
     ledger,
   });
+  // Delegation re-verification at USE time (D1): the grant is
+  // controller-minted, but a delegated grant's underlying Owner delegation
+  // may have been revoked/expired/narrowed after minting. Human-anchored
+  // grants pass through; delegated grants re-verify for `scope.amend` here,
+  // immediately before the deferred amendment effect lands. Fail-closed.
+  try {
+    await reverifyDelegatedDecisionForUse(root, {
+      actorId: verified.decidedActor,
+      ...(verified.delegatedFrom ? { delegatedFrom: verified.delegatedFrom } : {}),
+      requiredCapability: "scope.amend",
+    });
+  } catch (error) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", `OWNER_EXEMPTION_DELEGATION_DENIED: delegated Owner authority failed re-verification before the owner-exempted amendment: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500));
+  }
   const exemptedPaths = [...new Set(blocker.filesNeededOutsideScope.map((entry) => normalizeRepairScopePath(entry.path)))].sort((a, b) =>
     a.localeCompare(b),
   );
@@ -1581,12 +1718,16 @@ export async function applyOwnerExemptedRepairScopeAmendment(input: {
     taskId: contract.task.id,
     blockerDigest: blocker.digest,
     exemptedPaths,
+    // decidedBy "human" is the Owner-authority channel (see the regular-path
+    // note above): human Owner OR verified delegated Owner. Provenance lives
+    // in decidedActor + delegatedFrom.
     decidedBy: "human" as const,
     decisionReason: verified.decisionReason,
     decidedAt: verified.createdAt,
     decisionId: verified.decisionId,
     requestId: verified.exemptionId,
     decidedActor: verified.decidedActor,
+    ...(verified.delegatedFrom ? { delegatedFrom: { ...verified.delegatedFrom } } : {}),
     ownerExemption: {
       exemptionId: verified.exemptionId,
       decisionId: verified.decisionId,
@@ -1966,8 +2107,8 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
   if (decision.purpose.choiceId !== REPAIR_SCOPE_APPROVE_CHOICE_ID) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_CHOICE_MISMATCH: only the bounded approve-exact-paths choice authorizes a hard-protection grant.");
   }
-  if (!decision.actorId.startsWith("human:")) {
-    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_NOT_HUMAN: only a ledger human authority may authorize a hard-protection grant.");
+  if (!isHumanOwnerActor(decision.actorId) && !isDelegatedOwnerActor(decision.actorId)) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_ACTOR_INVALID: only a ledger Owner authority (human:* or a verified delegated Owner) may authorize a hard-protection grant.");
   }
   if (!decision.reason.trim()) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_REASON_REQUIRED: a hard-protection grant requires the approving reason.");
@@ -1985,6 +2126,9 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
     || live.controllerEpoch !== liveEpoch) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_BINDING_STALE: minting binding does not match the live operation, candidate, execution revision, policy, or controller epoch.");
   }
+  // Presented-object pre-filters (fail-closed): the receipt lookup below
+  // binds presented purpose+id+actor to the stored record; currency/expiry/
+  // reason are re-evaluated against ledger truth after the stored load.
   if (decision.operationId !== live.operationId || !candidateRevisionsEqual(decision.candidate, live.candidate)
     || decision.operationExecutionRevision !== live.operationExecutionRevision
     || decision.policyDigest !== live.policyDigest || decision.controllerEpoch !== live.controllerEpoch) {
@@ -1995,8 +2139,31 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EXPIRED: the hard-path approval expired before minting.");
   }
   const ledger = repairScopeLedger(input.root);
-  if (!await ledger.consumedExact(binding, decision.purpose, decision.decisionId, decision.actorId)) {
+  // The STORED decision (ledger truth) anchors the delegation
+  // re-verification, so forged provenance on an otherwise-consumed approval
+  // cannot select another grant.
+  const storedMintDecision = await ledger.consumedExact(binding, decision.purpose, decision.decisionId, decision.actorId);
+  if (!storedMintDecision) {
     throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_UNCONSUMED: the hard-path approval has no exact one-time consumption receipt; the BLOCKED outcome stands.");
+  }
+  // Owner-authority gate at USE time (D1): human Owners pass; delegated
+  // Owners re-verify their FULL_PROJECT_OWNER grant for `scope.amend` here,
+  // so a grant revoked/expired/narrowed while the approval was pending fails
+  // closed instead of minting a hard-protection exemption.
+  await assertDelegatedScopeAmendmentAuthority(input.root, decision, storedMintDecision, "OWNER_EXEMPTION");
+  // Currency/expiry/reason re-evaluated against ledger truth (Luna D1
+  // re-review): a modified presentation can neither fake currency nor inject
+  // grant metadata; artifact claims below use the stored record only.
+  if (storedMintDecision.operationId !== live.operationId || !candidateRevisionsEqual(storedMintDecision.candidate, live.candidate)
+    || storedMintDecision.operationExecutionRevision !== live.operationExecutionRevision
+    || storedMintDecision.policyDigest !== live.policyDigest || storedMintDecision.controllerEpoch !== live.controllerEpoch) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_DECISION_STALE: the approval does not match the current operation, candidate, execution revision, policy, or controller epoch.");
+  }
+  if (storedMintDecision.expiresAt && new Date(storedMintDecision.expiresAt).getTime() <= now.getTime()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_EXPIRED: the hard-path approval expired before minting.");
+  }
+  if (!storedMintDecision.reason.trim()) {
+    throw new AehError("PARTICIPANT_PLAN_INVALID", "OWNER_EXEMPTION_REASON_REQUIRED: a hard-protection grant requires the approving reason.");
   }
   const normalized: string[] = [];
   if (!Array.isArray(input.paths) || input.paths.length < 1 || input.paths.length > 8) {
@@ -2052,12 +2219,13 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
     policyStableDigest: anchorStableDigest,
     operationExecutionRevision: live.operationExecutionRevision,
     paths,
-    decisionId: decision.decisionId,
-    decisionDigest: sha256Canonical(decision),
-    decidedActor: decision.actorId,
-    decisionReason: decision.reason.trim(),
+    decisionId: storedMintDecision.decisionId,
+    decisionDigest: sha256Canonical(storedMintDecision),
+    decidedActor: storedMintDecision.actorId,
+    ...(storedMintDecision.delegatedFrom ? { delegatedFrom: { ...storedMintDecision.delegatedFrom } } : {}),
+    decisionReason: storedMintDecision.reason.trim(),
     createdAt,
-    ...(decision.expiresAt ? { expiresAt: decision.expiresAt } : {}),
+    ...(storedMintDecision.expiresAt ? { expiresAt: storedMintDecision.expiresAt } : {}),
   };
   const grant: OwnerHardProtectionExemptionGrantV1 = { ...body, mac: computeOwnerExemptionMac(token, body) };
   await updateOperationMetadata(input.root, input.operationId, (currentOp) => {
