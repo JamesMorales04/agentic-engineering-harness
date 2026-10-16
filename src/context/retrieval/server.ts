@@ -13,19 +13,31 @@ export async function serveContextRetrievalMcp(): Promise<void> {
   const controlRoot = process.env.AEH_CONTEXT_CONTROL_ROOT?.trim() || process.env.AEH_CONTROL_ROOT?.trim() || root;
   const phase = process.env.AEH_CONTEXT_PHASE?.trim() || "work";
   if (!operationId || !logicalAgent || !participantId) throw new Error("AEH context MCP requires AEH_CONTEXT_OPERATION_ID, AEH_LOGICAL_AGENT, and controller-bound AEH_CONTEXT_PARTICIPANT_ID.");
-  const config = await loadProjectConfig(root);
+  // The participant root is an isolated worktree (git-based, .harness/ is
+  // gitignored), so the project config must come from the durable control
+  // root. A missing/unparseable control-root config must not crash the
+  // process before the MCP handshake: capture it and fail each request
+  // closed with a JSON-RPC error while KEEPING the server alive.
+  let config: Awaited<ReturnType<typeof loadProjectConfig>> | undefined;
+  let configError: unknown;
+  try {
+    config = await loadProjectConfig(controlRoot);
+  } catch (error) {
+    configError = error;
+  }
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   for await (const line of rl) {
     if (!line.trim()) continue;
     let request: { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown> };
     try { request = JSON.parse(line) as typeof request; } catch { continue; }
     if (request.id === undefined || request.id === null) continue;
-    try { write({ jsonrpc: "2.0", id: request.id, result: await handle(request, root, controlRoot, config, operationId, participantId, logicalAgent, phase) }); }
+    try { write({ jsonrpc: "2.0", id: request.id, result: await handle(request, root, controlRoot, config, configError, operationId, participantId, logicalAgent, phase) }); }
     catch (error) { write({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: error instanceof Error ? error.message : String(error) } }); }
   }
 }
 
-async function handle(request: { method?: string; params?: Record<string, unknown> }, root: string, controlRoot: string, config: Awaited<ReturnType<typeof loadProjectConfig>>, operationId: string, participantId: string, logicalAgent: string, phase: string): Promise<Record<string, unknown>> {
+async function handle(request: { method?: string; params?: Record<string, unknown> }, root: string, controlRoot: string, config: Awaited<ReturnType<typeof loadProjectConfig>> | undefined, configError: unknown, operationId: string, participantId: string, logicalAgent: string, phase: string): Promise<Record<string, unknown>> {
+  if (!config) throw configError instanceof Error ? configError : new Error(`AEH context MCP project config is unavailable for control root '${controlRoot}'.`);
   if (request.method === "initialize") return { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "aeh-context-retrieval", version: "1" } };
   if (request.method === "ping") return {};
   if (request.method === "tools/list") return { tools: [contextRetrievalToolDescription()] };
@@ -40,7 +52,11 @@ async function handle(request: { method?: string; params?: Record<string, unknow
     requestId: crypto.randomUUID(),
     maxTokens: typeof args.maxTokens === "number" ? args.maxTokens : undefined
   });
-  if (config.telemetry?.enabled !== false) await recordEvent(root, config, "harness.context.retrieve_original", { operationId, logicalAgent, participantId, sessionId: sessionId ?? "", refId: result.receipt.refId, estimatedTokens: result.estimatedTokens, repeated: result.repeated, artifact: result.artifact, sha256: result.sha256, receiptDigest: result.receipt.receiptDigest });
+  if (config.telemetry?.enabled !== false) {
+    // Best-effort: the worktree root may not persist telemetry (missing or
+    // read-only .harness/). Telemetry degradation must never fail retrieval.
+    try { await recordEvent(root, config, "harness.context.retrieve_original", { operationId, logicalAgent, participantId, sessionId: sessionId ?? "", refId: result.receipt.refId, estimatedTokens: result.estimatedTokens, repeated: result.repeated, artifact: result.artifact, sha256: result.sha256, receiptDigest: result.receipt.receiptDigest }); } catch { /* telemetry is observation-only */ }
+  }
   return { content: [{ type: "text", text: result.content }], structuredContent: result };
 }
 
