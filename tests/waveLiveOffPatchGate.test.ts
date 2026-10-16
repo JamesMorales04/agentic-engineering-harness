@@ -591,6 +591,189 @@ describe("wave live off-patch gate (FAM-WAVE residual)", () => {
       "outside/.aeh-direct-heartbeat.json",
     ]);
   });
+
+  it("(D23b) distributed droppings-only changed files pass through without burning the correction turn", async () => {
+    const root = await createRepo();
+    const operationId = `RUN-WAVE-D23B-DIST-${crypto.randomUUID().slice(0, 8)}`;
+    const base = await createOperation(root, operationId);
+    const fix = delegationFixtures("uB", ["src/b.ts"]);
+    const distConfig = {
+      version: 1,
+      project: { name: "fixture" },
+      workflow: { planning: { distributed: true } },
+      distributed: { enabled: true },
+    } as never;
+    const distAssignment = {
+      ...(fix.participantAssignment as unknown as Record<string, unknown>),
+      roleInvocationPolicy: { outputContract: "implementer" },
+    } as never;
+    mockPrepareAgentExecutionIdentity.mockImplementation(async () => ({}) as never);
+    const droppings = [
+      ".config/mise/conf.d/aeh.toml",
+      ".config/mise/locks/node-22.23.2",
+      ".config/mise/mise.lock",
+      ".serena/scratch.json",
+      "graphify-out/x.json",
+    ];
+    const droppingsPatch = droppings
+      .map((file) =>
+        [`diff --git a/${file} b/${file}`, "--- /dev/null", `+++ b/${file}`, "@@ -0,0 +1 @@", "+x"].join("\n")
+      )
+      .join("\n");
+    mockDispatchDistributedDelegation.mockResolvedValueOnce({
+      version: 2,
+      jobId: "j-d23b-1",
+      workerId: "w1",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "PASS",
+      session: okSession("uB"),
+      changedFiles: droppings,
+      patch: droppingsPatch,
+      observedCandidateSourceDigest: (base as { sourceDigest?: string }).sourceDigest,
+      message: "ok",
+    });
+    const result = await executeDelegation({
+      root,
+      stateRoot: root,
+      operationId,
+      config: distConfig,
+      contract: fix.contract,
+      implementationSelection: fix.implementationSelection,
+      executionCatalog: fix.executionCatalog,
+      task: fix.task,
+      participantAssignment: distAssignment,
+      executionBlueprint: fix.executionBlueprint,
+      waveBase: base,
+    });
+    // Droppings never enter the pre-check escape path: no correction turn is
+    // burned (exactly one dispatch) and the unit passes through to the
+    // assembler (which strips managed-provisioned paths, D22).
+    expect(result.status).toBe("PASS");
+    expect(result.escapeCorrectionUsed).toBeFalsy();
+    expect(mockDispatchDistributedDelegation).toHaveBeenCalledTimes(1);
+    expect(result.changedFiles).toContain(".config/mise/conf.d/aeh.toml");
+  });
+
+  it("(D23b) distributed droppings alongside a real escape still correct, naming only the real file", async () => {
+    const root = await createRepo();
+    const operationId = `RUN-WAVE-D23B-DIST2-${crypto.randomUUID().slice(0, 8)}`;
+    const base = await createOperation(root, operationId);
+    const fix = delegationFixtures("uB", ["src/b.ts"]);
+    const distConfig = {
+      version: 1,
+      project: { name: "fixture" },
+      workflow: { planning: { distributed: true } },
+      distributed: { enabled: true },
+    } as never;
+    const distAssignment = {
+      ...(fix.participantAssignment as unknown as Record<string, unknown>),
+      roleInvocationPolicy: { outputContract: "implementer" },
+    } as never;
+    mockPrepareAgentExecutionIdentity.mockImplementation(async () => ({}) as never);
+    const evilPatch = [
+      "diff --git a/outside/evil.ts b/outside/evil.ts",
+      "--- a/outside/evil.ts",
+      "+++ b/outside/evil.ts",
+      "@@ -1 +1 @@",
+      "-export const evil = 0;",
+      "+export const evil = 1;",
+    ].join("\n");
+    const baseResult = {
+      version: 2,
+      workerId: "w1",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "PASS",
+      session: okSession("uB"),
+      observedCandidateSourceDigest: (base as { sourceDigest?: string }).sourceDigest,
+    };
+    mockDispatchDistributedDelegation.mockResolvedValueOnce({
+      ...baseResult,
+      jobId: "j-d23b-2a",
+      changedFiles: [".config/mise/conf.d/aeh.toml", ".config/mise/mise.lock", "outside/evil.ts"],
+      patch: evilPatch,
+      message: "escaped",
+    });
+    // Correction re-escapes on the real file only → ORIGINAL terminal FAIL
+    // (exactly one correction), whose message must name the real escape and
+    // never the managed droppings.
+    mockDispatchDistributedDelegation.mockResolvedValueOnce({
+      ...baseResult,
+      jobId: "j-d23b-2b",
+      changedFiles: ["outside/evil.ts"],
+      patch: evilPatch,
+      message: "re-escaped",
+    });
+    const result = await executeDelegation({
+      root,
+      stateRoot: root,
+      operationId,
+      config: distConfig,
+      contract: fix.contract,
+      implementationSelection: fix.implementationSelection,
+      executionCatalog: fix.executionCatalog,
+      task: fix.task,
+      participantAssignment: distAssignment,
+      executionBlueprint: fix.executionBlueprint,
+      waveBase: base,
+    });
+    expect(result.status).toBe("FAIL");
+    expect(result.escapeCorrectionUsed).toBe(true);
+    expect(mockDispatchDistributedDelegation).toHaveBeenCalledTimes(2);
+    expect(result.message).toContain("outside/evil.ts");
+    expect(result.message).not.toContain(".config/mise");
+    expect(result.message).not.toContain(".serena");
+    expect(result.message).not.toContain("graphify-out");
+  });
+
+  it("(D23b) local droppings-only diff passes through without correction churn", async () => {
+    const root = await createRepo();
+    const operationId = `RUN-WAVE-D23B-LOCAL-${crypto.randomUUID().slice(0, 8)}`;
+    const base = await createOperation(root, operationId);
+    const fix = delegationFixtures("uB", ["src/b.ts"]);
+    mockExecuteAgentPrompt.mockImplementationOnce(async (worktree: string) => {
+      await fs.writeFile(path.join(worktree, "src", "b.ts"), "export const b = 2;\n");
+      await fs.mkdir(path.join(worktree, ".config", "mise", "conf.d"), { recursive: true });
+      await fs.writeFile(path.join(worktree, ".config", "mise", "conf.d", "aeh.toml"), "[tools]\n");
+      await fs.mkdir(path.join(worktree, ".config", "mise", "locks"), { recursive: true });
+      await fs.writeFile(path.join(worktree, ".config", "mise", "locks", "node-22.23.2"), "{}\n");
+      await fs.writeFile(path.join(worktree, ".config", "mise", "mise.lock"), "{}\n");
+      await fs.mkdir(path.join(worktree, ".serena"), { recursive: true });
+      await fs.writeFile(path.join(worktree, ".serena", "scratch.json"), "{}\n");
+      return okSession("uB");
+    });
+    const result = await executeDelegation({ root, stateRoot: root, operationId, waveBase: base, ...fix });
+    // Droppings never trigger the local pre-check escape path: exactly one
+    // worker turn, PASS, droppings flow to the assembler ChangeSet (D22
+    // strips them there).
+    expect(result.status).toBe("PASS");
+    expect(mockExecuteAgentPrompt).toHaveBeenCalledTimes(1);
+    expect(result.escapeCorrectionUsed).toBeFalsy();
+    expect(result.changedFiles).toContain("src/b.ts");
+    expect(result.changedFiles).toContain(".config/mise/conf.d/aeh.toml");
+  });
+
+  it("(D23b) local droppings alongside a real escape still fail (no masking)", async () => {
+    const root = await createRepo();
+    const operationId = `RUN-WAVE-D23B-LOCAL2-${crypto.randomUUID().slice(0, 8)}`;
+    const base = await createOperation(root, operationId);
+    const fix = delegationFixtures("uB", ["src/b.ts"]);
+    mockExecuteAgentPrompt.mockImplementationOnce(async (worktree: string) => {
+      await fs.writeFile(path.join(worktree, "src", "b.ts"), "export const b = 2;\n");
+      await fs.mkdir(path.join(worktree, ".config", "mise", "conf.d"), { recursive: true });
+      await fs.writeFile(path.join(worktree, ".config", "mise", "conf.d", "aeh.toml"), "[tools]\n");
+      await fs.writeFile(path.join(worktree, "outside", "evil.ts"), "export const evil = 1;\n");
+      return okSession("uB");
+    });
+    const result = await executeDelegation({ root, stateRoot: root, operationId, waveBase: base, ...fix });
+    // The real escape is still denied (live gate precedes the local
+    // pre-check); droppings never mask it and never appear in the denial.
+    expect(result.status).toBe("FAIL");
+    expect(result.message).toContain("OFF_PATCH_WRITE_DENIED");
+    expect(result.changedFiles).toEqual(["outside/evil.ts"]);
+    expect(mockExecuteAgentPrompt).toHaveBeenCalledTimes(1);
+  });
 });
 
 async function createRepo(): Promise<string> {
