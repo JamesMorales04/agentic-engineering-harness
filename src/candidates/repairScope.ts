@@ -1683,14 +1683,14 @@ async function findReusableNonOwnerAmendmentForBlocker(input: {
  * 3. realpath containment (path.resolve cannot see symlink escapes; the
  *    resolved file must live under the real root);
  * 4. task-id match + every exemptedPath ∈ scope.allowed (exact normalized);
- * 5. seal verification (verifyTaskSeal PASS): the loaded bytes must match
- *    the frozen seal, so a concurrently swapped or hand-written contract
- *    file is refused. Residual TOCTOU (swap between seal check and retry
- *    use) affects only worker-context copies; the enforced object is the
- *    validated parse, and any disk divergence trips downstream seal/digest
- *    gates. Local-filesystem forgery beyond this remains out of scope per
- *    the repo threat model (a shell that can rewrite the checkout can do
- *    worse), but every cheap deterministic check is applied.
+ * 5. seal gate: verifyTaskSeal over the on-disk contract file must PASS
+ *    (refuses swapped or hand-written files as observed on disk).
+ *    Precision (Luna round 4): the seal check binds DISK bytes to the seal,
+ *    not this loader's parsed object — a concurrent swap between this check
+ *    and retry use affects only worker-context copies; the enforced scope
+ *    object is this validated parse, and downstream seal/digest gates trip
+ *    on disk divergence. A local writer able to rewrite the checkout at
+ *    will remains out of scope per the repo threat model.
  *
  * Mechanism: DETERMINISTIC (durable read + shape gates, no model judgment,
  * no suspension/mint/consume).
