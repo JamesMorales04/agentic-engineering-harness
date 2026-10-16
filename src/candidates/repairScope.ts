@@ -1558,6 +1558,111 @@ async function findReusableOwnerAmendmentForBlocker(input: {
 }
 
 /**
+ * DETERMINISTIC reusable-amendment discovery for the regular (non-owner)
+ * product-choice channel (D12 mirror of the H-NEW-14 owner helper above,
+ * consult-only).
+ *
+ * A second blocker on already-exempted amendable/new-test-tier paths
+ * (post-resume work, wave-barrier declarations, review remediation, fresh
+ * repair turns after the single amendment — live: a delegated new-test
+ * amendment for tests/range.spec.js that a later repairer blocking on the
+ * SAME file never reused) must NOT suspend again and must NOT throw the
+ * per-task cap: when a durable NON-OWNER amendment already exempts every
+ * needed path, the existing amendment is returned for a cap-stable retry.
+ * No new artifact is written, no ledger receipt is consumed, no suspension
+ * is opened. Anything else yields undefined and the caller stays BLOCKED
+ * fail-closed.
+ *
+ * Gates (all DETERMINISTIC, no model judgment, no filesystem stat):
+ * - same op + task binding (blocker, amendment, and live operation agree;
+ *   cross-operation/cross-task replay is refused);
+ * - owner-exempted amendments are SKIPPED here (owner flow is untouched;
+ *   the H-NEW-14 helper owns those);
+ * - assertRepairScopeAmendment (digest-valid, tamper-evident; non-owner
+ *   amendments carry no MAC — anyone with filesystem write can hash — so a
+ *   hand-written artifact claiming hard paths must still fail the tier gate
+ *   below);
+ * - needed-paths ⊆ exemptedPaths (exact normalized identity; partial
+ *   coverage never partially reuses);
+ * - tier-trust WITHOUT re-statting existence (H-NEW-13 race honesty): each
+ *   needed path must be amendable outright (no hard violation — manifests /
+ *   regular paths) or hard SOLELY via the broad `tests` dir rule for an
+ *   exact safe tests/ file matching nothing else in the frozen-forward-wins
+ *   source. The retry path trusts the amendment-time tier, so reuse does
+ *   too: a created tests/ file EXISTS now but was new-test-tier at
+ *   amendment time, and re-statting here would turn that legitimate race
+ *   into a false hard refusal. Conversely, any path matching another hard
+ *   source (explicit frozen listing, validators, seals, specs, policy) is
+ *   refused even in tests/ shape — the amendment-apply gate could never
+ *   have authorized it, so a forged artifact citing it is ignored.
+ *
+ * Boundary (by design, see the resolve-level consult below): this helper
+ * serves BLOCKER-DECLARED needs only. Silent ChangeSets on new-test paths
+ * without declarations never reach it (they stay terminal per run.ts), and
+ * the D4 anchored-grant hook (repair.ts) stays owner-channel-only.
+ *
+ * Mechanism: DETERMINISTIC (durable reads + digest/shape gates).
+ */
+async function findReusableNonOwnerAmendmentForBlocker(input: {
+  root: string;
+  config: HarnessProjectConfig;
+  operation: OperationRecordV2;
+  contract: TaskContract;
+  blocker: RepairScopeBlockerReceiptV1;
+}): Promise<{ amendment: RepairScopeAmendmentV1 } | undefined> {
+  const { root, config, operation, contract, blocker } = input;
+  if (blocker.taskId !== contract.task.id) return undefined;
+  if (blocker.operationId !== operation.id) return undefined;
+  const needed = [...new Set(blocker.filesNeededOutsideScope.map((entry) => normalizeRepairScopePath(entry.path.trim())))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  if (!needed.length || needed.some((entry) => !entry)) return undefined;
+  let existing: RepairScopeAmendmentV1[];
+  try {
+    existing = await listRepairScopeAmendments(root, config, contract.task.id);
+  } catch {
+    return undefined;
+  }
+  // Frozen-forward-wins source (H-NEW-13 R2, shape-only tier — never
+  // re-stats existence): a tests/ candidate matching anything here was hard
+  // for a reason beyond the broad dir rule and stays HARD.
+  const nonTestsHard = repairHardProtectedPathsExcludingBroadTestsDir(config, contract);
+  for (const amendment of existing) {
+    try {
+      assertRepairScopeAmendment(amendment);
+    } catch {
+      continue;
+    }
+    if (amendment.operationId !== blocker.operationId) continue;
+    if (amendment.taskId !== contract.task.id) continue;
+    // Non-owner amendments only: owner-exempted amendments never authorize
+    // through this channel (the H-NEW-14 helper owns those; re-projecting
+    // one here would bypass the grant re-verification that owns hard paths).
+    if (amendment.ownerExemption) continue;
+    const exempted = new Set(amendment.exemptedPaths.map((entry) => normalizeRepairScopePath(String(entry).trim())));
+    if (!needed.every((entry) => exempted.has(entry))) continue;
+    // Shape-only tier-trust (no stat — see doc comment): every needed path
+    // must be amendable outright or tests-tier-solely-broad-rule.
+    let tierTrusted = true;
+    for (const entry of needed) {
+      const violations = findRepairHardProtectedViolations([entry], config, contract);
+      if (!violations.length) continue;
+      if (!isNewTestCreationTierPath(entry)) {
+        tierTrusted = false;
+        break;
+      }
+      if (matchesAnyHardProtectedPattern(entry, nonTestsHard)) {
+        tierTrusted = false;
+        break;
+      }
+    }
+    if (!tierTrusted) continue;
+    return { amendment };
+  }
+  return undefined;
+}
+
+/**
  * DETERMINISTIC consult-only honor of an already-anchored covering owner
  * grant for a scope blocker (H-NEW-14 grant-consumption coverage).
  *
@@ -2254,7 +2359,12 @@ export async function mintOwnerHardProtectionExemptionFromProductChoice(input: {
  * High-level repair-scope blocker resolution for the run.ts validation-repair
  * loop (the single production amendment path; max 1/task preserved).
  *
- * - When an amendment already exists: BLOCKED without a second suspension.
+ * - When a durable amendment already covers the blocker (owner-exempted via
+ *   the H-NEW-14 hard-branch reuse, or non-owner via the D12 top-of-resolve
+ *   reuse below): AMENDED-reuse with the UNCHANGED input contract and the
+ *   existing amendment — cap-stable, no second suspension, no new artifact.
+ * - When an amendment already exists but covers nothing needed: BLOCKED
+ *   without a second suspension.
  * - Otherwise suspends for the bounded approve/deny product choice, awaits the
  *   ledger-consumed decision, applies the amendment + reseal on approve
  *   (single retry owned by the caller), and resumes/completes the continuation.
@@ -2275,11 +2385,44 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
   timeoutMs?: number;
   pollMs?: number;
 }): Promise<
-  | { status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1; selection?: RepairScopeChoiceSelectionV1; ownerExemption?: { exemptionId: string; decisionId: string; decisionDigest: string } }
+  | { status: "AMENDED"; contract: TaskContract; amendment: RepairScopeAmendmentV1; selection?: RepairScopeChoiceSelectionV1; ownerExemption?: { exemptionId: string; decisionId: string; decisionDigest: string }; reused?: boolean }
   | { status: "BLOCKED"; blocker: RepairScopeBlockerReceiptV1; check: ValidationCheck; choiceId?: string }
 > {
   const { root, controlRoot, operationId, config, contract, blocker } = input;
   assertRepairScopeBlockerReceipt(blocker);
+  // D12 non-owner reuse (mirror of the H-NEW-14 owner reuse in the hard
+  // branch below, consult-only): a second blocker on already-exempted
+  // amendable/new-test-tier paths reuses the durable non-owner amendment
+  // (cap-stable, no second suspension, no new artifact) instead of hitting
+  // either per-task cap below. The cited amendment re-verifies fully before
+  // reuse (digest, exact coverage, shape-only tier-trust — never a stat, so
+  // the H-NEW-13 created-file race stays trusted). On miss the behavior
+  // below is bit-for-bit unchanged (partition, cap, suspend, BLOCKED).
+  // Owner-exempted amendments are skipped by the helper, so the hard-branch
+  // owner flow (findCoveringOwner... + findReusableOwner...) is untouched.
+  //
+  // Placement (before the tier partition, not inside the non-hard branch):
+  // the partition below re-stats existence, which would route a CREATED
+  // (now-existing) new-test file to the hard branch — the exact false hard
+  // refusal H-NEW-13 race honesty forbids. Consulting first lets the
+  // helper's shape-only tier gate (amendable outright, or tests-tier solely
+  // via the broad dir rule) decide; genuinely-hard paths can never reuse
+  // through it, so early consultation widens nothing.
+  //
+  // Boundary: blocker-declared needs only. Silent ChangeSets on new-test
+  // paths without declarations never reach this resolver (they stay
+  // terminal per run.ts), and the D4 anchored-grant hook (repair.ts) stays
+  // owner-channel-only by design — documented on the helper.
+  let reusableNonOwner: { amendment: RepairScopeAmendmentV1 } | undefined;
+  try {
+    const operation = await loadOperation(controlRoot, operationId);
+    reusableNonOwner = await findReusableNonOwnerAmendmentForBlocker({ root, config, operation, contract, blocker });
+  } catch {
+    reusableNonOwner = undefined;
+  }
+  if (reusableNonOwner) {
+    return { status: "AMENDED", contract, amendment: reusableNonOwner.amendment, reused: true };
+  }
   // HARD-protection gate (suspend/decide/resume, DETERMINISTIC, no model
   // judgment): a blocker intersecting frozen TaskContract, seal, validators,
   // acceptance/spec, or policy paths first honors an already-anchored
