@@ -107,6 +107,37 @@ export function isManagedProvisionedPath(file: string): boolean {
   return MANAGED_PROVISIONED_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`));
 }
 
+/**
+ * NARROW enforcement predicate (DETERMINISTIC, pure): true ONLY for the
+ * toolchain-provisioned machine paths observed live inside isolated
+ * execution roots — exact `.config/mise/conf.d/aeh.toml`, exact
+ * `.config/mise/mise.lock`, and `.config/mise/locks/` descendants. The
+ * live dropping set (r3 candidate) is exactly these plus `.serena` /
+ * `graphify-out` scratch; no other `.config/mise` path was provisioned.
+ *
+ * BROAD vs NARROW split (do not merge): `isManagedProvisionedPath` above
+ * is the BROAD accounting predicate (D22, unchanged) — ChangeSet
+ * attribution must silently drop every `.config/mise/**` path because
+ * path alone cannot distinguish machine noise from worker edits there.
+ * This NARROW predicate is the enforcement predicate for the wave live
+ * gate: accounting-exclusion must NOT equal enforcement-blindness, so a
+ * worker hand-editing a project-authored file such as
+ * `.config/mise/config.toml` stays a visible off-patch write here.
+ *
+ * Rationale for `mise.lock`'s inclusion despite being versioned:
+ * provisioning rewrites it on every fresh-worktree setup (proven live),
+ * so path alone cannot distinguish hand-edit from machine noise, and
+ * hand-edits there are contained anyway — D22 strips them from delivery
+ * and legitimate toolchain changes flow through setup/policy lanes, not
+ * wave workers.
+ */
+export function isProvisionedToolchainPath(file: string): boolean {
+  const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
+  if (normalized === ".config/mise/conf.d/aeh.toml") return true;
+  if (normalized === ".config/mise/mise.lock") return true;
+  return normalized.startsWith(".config/mise/locks/");
+}
+
 /** Digest the actual current source tree, including unstaged and untracked files.
  *
  * Decision mechanism: DETERMINISTIC. Every entry is hashed through the

@@ -458,6 +458,100 @@ describe("wave live off-patch gate (FAM-WAVE residual)", () => {
     expect(afterFirstCall.current.get("src-a.ts")?.hash).not.toBe(snap0.get("src-a.ts")?.hash);
   });
 
+  it("(D23) managed-provisioned .config/mise droppings never trip OFF_PATCH_WRITE_DENIED while real escapes still deny", async () => {
+    // NARROW enforcement parity: only toolchain-provisioned paths are
+    // excluded (exact conf.d/aeh.toml, exact mise.lock, locks/ descendants).
+    // Project-authored files (config.toml) and the bare prefix dir stay enforced.
+    expect(isWaveWorktreeExcludedV1(".config/mise/conf.d/aeh.toml")).toBe(true);
+    expect(isWaveWorktreeExcludedV1(".config/mise/locks/node-22.23.2")).toBe(true);
+    expect(isWaveWorktreeExcludedV1(".config/mise/mise.lock")).toBe(true);
+    expect(isWaveWorktreeExcludedV1(".config/mise/config.toml")).toBe(false);
+    expect(isWaveWorktreeExcludedV1(".config/mise/settings.toml")).toBe(false);
+    expect(isWaveWorktreeExcludedV1(".config/mise")).toBe(false);
+    // Narrow: sibling .config paths are NOT provisioned.
+    expect(isWaveWorktreeExcludedV1(".config/other")).toBe(false);
+    expect(isWaveWorktreeExcludedV1(".config")).toBe(false);
+
+    // Pure matcher: provisioned droppings filtered; project-authored decoy
+    // and real escape kept.
+    expect(
+      findOffPatchWritesV1({
+        snapshot: [],
+        current: [
+          ".config/mise/conf.d/aeh.toml",
+          ".config/mise/locks/node-22.23.2",
+          ".config/mise/mise.lock",
+          ".config/mise/config.toml",
+          ".serena/scratch.json",
+          "graphify-out/x.json",
+          "outside/evil.ts",
+        ],
+        allowedScope: ["src/a.ts"],
+      })
+    ).toEqual([".config/mise/config.toml", "outside/evil.ts"]);
+
+    // Distributed helper: provisioned files in EITHER channel are filtered;
+    // the project-authored decoy in either channel still denies.
+    const misePatch = [
+      "diff --git a/.config/mise/conf.d/aeh.toml b/.config/mise/conf.d/aeh.toml",
+      "--- /dev/null",
+      "+++ b/.config/mise/conf.d/aeh.toml",
+      "@@ -0,0 +1 @@",
+      "+[tools]",
+    ].join("\n");
+    const decoyPatch = [
+      "diff --git a/.config/mise/config.toml b/.config/mise/config.toml",
+      "--- /dev/null",
+      "+++ b/.config/mise/config.toml",
+      "@@ -0,0 +1 @@",
+      "+[tools]",
+    ].join("\n");
+    expect(
+      findDistributedWaveOffPatchV1({
+        changedFiles: [".config/mise/conf.d/aeh.toml", ".config/mise/locks/node-22.23.2", ".config/mise/mise.lock"],
+        patch: misePatch,
+        allowedScope: ["src/a.ts"],
+      })
+    ).toEqual([]);
+    expect(
+      findDistributedWaveOffPatchV1({ changedFiles: [".config/mise/config.toml"], patch: decoyPatch, allowedScope: ["src/a.ts"] })
+    ).toEqual([".config/mise/config.toml"]);
+    expect(
+      findDistributedWaveOffPatchV1({
+        changedFiles: [".config/mise/conf.d/aeh.toml", "outside/evil.ts"],
+        patch: misePatch,
+        allowedScope: ["src/a.ts"],
+      })
+    ).toEqual(["outside/evil.ts"]);
+
+    // Live: toolchain droppings written post-snapshot are invisible to the
+    // gate and excluded from the walker snapshot; the decoy and a real
+    // escape still deny.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "aeh-wave-d23-"));
+    roots.push(dir);
+    await fs.writeFile(path.join(dir, "src-a.ts"), "export const a = 1;\n");
+    const snap = await snapshotWaveWorktreeV1(dir);
+    await fs.mkdir(path.join(dir, ".config", "mise", "conf.d"), { recursive: true });
+    await fs.writeFile(path.join(dir, ".config", "mise", "conf.d", "aeh.toml"), "[tools]\n");
+    await fs.mkdir(path.join(dir, ".config", "mise", "locks"), { recursive: true });
+    await fs.writeFile(path.join(dir, ".config", "mise", "locks", "node-22.23.2"), "{}\n");
+    await fs.writeFile(path.join(dir, ".config", "mise", "mise.lock"), "{}\n");
+    await fs.mkdir(path.join(dir, ".serena"), { recursive: true });
+    await fs.writeFile(path.join(dir, ".serena", "scratch.json"), "{}\n");
+    expect(await checkWaveWorktreeOffPatchV1(dir, snap, ["src-a.ts"])).toEqual([]);
+    const afterDroppings = await checkWaveUnitTurnOffPatchV1(dir, snap, ["src-a.ts"]);
+    expect(afterDroppings.offPatch).toEqual([]);
+    const snap2 = await snapshotWaveWorktreeV1(dir);
+    expect([...snap2.keys()].sort()).toEqual(["src-a.ts"]);
+    // Project-authored decoy written post-snapshot trips the gate.
+    await fs.writeFile(path.join(dir, ".config", "mise", "config.toml"), "[tools]\nnode = '22'\n");
+    expect(await checkWaveWorktreeOffPatchV1(dir, snap, ["src-a.ts"])).toEqual([".config/mise/config.toml"]);
+    // Real off-patch write alongside droppings still trips the gate.
+    await fs.mkdir(path.join(dir, "outside"), { recursive: true });
+    await fs.writeFile(path.join(dir, "outside", "evil.ts"), "export const evil = 1;\n");
+    expect(await checkWaveWorktreeOffPatchV1(dir, snap, ["src-a.ts"])).toEqual([".config/mise/config.toml", "outside/evil.ts"]);
+  });
+
   it("(P2) heartbeat and provider-generated scratch never read as off-patch writes", async () => {
     expect(isWaveWorktreeExcludedV1(".aeh-direct-heartbeat.json")).toBe(true);
     // R2: nested heartbeat-named files are NOT excluded (DIRECT exclusion is
