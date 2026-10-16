@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import type { HarnessProjectConfig, ValidationCheck, ValidationCommand } from "../core/types.js";
 import { pinnedWorkspaceBinPaths, runShell, type ProcessResult } from "../utils/process.js";
@@ -59,6 +60,27 @@ export async function runValidationCommand(root: string, command: ValidationComm
     });
   }
   const passed = result.exitCode === 0;
+  // D19: persist the COMPLETE command output to a raw artifact file and cite
+  // it in details (mirrors the external-validator rawArtifact pattern).
+  // Attribution (testAttribution extractReporterTestsFromExecutionV1) reads
+  // the raw file, never the bounded details copies: details.stdout is capped
+  // at 12KB (and passing runs carry only a summary), so reporter JSON larger
+  // than the cap — routine for Playwright output — would otherwise be
+  // unparseable and every large or failing suite would misreport as
+  // TEST_ATTRIBUTION_REPORTER_MISSING instead of attributing real results.
+  // The evidence dir is git-ignored harness state, so raw files never enter
+  // candidate digests or ChangeSets. Best-effort write: persistence failure
+  // keeps the previous bounded-details behavior (attribution may then miss).
+  // MECHANISM: DETERMINISTIC (fixed path derivation + verbatim bytes).
+  let rawArtifactRel: string | undefined;
+  try {
+    const rawPath = path.resolve(root, options.config?.evidence?.outputDir ?? ".harness/evidence", `${command.id.replace(/[^A-Za-z0-9._-]/g, "-")}.raw`);
+    await fs.mkdir(path.dirname(rawPath), { recursive: true });
+    await fs.writeFile(rawPath, `${result.stdout}${result.stderr ? `\n--- stderr ---\n${result.stderr}` : ""}`, "utf8");
+    rawArtifactRel = path.relative(root, rawPath).replaceAll("\\", "/");
+  } catch {
+    rawArtifactRel = undefined;
+  }
   return {
     id: `command.${command.id}`,
     category: "command",
@@ -69,6 +91,7 @@ export async function runValidationCommand(root: string, command: ValidationComm
       ...(passed
         ? { command: command.command, cwd, exitCode: result.exitCode, summary: summarizePassingOutput(result.stdout), stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) }
         : { command: command.command, cwd, exitCode: result.exitCode, stdout: trimOutput(result.stdout), stderr: trimOutput(result.stderr) }),
+      ...(rawArtifactRel ? { rawArtifact: rawArtifactRel } : {}),
       ...(isolation ? { isolation } : {})
     }
   };
