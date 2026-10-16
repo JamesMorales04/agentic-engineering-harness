@@ -358,7 +358,7 @@ export async function executeRepairerCandidateMutation(input: {
   const tryHonorAnchoredCoveringGrantForEscape = async (
     escapeError: unknown,
     changeSet: ChangeSetV1,
-  ): Promise<{ candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1 } | undefined> => {
+  ): Promise<{ candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1; changeSet: ChangeSetV1 } | undefined> => {
     const details = getScopeEscapeDetails(escapeError);
     const escaped = details ? [...new Set(details.escapedFiles)] : [];
     if (!escaped.length) return undefined;
@@ -437,7 +437,7 @@ export async function executeRepairerCandidateMutation(input: {
     }
     // Reassemble ONCE against the honored scopes (full re-validation + candidate
     // binding; any failure keeps the original terminal kill — no silent pass).
-    let reassembled: { candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1 };
+    let reassembled: { candidate: CandidateRevisionV1; impact: import("./assembler.js").CandidateImpactV1; changeSet: ChangeSetV1 };
     try {
       reassembled = await assembleRepairChangeSetWithScopes(changeSet, honoredScopes, honoredExact);
     } catch {
@@ -494,12 +494,14 @@ export async function executeRepairerCandidateMutation(input: {
       candidateDigest: assembled.candidate.sourceDigest,
       impactDigest: assembled.impact.digest
     });
-    return { session: isolated.session, changeSet: initialChangeSet, candidate: assembled.candidate, impact: assembled.impact };
+    // D22 lineage: surface the assembled (managed-provisioned-stripped)
+    // ChangeSet so rejection inverses reverse exactly what was applied.
+    return { session: isolated.session, changeSet: assembled.changeSet, candidate: assembled.candidate, impact: assembled.impact };
   }
   const outcome = await withOneScopeEscapeCorrectionTurnV1<RepairAssemblyOutcome>({
     attempt: async () => {
       const assembled = await assembleRepairChangeSet(initialChangeSet);
-      return { session: isolated.session, changeSet: initialChangeSet, candidate: assembled.candidate, impact: assembled.impact };
+      return { session: isolated.session, changeSet: assembled.changeSet, candidate: assembled.candidate, impact: assembled.impact };
     },
     buildCorrectionPrompt: (details) => buildScopeEscapeCorrectionPrompt(details),
     executeCorrection: async (diagnostic) => {
@@ -571,7 +573,7 @@ export async function executeRepairerCandidateMutation(input: {
         throw new AehError("PARTICIPANT_PLAN_INVALID", "REPAIR_SCOPE_BLOCKER_CONFLICT: Repairer declared filesNeededOutsideScope while also producing a ChangeSet; the no-mutation blocker path requires no file changes.");
       }
       const assembled = await assembleRepairChangeSet(correctionIsolated.changeSet);
-      return { session: correctionIsolated.session, changeSet: correctionIsolated.changeSet, candidate: assembled.candidate, impact: assembled.impact };
+      return { session: correctionIsolated.session, changeSet: assembled.changeSet, candidate: assembled.candidate, impact: assembled.impact };
     },
     isTimeoutResult: (result) => isRepairCorrectionTimeoutSession(result.session),
     ...(input.escapeCorrectionRemainingBudget !== undefined
