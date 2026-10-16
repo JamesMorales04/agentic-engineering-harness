@@ -1682,8 +1682,8 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
     if (operationId) await runStage(operationStateRoot, operationId, "delivery", "RUNNING");
     try {
       if (operationId) await requireOwnerEconomicBoundaryBeforeExternalEffectV1(controlRoot, await loadOperation(operationStateRoot, operationId));
-      deliverySummary = await finalizeAcceptedIssue(workspaceRoot, effectiveConfig, effectiveContract, { candidate: report.candidate });
-      if (deliverySummary.status !== "SKIPPED") await recordEvent(controlRoot, effectiveConfig, "harness.delivery.finalize", { taskId: effectiveContract.task.id, status: deliverySummary.status, commitSha: deliverySummary.commitSha, pullRequest: deliverySummary.pullRequest });
+      deliverySummary = await finalizeAcceptedIssue(workspaceRoot, effectiveConfig, effectiveContract, { candidate: report.candidate, controlRoot });
+      if (deliverySummary.status !== "SKIPPED") await recordEvent(controlRoot, effectiveConfig, "harness.delivery.finalize", { taskId: effectiveContract.task.id, status: deliverySummary.status, commitSha: deliverySummary.commitSha, pullRequest: deliverySummary.pullRequest, ...(deliverySummary.localBranch ? { localBranch: deliverySummary.localBranch } : {}) });
       // Track B delivery-stage seam: when the frozen merge mode requested
       // autonomous merge, finalize stops merge-pending BLOCKED after PR
       // creation (no prReview supplied). Schedule the independent Reviewer
@@ -1719,7 +1719,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
           });
         }
       }
-      if (operationId) await runStage(operationStateRoot, operationId, "delivery", "COMPLETED");
+      if (operationId) await runStage(operationStateRoot, operationId, "delivery", deliverySummary.status === "BLOCKED_LOCAL" ? "BLOCKED" : "COMPLETED", deliverySummary.status === "BLOCKED_LOCAL" ? { message: deliverySummary.message } : {});
     } catch (error) {
       deliverySummary = { ...deliveryFinalizationFailure(error), candidate: report.candidate };
       report = mergeChecks(report, [{ id: "delivery.finalization", category: "delivery", status: "FAIL", message: deliverySummary.message, details: { status: deliverySummary.status, humanRequired: deliverySummary.humanRequired } }]);
