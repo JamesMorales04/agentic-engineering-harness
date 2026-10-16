@@ -85,7 +85,7 @@ import {
   TEST_ATTRIBUTION_REPORTER_INCOMPLETE,
 } from "../validation/testAttribution.js";
 import type { CandidateImpactV1 } from "../candidates/assembler.js";
-import { candidateRevisionsEqual, type CandidateRevisionV1 } from "../operations/v2Contracts.js";
+import { candidateRevisionsEqual, type CandidateRevisionV1, type ParticipantReceiptV1 } from "../operations/v2Contracts.js";
 import { objectiveParticipantAccountingV1 } from "../operations/participantAccounting.js";
 import { assertResolvedOperationPolicyV2, compileResolvedOperationPolicy, type ResolvedOperationPolicyV2 } from "../architecture/executionIdentity.js";
 import { bindResolvedOperationPolicy, currentControllerEpoch } from "../operations/state.js";
@@ -1437,9 +1437,15 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
       }
       const identity = currentObjectiveIdentityV1(operation);
       const requiredWorkUnitIds = waveResult?.plan?.workUnits.map((unit) => unit.id) ?? [`direct:${effectiveContract.task.id}`];
-      const accountedWorkUnitIds = waveResult?.plan
-        ? waveResult.waves.flatMap((wave) => wave.results.filter((result) => result.status === "PASS").map((result) => result.task.id))
-        : worker.exitCode === 0 ? [`direct:${effectiveContract.task.id}`] : [];
+      const { accountedWorkUnitIds, sessionAccountedWorkUnitIds } = waveResult?.plan
+        ? resolveAccountedWorkUnitIds(
+            requiredWorkUnitIds,
+            waveResult.waves.flatMap((wave) => wave.results),
+            Object.values(operation.participantReceipts ?? {}),
+            identity.candidate,
+            report.status === "PASS"
+          )
+        : { accountedWorkUnitIds: worker.exitCode === 0 ? [`direct:${effectiveContract.task.id}`] : [], sessionAccountedWorkUnitIds: [] as string[] };
       const validationRequirements = evidenceBundle.requirements.filter((requirement) => requirement.validationRequirementIds.length > 0);
       const reviewRequirements = evidenceBundle.requirements.filter((requirement) => requirement.reviewDimensions.length > 0);
       const evidenceForGate = (requirements: typeof validationRequirements, kind: "VALIDATION" | "REVIEW") => ({
@@ -1476,7 +1482,7 @@ export async function runTask(root: string, config: HarnessProjectConfig, contra
         category: "objective-completion",
         status: objectiveCompletionDecision.complete ? "PASS" : "FAIL",
         message: objectiveCompletionDecision.complete ? "Complete objective evidence set satisfies the deterministic Definition of Done." : `Objective Definition of Done is blocked: ${objectiveCompletionDecision.blockers.map((item) => item.code).join(", ")}.`,
-        details: { identity, blockers: objectiveCompletionDecision.blockers, requiredWorkUnitIds, accountedWorkUnitIds }
+        details: { identity, blockers: objectiveCompletionDecision.blockers, requiredWorkUnitIds, accountedWorkUnitIds, sessionAccountedWorkUnitIds }
       }]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2176,8 +2182,59 @@ function bindingForSelection(selection: AgentExecutionSelection) {
 }
 
 /**
+ * Work-unit accounting for the objective Definition of Done (MECHANISM:
+ * DETERMINISTIC). A unit is accounted when its completion is evidenced:
+ * a wave PASS verdict, or a controller-written SUCCEEDED participant
+ * receipt for one of its worker sessions once the final report is green.
+ * Receipts are the completion proof that survives the lazy-implementer
+ * challenge: they are written only for contract-valid completions
+ * (vacuous output fails contract validation and yields no success
+ * receipt), so unlike bare exit codes they cannot credit empty work.
+ * The receipt must additionally bind the current candidate: without a
+ * candidate check, a rerun of the same unit could be credited by a
+ * prior session's receipt from an older candidate revision. Sessions
+ * join to receipts by session id (falling back to participant id);
+ * repair-loop sessions are candidate-scoped and deliberately do NOT
+ * attest units. Dropped or crashed units with no success receipt stay
+ * unaccounted and DoD blocks loudly. Substantive completeness
+ * additionally rests on the validation/review/acceptance gates.
+ * Exported for regression coverage.
+ */
+export function resolveAccountedWorkUnitIds(
+  requiredWorkUnitIds: readonly string[],
+  waveResults: ReadonlyArray<{ task: { id: string }; status: string; session?: { id?: string; participantId?: string; exitCode: number } }>,
+  receipts: ReadonlyArray<Pick<ParticipantReceiptV1, "participantId" | "sessionId" | "outcome" | "candidate">>,
+  currentCandidate: CandidateRevisionV1 | undefined,
+  finalReportPass: boolean
+): { accountedWorkUnitIds: string[]; sessionAccountedWorkUnitIds: string[] } {
+  const accounted = new Set<string>();
+  const sessionAccounted = new Set<string>();
+  const succeeded = receipts.filter((receipt) => receipt.outcome === "SUCCEEDED");
+  for (const result of waveResults) {
+    if (result.status === "PASS") {
+      accounted.add(result.task.id);
+      continue;
+    }
+    if (!finalReportPass || !currentCandidate) continue;
+    const sessionId = result.session?.id;
+    const participantId = result.session?.participantId;
+    const evidenced = succeeded.some(
+      (receipt) =>
+        ((sessionId !== undefined && receipt.sessionId === sessionId) ||
+          (participantId !== undefined && receipt.participantId === participantId)) &&
+        receipt.candidate !== undefined &&
+        candidateRevisionsEqual(receipt.candidate, currentCandidate)
+    );
+    if (evidenced) {
+      accounted.add(result.task.id);
+      sessionAccounted.add(result.task.id);
+    }
+  }
+  return { accountedWorkUnitIds: [...accounted], sessionAccountedWorkUnitIds: [...sessionAccounted] };
+}
+
+/**
  * Failure summary for the `agent.execution` validation check. The wave
- * aggregate session is synthetic: its exit code mirrors the deterministic
  * barrier outcome, not an agent runtime crash (stderr is empty when every
  * real worker session exited 0). Reporting it as an agent runtime exit
  * misattributes barrier failures and has caused repair misdiagnosis, so the
