@@ -10,6 +10,8 @@ import type { CandidateAssuranceCompilationV1 } from "../src/architecture/candid
 import type { HarnessProjectConfig, TaskContract, ValidationReport } from "../src/core/types.js";
 import { sha256Canonical } from "../src/core/digest.js";
 import { continueManagedPaseoAgent, inspectManagedPaseoAgent } from "../src/paseo/runtime.js";
+import { PASEO_BOOTSTRAP_VERSION } from "../src/paseo/leadState.js";
+import { VERSION } from "../src/version.js";
 
 vi.mock("../src/paseo/runtime.js", () => ({
   continueManagedPaseoAgent: vi.fn(),
@@ -25,6 +27,7 @@ afterEach(async () => {
     if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
   vi.mocked(continueManagedPaseoAgent).mockReset();
+  vi.mocked(inspectManagedPaseoAgent).mockClear();
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -86,6 +89,23 @@ describe("managed Lead acceptance evidence", () => {
       .rejects.toThrow("ACCEPTANCE_LEAD_PROVIDER_IDENTITY_REQUIRED");
     expect(continueManagedPaseoAgent).not.toHaveBeenCalled();
   });
+
+  it("refuses to dispatch acceptance to a bound session that is not the durable managed lead", async () => {
+    const setup = await fixture();
+    await bindOperationLead(setup.root, setup.operationId, "ambient-shell-session");
+    await expect(requestManagedLeadAcceptance({ root: setup.root, operationId: setup.operationId, compilation: setup.compilation, report: setup.report, implementationIdentity: "implementer" }))
+      .rejects.toThrow("ACCEPTANCE_LEAD_MISMATCH");
+    expect(inspectManagedPaseoAgent).not.toHaveBeenCalled();
+    expect(continueManagedPaseoAgent).not.toHaveBeenCalled();
+  });
+
+  it("refuses to dispatch acceptance when no durable managed lead exists to verify against", async () => {
+    const setup = await fixture();
+    await fs.rm(path.join(setup.root, ".harness", "paseo", "lead-session.json"));
+    await expect(requestManagedLeadAcceptance({ root: setup.root, operationId: setup.operationId, compilation: setup.compilation, report: setup.report, implementationIdentity: "implementer" }))
+      .rejects.toThrow("ACCEPTANCE_LEAD_UNVERIFIED");
+    expect(continueManagedPaseoAgent).not.toHaveBeenCalled();
+  });
 });
 
 async function fixture() {
@@ -98,6 +118,20 @@ async function fixture() {
   const operation = await loadOperation(root, operationId);
   const candidate = operation.candidateRevision!;
   const config = { project: { name: candidate.projectId! } } as HarnessProjectConfig;
+  // D17: the bound lead must verify against a compatible durable lead-session.
+  await fs.mkdir(path.join(root, ".harness", "paseo"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".harness", "project.yaml"),
+    ["version: 1", "project:", `  name: ${JSON.stringify(candidate.projectId!)}`, "orchestration:", "  provider: paseo", "  interactive:", "    stateDir: .harness/paseo", ""].join("\n")
+  );
+  await fs.writeFile(
+    path.join(root, ".harness", "paseo", "lead-session.json"),
+    `${JSON.stringify({
+      version: 2, bootstrapVersion: PASEO_BOOTSTRAP_VERSION, aehVersion: VERSION, aehCommand: "aeh",
+      projectRoot: root, projectName: candidate.projectId!, agentId: "lead-session", title: "AEH Lead",
+      leadAgent: "lead", provider: "codex", model: "gpt-test", createdAt: now, generation: 1
+    }, null, 2)}\n`
+  );
   const policy = compileResolvedOperationPolicy({
     projectId: candidate.projectId!, operationId, operationExecutionRevision: operation.operationExecutionRevision!, candidateRevision: candidate.revision,
     candidateDigest: candidate.identityDigest, controllerEpoch: operation.controller?.epoch ?? 0, intent: "test", route: "DELEGATED", minimumAssurance: "STANDARD",

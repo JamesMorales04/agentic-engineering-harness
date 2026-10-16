@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LocalControlCenterV1 } from "../src/control-center/index.js";
 import { resolveControlCenterLeadBinding } from "../src/control-center/leadBinding.js";
 import { PaseoGatewayV1 } from "../src/paseo/gateway.js";
-import { PASEO_BOOTSTRAP_VERSION } from "../src/paseo/start.js";
+import { PASEO_BOOTSTRAP_VERSION } from "../src/paseo/leadState.js";
 import { VERSION } from "../src/version.js";
 import { pairControlCenter } from "./helpers/controlCenterSession.js";
 
