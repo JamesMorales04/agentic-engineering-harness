@@ -13,8 +13,9 @@ import { assertWorkspaceMatchesCandidate } from "../candidates/identity.js";
 import { requireAcceptedCurrentOracleV1 } from "../architecture/acceptanceOracle.js";
 import { mergeAcceptedPullRequest } from "./merge.js";
 import { resolveDeliveryMergeMode, type IndependentPullRequestReviewV1 } from "./prReview.js";
+import { finalizeLocalChangeDelivery } from "./local.js";
 
-export type DeliveryFinalizationStatus = "SKIPPED" | "HANDOFF_ONLY" | "NO_CHANGES" | "FINALIZED" | "BLOCKED_EXTERNAL" | "BLOCKED_SUPPLY_CHAIN" | "SYSTEM_FAILURE";
+export type DeliveryFinalizationStatus = "SKIPPED" | "HANDOFF_ONLY" | "NO_CHANGES" | "FINALIZED" | "BLOCKED_EXTERNAL" | "BLOCKED_SUPPLY_CHAIN" | "BLOCKED_LOCAL" | "SYSTEM_FAILURE";
 export interface DeliveryFinalizationResult {
   status: DeliveryFinalizationStatus;
   humanRequired: boolean;
@@ -23,6 +24,8 @@ export interface DeliveryFinalizationResult {
   pushed: boolean;
   pullRequest?: { number: number; url: string; draft: boolean };
   candidate?: CandidateRevisionV1;
+  /** D25 local delivery only: the op-owned local delivery branch. Absent on every other path. */
+  localBranch?: string;
   message: string;
 }
 interface GithubPullRequest { number: number; html_url: string; draft?: boolean; }
@@ -43,7 +46,11 @@ export interface DeliveryMergeAfterReviewOptions {
   mergeMethod?: "merge" | "squash" | "rebase";
 }
 
-export type FinalizeOptions = { candidate?: CandidateRevisionV1 } & DeliveryMergeAfterReviewOptions;
+export type FinalizeOptions = {
+  candidate?: CandidateRevisionV1;
+  /** Control root that owns local delivery (checks + branch + fast-forward). Defaults to root. */
+  controlRoot?: string;
+} & DeliveryMergeAfterReviewOptions;
 
 interface FrozenMergeDirective {
   mode: "AUTO_MERGE" | "RISK_GATED";
@@ -264,6 +271,21 @@ export async function finalizeAcceptedChange(root: string, config: HarnessProjec
   const candidate = options.candidate;
   const github = config.delivery?.github;
   if (currentOperationContext().kind !== "change") return skipped("Generic GitHub delivery is limited to managed CHANGE operations.", candidate);
+  // D25 local delivery: plain accepted CHANGE with GitHub delivery disabled
+  // lands on the op-owned local delivery branch under controller authority.
+  // FORMAL_SDD stays on its existing path (SKIPPED follow-up note when
+  // GitHub finalization is off); issue-linked tasks never reach here with a
+  // contract issue (finalizeAcceptedIssue owns them). GitHub-enabled
+  // behavior below is unchanged.
+  if (!contract.issue && contract.routing?.route !== "FORMAL_SDD" && github?.enabled !== true) {
+    return finalizeLocalChangeDelivery(root, config, contract, {
+      ...(candidate ? { candidate } : {}),
+      ...(options.controlRoot ? { controlRoot: options.controlRoot } : {}),
+    });
+  }
+  if (contract.routing?.route === "FORMAL_SDD" && github?.enabled !== true) {
+    return skipped("Generic GitHub CHANGE finalization is not enabled by project policy; FORMAL_SDD local delivery is a follow-up.", candidate);
+  }
   if (github?.enabled !== true || github.finalizeOnAcceptance !== true) return skipped("Generic GitHub CHANGE finalization is not enabled by project policy.", candidate);
 
   const context = currentOperationContext();

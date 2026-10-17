@@ -228,13 +228,20 @@ describe("accepted no-Issue CHANGE delivery", () => {
     expect(intents.map((intent) => intent.action).sort()).toEqual(["git.branch.create", "git.commit", "git.push", "github.pull-request.create"].sort());
   });
 
-  it("keeps no-Issue delivery disabled when project policy is disabled", async () => {
+  it("fails closed (never a silent skip) for no-Issue delivery when GitHub delivery is disabled", async () => {
+    // D25: with GitHub delivery disabled, an accepted plain-CHANGE candidate
+    // takes the controller-owned local delivery path. The fixture tree holds
+    // an untracked non-ignored file, so delivery BLOCKEDs with the exact
+    // reason instead of reporting a silent SKIPPED success.
     const context = await createFinalizeFixture({ taskId: "CHANGE-SELFHOST-DISABLED", issueDerived: false });
     const disabled: HarnessProjectConfig = { ...context.config, delivery: { ...context.config.delivery, github: { ...context.config.delivery?.github, enabled: false, allowedActions: [] } } };
     const result = await finalizeAcceptedChange(context.repo, disabled, context.contract, { candidate: context.candidate });
-    expect(result.status).toBe("SKIPPED");
+    expect(result.status).toBe("BLOCKED_LOCAL");
+    expect(result.humanRequired).toBe(true);
+    expect(result.message).toMatch(/LOCAL_DELIVERY_BLOCKED: /);
     expect(context.requests).toHaveLength(0);
     expect(await git(context.repo, "branch", "--show-current")).toBe("aeh/op-change-selfhost");
+    expect(await git(context.repo, "rev-parse", "HEAD")).toBe(await git(context.repo, "rev-parse", "main"));
   });
 
   it("finalizes an accepted no-change candidate without requiring a GitHub token", async () => {
