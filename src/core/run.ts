@@ -2062,6 +2062,19 @@ export async function runCandidateImpactValidations(input: {
   const requirements = input.requirements ?? candidateImpactValidationRequirementsV1(input.impact);
   const actionById = new Map(input.resolution.actions.map((action) => [action.requirementId, action]));
   const executedActions = new Map<string, ValidationCheck>();
+  // Command-string dedup (Mechanism=DETERMINISTIC): two requirements whose
+  // frozen resolved actions carry the byte-identical command string share one
+  // execution even when their (source, selector) differ — e.g. a
+  // contract-derived `command` requirement resolving via `configured-command`
+  // and a planner-authored `unit-test` requirement resolving via
+  // `project-script`, both to `npm test`. Only actions executed verbatim via
+  // runValidationCommand participate: configured-validator executions are
+  // selector-bound and approved-provider adapter executions are
+  // adapter-mediated, so they never enter or consult this cache. Per-
+  // requirement checks below still bind requirementId/kind/selector/source
+  // per requirement, and SAST/lane/attribution gates evaluate per
+  // requirement against the shared execution.
+  const executedCommands = new Map<string, ValidationCheck>();
   let configuredValidatorChecks: ValidationCheck[] | undefined;
   const output: ValidationCheck[] = [];
   for (const requirement of requirements) {
@@ -2073,8 +2086,12 @@ export async function runCandidateImpactValidations(input: {
       execution = executedActions.get(actionKey);
       if (!execution) {
         if ((action.source === "project-script" || action.source === "configured-command") && action.command) {
-          const command: ValidationCommand = { id: `candidate-impact-${requirement.id}`, command: action.command, required: true };
-          execution = await runValidationCommand(input.root, command, { config: input.config });
+          execution = executedCommands.get(action.command);
+          if (!execution) {
+            const command: ValidationCommand = { id: `candidate-impact-${requirement.id}`, command: action.command, required: true };
+            execution = await runValidationCommand(input.root, command, { config: input.config });
+            executedCommands.set(action.command, execution);
+          }
         } else if (action.source === "configured-validator") {
           configuredValidatorChecks ??= await runConfiguredValidators(input.root, input.config, input.contract, input.report.metadata.baseRef, input.report.changedFiles, { candidate: input.report.candidate! });
           execution = configuredValidatorChecks.find((check) => check.id === action.selector);
@@ -2094,7 +2111,11 @@ export async function runCandidateImpactValidations(input: {
               candidate: input.report.candidate!
             });
           } else if (action.command) {
-            execution = await runValidationCommand(input.root, { id: `candidate-impact-${requirement.id}`, command: action.command, required: true }, { config: input.config });
+            execution = executedCommands.get(action.command);
+            if (!execution) {
+              execution = await runValidationCommand(input.root, { id: `candidate-impact-${requirement.id}`, command: action.command, required: true }, { config: input.config });
+              executedCommands.set(action.command, execution);
+            }
           } else if (["unit-test", "integration-test", "bdd", "contract-test"].includes(action.kind)) {
             const spec: ValidatorSpec = {
               id: `candidate-impact-${requirement.id}`,
