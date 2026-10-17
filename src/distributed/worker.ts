@@ -23,6 +23,7 @@ import { assertExecutionAuthority } from "../security/executionLease.js";
 import { sha256Canonical } from "../core/digest.js";
 import { sha256 } from "../context/provenance.js";
 import { createPromptManifest } from "../context/runtimeV2.js";
+import { isProvisionedToolchainPath } from "../core/git.js";
 
 export async function dispatchDistributedDelegation(input: {
   root: string;
@@ -322,7 +323,7 @@ async function executeClaimedJob(workerRoot: string, job: DistributedDelegationJ
     if (session.id !== binding.runtime.sessionId || session.executionBinding?.digest !== binding.digest) return failure(job, workerId, startedAt, session, "DISTRIBUTED_EXECUTION_BINDING_MISMATCH: runtime returned a different or unbound session.");
     if (session.exitCode !== 0) return failure(job, workerId, startedAt, session, `agent exited with ${session.exitCode}`);
     const status = await runExecutable("git", ["status", "--porcelain"], { cwd: worktree, timeoutMs: 30_000 }); const untracked = status.stdout.split(/\r?\n/).filter((line) => line.startsWith("?? ")).map((line) => line.slice(3).trim()).filter(Boolean); if (untracked.length) await runExecutable("git", ["add", "-N", "--", ...untracked], { cwd: worktree, timeoutMs: 30_000 });
-    const names = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 }); const changedFiles = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const escaped = changedFiles.filter((file) => !job.task.scope.some((scope) => matches(file, scope))); if (escaped.length) return failure(job, workerId, startedAt, session, `remote task escaped scope: ${escaped.join(", ")}`, changedFiles);
+    const names = await runExecutable("git", ["diff", "--name-only", "HEAD"], { cwd: worktree, timeoutMs: 30_000 }); const changedFiles = names.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const escaped = findDistributedRemoteEscapeV1(changedFiles, job.task.scope); if (escaped.length) return failure(job, workerId, startedAt, session, `remote task escaped scope: ${escaped.join(", ")}`, changedFiles);
     const diff = await runExecutable("git", ["diff", "--binary", "--no-ext-diff", "HEAD"], { cwd: worktree, timeoutMs: 60_000 }); if (diff.exitCode !== 0) return failure(job, workerId, startedAt, session, diff.stderr || "unable to capture patch", changedFiles);
     return { version: 2, jobId: job.id, workerId, startedAt, finishedAt: new Date().toISOString(), status: "PASS", session, changedFiles, patch: diff.stdout, observedCandidateSourceDigest };
     }
@@ -339,4 +340,40 @@ function validateDistributedSessionReady(ready: DistributedSessionReadyV1, job: 
 }
 function sanitizeRemoteConfig(config: HarnessProjectConfig): HarnessProjectConfig { return { ...config, delivery: { ...config.delivery, github: { ...config.delivery?.github, enabled: false }, paseo: { ...config.delivery?.paseo, enabled: false, autoUseWorkspace: false } }, distributed: { ...config.distributed, enabled: false }, telemetry: { ...config.telemetry, exporter: "none" } }; }
 function matches(file: string, scope: string): boolean { const prefix = scope.split(/[?*\[]/, 1)[0].replace(/\/+$/, ""); return scope === "**" || minimatch(file, scope, { dot: true }) || (Boolean(prefix) && (file === prefix || file.startsWith(`${prefix}/`))); }
+
+/**
+ * D23c remote-escape exclusion (DETERMINISTIC, pure): mirrors the canonical
+ * live-gate predicate `isWaveWorktreeExcludedV1` (src/agents/waveExecutor.ts)
+ * — root-only owner heartbeat, `.serena` / `graphify-out` provider scratch
+ * (exact or descendant), plus the NARROW toolchain-provisioned set.
+ *
+ * Import-cycle note: `src/agents/waveExecutor.ts:14` imports
+ * `dispatchDistributedDelegation` from this module, so importing
+ * `isWaveWorktreeExcludedV1` here would create a waveExecutor <->
+ * distributed/worker cycle. The toolchain leg therefore delegates to the
+ * canonical leaf predicate `isProvisionedToolchainPath` (src/core/git.ts —
+ * no cycle: it imports only node builtins, `utils/process`, and types); the
+ * heartbeat/scratch legs are inlined here to match the canonical predicate
+ * exactly. Keep in sync with `isWaveWorktreeExcludedV1` and
+ * `DIRECT_STAGING_HEARTBEAT_FILENAME` (src/candidates/direct.ts).
+ */
+const DISTRIBUTED_REMOTE_ESCAPE_SCRATCH_PREFIXES_V1 = [".serena", "graphify-out"];
+const DISTRIBUTED_REMOTE_ESCAPE_HEARTBEAT_V1 = ".aeh-direct-heartbeat.json";
+export function isDistributedRemoteEscapeExcludedV1(file: string): boolean {
+  const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
+  const segments = normalized.split("/");
+  if (segments.length === 1 && segments[0] === DISTRIBUTED_REMOTE_ESCAPE_HEARTBEAT_V1) return true;
+  const first = segments[0] ?? normalized;
+  if (DISTRIBUTED_REMOTE_ESCAPE_SCRATCH_PREFIXES_V1.some((prefix) => first === prefix)) return true;
+  return isProvisionedToolchainPath(normalized);
+}
+
+/**
+ * Pure remote-escape core (DETERMINISTIC): changed files outside scope, minus
+ * managed exclusions. Scope matching itself reuses the local `matches` helper
+ * unchanged; failure message/diagnostics at the call site are unchanged.
+ */
+export function findDistributedRemoteEscapeV1(changedFiles: readonly string[], scope: readonly string[]): string[] {
+  return changedFiles.filter((file) => !isDistributedRemoteEscapeExcludedV1(file) && !scope.some((pattern) => matches(file, pattern)));
+}
 function safe(value: string): string { return value.replace(/[^A-Za-z0-9._-]/g, "-"); }
