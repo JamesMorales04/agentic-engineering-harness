@@ -525,8 +525,8 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
     // IDENTICAL inputs: same request object, no repair hint, no correction
     // evidence, no list re-assertion. Re-asserting the exact list would lead
     // the semantic judgment and compromise independence. The service
-    // normalizes internally without mutating this object. Any retry (mismatch
-    // or unavailable) skips the cache read (bypassCache) so the identical
+    // normalizes internally without mutating this object. Any retry (mismatch,
+    // ref-slip, or unavailable) skips the cache read (bypassCache) so the identical
     // cache identity cannot return the same cached wrong judgment as a HIT;
     // the fresh result is still stored under that identity with normal
     // provider-turn accounting (no envelope bypass).
@@ -562,6 +562,28 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
         // failure rethrows with the runner-threaded diagnostics preserved.
         throw error;
       }
+      // D29 ref-slip class observed at the service boundary: the service's
+      // exact evidence-membership gate rejected the reply for citing refs
+      // outside the request set (offendingEvidenceRefs details). This is the
+      // live-verified terminal behind the two dead-on-arrival/outside-ref
+      // slips (changedFiles correct, judgment evidenceRefs mangled): with the
+      // pinned `attemptBudget: 1` the service cannot retry internally, so the
+      // single owner of the retry bound retries here instead — IDENTICAL
+      // inputs, fresh turn, bypassCache, same MAX bound, no repair hints (the
+      // service's own attempt>1 repair reason would re-assert the exact ref
+      // list and compromise independence). The second consecutive slip
+      // rethrows the original error with its details preserved. Forensics for
+      // this class already persist per-turn via the service's pre-existing
+      // `semantic.assessor.reply.rejected` channel (offending refs + session +
+      // fingerprint); the assembler has no assessmentDigest on this path, so
+      // no second trace is emitted (no fabricated fields, no new telemetry).
+      // Non-slip INVALID (schema-invalid, empty refs, nested inconsistency,
+      // request/policy/provenance failures — no offending-refs signature)
+      // still fails closed immediately with no retry.
+      if (error instanceof AehError && error.code === "SEMANTIC_ASSESSMENT_INVALID" && isOffendingEvidenceRefsMismatch(error)) {
+        if (attempt < MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS) { lastMismatch = error; attempt += 1; continue; }
+        throw error;
+      }
       throw error;
     }
     if (assessment.assessmentType !== "CANDIDATE_IMPACT" || assessment.mechanism !== "MODEL" || assessment.judgment.type !== "CANDIDATE_IMPACT") throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact requires a canonical MODEL CANDIDATE_IMPACT judgment.");
@@ -591,8 +613,36 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
       throw error;
     }
     const fileRefs = changedFiles.map((file) => `file:${file}`);
-    if (fileRefs.some((ref) => !judgment.evidenceRefs.includes(ref))) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact judgment must cite receipted evidence for every changed file.");
-    if (judgment.evidenceRefs.some((ref) => !request.evidenceRefs.includes(ref))) throw new AehError("CANDIDATE_IMPACT_INVALID", "candidate impact judgment cited evidence outside the current candidate receipts.");
+    // D29: the judgment evidenceRefs gates are exact-match slips in the same
+    // non-authoritative class as changedFiles mismatch, so they share the
+    // single-owner retry identically (same inputs, bypassCache, same bound,
+    // same rejected-judgment telemetry with the ref diff, no repair hints).
+    // Gate conditions are unchanged; only the single-shot terminal becomes a
+    // bounded retry. A second consecutive mismatch rethrows with details.
+    const rejectEvidenceRefMismatch = async (base: string): Promise<AehError> => {
+      const diff = candidateImpactEvidenceRefDiffV1(request.evidenceRefs, judgment.evidenceRefs);
+      await emitCandidateImpactRejectedJudgment(runtime, {
+        assessmentType: "CANDIDATE_IMPACT",
+        candidateId: candidate.candidateId,
+        candidateRevision: candidate.revision,
+        candidateDigest: candidate.identityDigest,
+        ...diff,
+        assessmentDigest: assessment.assessmentDigest,
+        ...(assessment.paseoSession?.agentId ? { sessionId: assessment.paseoSession.agentId } : {}),
+        ...(assessment.paseoSession?.transport ? { transport: assessment.paseoSession.transport } : {})
+      });
+      return buildCandidateImpactEvidenceRefMismatchError(base, diff, assessment);
+    };
+    if (fileRefs.some((ref) => !judgment.evidenceRefs.includes(ref))) {
+      const error = await rejectEvidenceRefMismatch("candidate impact judgment must cite receipted evidence for every changed file.");
+      if (attempt < MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS) { lastMismatch = error; attempt += 1; continue; }
+      throw error;
+    }
+    if (judgment.evidenceRefs.some((ref) => !request.evidenceRefs.includes(ref))) {
+      const error = await rejectEvidenceRefMismatch("candidate impact judgment cited evidence outside the current candidate receipts.");
+      if (attempt < MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS) { lastMismatch = error; attempt += 1; continue; }
+      throw error;
+    }
     const valueWithoutDigest = {
       version: 1 as const,
       mechanism: "MODEL" as const,
@@ -613,13 +663,15 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
  * Bounded retry-once for the non-authoritative CANDIDATE_IMPACT judgment plus
  * an independent bounded retry-once for transient launch-level non-timeout
  * UNAVAILABLE. The first assessment runs against the frozen evidence packet;
- * if the deterministic exact-match gate rejects its changedFiles, one retry
- * runs with IDENTICAL inputs (same request object, fresh turn, no hints, no
- * list re-assertion — re-asserting the exact list would lead the semantic
- * judgment and compromise independence). The retry passes `bypassCache: true`
- * so the identical cache identity cannot return the same cached wrong
- * judgment as a HIT; the fresh result is still stored under that identity. A
- * second mismatch rethrows with details.
+ * if a deterministic exact-match gate rejects it — changedFiles mismatch,
+ * judgment evidenceRefs missing a receipted file ref or citing a ref outside
+ * the request set, or the service-observed offending-refs INVALID for the
+ * same slip class — one retry runs with IDENTICAL inputs (same request
+ * object, fresh turn, no hints, no list re-assertion — re-asserting the exact
+ * list would lead the semantic judgment and compromise independence). The
+ * retry passes `bypassCache: true` so the identical cache identity cannot
+ * return the same cached wrong judgment as a HIT; the fresh result is still
+ * stored under that identity. A second mismatch rethrows with details.
  *
  * A transient launch-level SEMANTIC_ASSESSMENT_UNAVAILABLE with
  * `details.timeout !== true` (e.g. exit=1, empty result id, tiny payload,
@@ -634,9 +686,10 @@ async function assessCandidateImpact(root: string, changeSet: ChangeSetV1, chang
  * compose with this loop. One impact assessment therefore launches at most
  * MAX_CANDIDATE_IMPACT_ASSESSMENT_ATTEMPTS + MAX_CANDIDATE_IMPACT_UNAVAILABLE_RETRIES
  * real model turns (no envelope bypass; counts against normal provider-turn
- * accounting). All other gates (type, policy/binding, evidence receipts) fail
- * closed immediately with no retry. Fail-closed is preserved; no fuzzy
- * matching, no normalization widening, no evidence rewrite.
+ * accounting). All other gates (type, policy/binding, evidence receipts, and
+ * non-ref-slip INVALID) fail closed immediately with no retry. Fail-closed
+ * is preserved; no fuzzy matching, no normalization widening, no evidence
+ * rewrite.
  */
 
 function buildCandidateImpactMismatchError(
@@ -644,6 +697,70 @@ function buildCandidateImpactMismatchError(
   assessment: SemanticAssessmentV1
 ): AehError {
   const base = "candidate impact judgment changedFiles do not exactly match the assembled ChangeSet.";
+  const suffix = ` declared=${JSON.stringify(diff.declared)} observed=${JSON.stringify(diff.observed)} missing=${JSON.stringify(diff.missing)} extra=${JSON.stringify(diff.extra)} declaredCount=${diff.declaredCount} observedCount=${diff.observedCount} missingCount=${diff.missingCount} extraCount=${diff.extraCount} assessmentDigest=${assessment.assessmentDigest}${assessment.paseoSession?.agentId ? ` assessorSession=${assessment.paseoSession.agentId}` : ""}`;
+  return new AehError("CANDIDATE_IMPACT_INVALID", `${base}${suffix}`, {
+    details: {
+      ...diff,
+      assessmentDigest: assessment.assessmentDigest,
+      ...(assessment.paseoSession?.agentId ? { sessionId: assessment.paseoSession.agentId } : {}),
+      ...(assessment.paseoSession?.transport ? { transport: assessment.paseoSession.transport } : {})
+    }
+  });
+}
+
+/**
+ * Narrow predicate for the D29 ref-slip class observed at the service
+ * boundary: SEMANTIC_ASSESSMENT_INVALID carrying the bounded offending-refs
+ * signature (reply cited refs outside the request set). Exact gate output is
+ * reused, never reinterpreted; every other INVALID class stays single-shot.
+ */
+function isOffendingEvidenceRefsMismatch(error: AehError): boolean {
+  const details = (error.details ?? {}) as { offendingEvidenceRefs?: unknown; offendingEvidenceRefCount?: unknown };
+  if (typeof details.offendingEvidenceRefCount === "number") return details.offendingEvidenceRefCount > 0;
+  return Array.isArray(details.offendingEvidenceRefs) && details.offendingEvidenceRefs.length > 0;
+}
+
+/**
+ * Deterministic declared-vs-observed evidence-ref diff for the judgment
+ * evidenceRefs gates: exact-string dedupe, locale-sort, cap at
+ * MAX_CANDIDATE_IMPACT_FILE_DIFF_V1 with total unique counts preserved.
+ * Unlike candidateImpactFileDiffV1, refs are NOT path-normalized: the gates
+ * themselves are exact and the diff must preserve slipped strings verbatim
+ * for forensics (e.g. `file:tests.unit.spec.js` vs `file:tests/tasks.unit.spec.js`).
+ */
+function candidateImpactEvidenceRefDiffV1(declared: readonly string[], observed: readonly string[]): {
+  declared: string[];
+  declaredCount: number;
+  observed: string[];
+  observedCount: number;
+  missing: string[];
+  missingCount: number;
+  extra: string[];
+  extraCount: number;
+} {
+  const declaredUnique = [...new Set(declared)].sort((left, right) => left.localeCompare(right));
+  const observedUnique = [...new Set(observed)].sort((left, right) => left.localeCompare(right));
+  const observedSet = new Set(observedUnique);
+  const declaredSet = new Set(declaredUnique);
+  const missingUnique = declaredUnique.filter((ref) => !observedSet.has(ref));
+  const extraUnique = observedUnique.filter((ref) => !declaredSet.has(ref));
+  return {
+    declared: declaredUnique.slice(0, MAX_CANDIDATE_IMPACT_FILE_DIFF_V1),
+    declaredCount: declaredUnique.length,
+    observed: observedUnique.slice(0, MAX_CANDIDATE_IMPACT_FILE_DIFF_V1),
+    observedCount: observedUnique.length,
+    missing: missingUnique.slice(0, MAX_CANDIDATE_IMPACT_FILE_DIFF_V1),
+    missingCount: missingUnique.length,
+    extra: extraUnique.slice(0, MAX_CANDIDATE_IMPACT_FILE_DIFF_V1),
+    extraCount: extraUnique.length
+  };
+}
+
+function buildCandidateImpactEvidenceRefMismatchError(
+  base: string,
+  diff: ReturnType<typeof candidateImpactEvidenceRefDiffV1>,
+  assessment: SemanticAssessmentV1
+): AehError {
   const suffix = ` declared=${JSON.stringify(diff.declared)} observed=${JSON.stringify(diff.observed)} missing=${JSON.stringify(diff.missing)} extra=${JSON.stringify(diff.extra)} declaredCount=${diff.declaredCount} observedCount=${diff.observedCount} missingCount=${diff.missingCount} extraCount=${diff.extraCount} assessmentDigest=${assessment.assessmentDigest}${assessment.paseoSession?.agentId ? ` assessorSession=${assessment.paseoSession.agentId}` : ""}`;
   return new AehError("CANDIDATE_IMPACT_INVALID", `${base}${suffix}`, {
     details: {
