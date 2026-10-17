@@ -1516,7 +1516,25 @@ function buildWaveChangeSet(input: { operationId: string; contract: TaskContract
 
 export function validatePlannerWavePlan(contract: TaskContract, plan: PlannerOutput, config: HarnessProjectConfig): string[] {
   const issues: string[] = []; const ids = new Set<string>(); const requirements = new Set((contract.requirements ?? []).map((item) => item.id)); const covered = new Set<string>();
-  for (const task of plan.workUnits) { if (ids.has(task.id)) issues.push(`duplicate work unit id ${task.id}`); ids.add(task.id); if (!task.scope.length) issues.push(`${task.id} has empty scope`); for (const scope of task.scope) if (!withinContractScope(scope, contract.scope?.allowed ?? ["**"])) issues.push(`${task.id} scope ${scope} is outside TaskContract scope`); for (const req of [...task.requirementRefs, ...task.acceptanceRefs]) { if (requirements.size && !requirements.has(req)) issues.push(`${task.id} references unknown requirement ${req}`); if (requirements.has(req)) covered.add(req); } }
+  // D26 (DETERMINISTIC): a VALID plan-level filesNeededOutsideScope declaration
+  // (same bar as the hard gate: exact file, safe path, no globs/traversal/empty)
+  // exempts the matching exact-file WU scope from the PLAIN contract-scope
+  // issue so the declaration can reach the existing Owner suspend/human route
+  // (resolvePlannerScopeDeclarations). Declarations never auto-pass: the hard
+  // gate below and the suspend route judge them (deny -> BLOCKED preserved).
+  const declaredExactFiles = new Set<string>();
+  for (const entry of plan.filesNeededOutsideScope ?? []) {
+    const raw = typeof entry?.path === "string" ? entry.path.trim() : "";
+    if (!raw || !isSafeRepairScopePath(raw) || !isExactRepairScopeFilePath(raw)) continue;
+    declaredExactFiles.add(normalizeRepairScopePath(raw));
+  }
+  const isDeclaredExactFileScope = (scope: unknown): boolean => {
+    if (typeof scope !== "string") return false;
+    const rawScope = scope.trim();
+    if (!rawScope || !isSafeRepairScopePath(rawScope) || !isExactRepairScopeFilePath(rawScope)) return false;
+    return declaredExactFiles.has(normalizeRepairScopePath(rawScope));
+  };
+  for (const task of plan.workUnits) { if (ids.has(task.id)) issues.push(`duplicate work unit id ${task.id}`); ids.add(task.id); if (!task.scope.length) issues.push(`${task.id} has empty scope`); for (const scope of task.scope) { if (withinContractScope(scope, contract.scope?.allowed ?? ["**"])) continue; if (isDeclaredExactFileScope(scope)) continue; issues.push(`${task.id} scope ${scope} is outside TaskContract scope`); } for (const req of [...task.requirementRefs, ...task.acceptanceRefs]) { if (requirements.size && !requirements.has(req)) issues.push(`${task.id} references unknown requirement ${req}`); if (requirements.has(req)) covered.add(req); } }
   for (const task of plan.workUnits) for (const dependency of task.dependencies) if (!ids.has(dependency)) issues.push(`${task.id} depends on unknown work unit ${dependency}`); for (const requirement of requirements) if (!covered.has(requirement)) issues.push(`requirement ${requirement} is not assigned to any implementation work unit`);
   // H-NEW-11 DETERMINISTIC plan-level hard-protection declaration gate: a
   // work-unit scope intersecting hard-protected paths (frozen TaskContract,
