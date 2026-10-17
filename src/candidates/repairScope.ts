@@ -483,6 +483,133 @@ export function repairScopeNonExemptibleValidationCheck(
   };
 }
 
+/**
+ * DETERMINISTIC D32 raising-time partition of a scope-blocker declaration
+ * into lead-grantable vs never-exemptible paths (the single offer-vs-honor
+ * gate: a raised decision must never offer paths its honoring channel
+ * cannot cover).
+ *
+ * - `grantableViaLead`: every declared path the bounded lead product-choice
+ *   channel can honor — the H-NEW-13 new-test creation tier (non-existent
+ *   exact `tests/` files solely under the broad `tests` rule), dependency
+ *   manifests (`REPAIR_AMENDABLE_MANIFEST_PATHS`), and every other non-hard
+ *   path (regular out-of-scope or custom-forbidden files). Verified:
+ *   `applyRepairScopeAmendment` refuses exactly the complement below.
+ * - `neverExemptible`: the H-NEW-13 `hard` tier — existing `tests/` files,
+ *   frozen-forward-wins `tests/` listings, `test/`, `specs/`, `acceptance/`,
+ *   `features/`, `src/validators/`, seals, contracts, `project.yaml`, policy,
+ *   frozen paths, and managed assets. Verified: the lead channel throws
+ *   `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE` for every one of these.
+ *
+ * Exactness precondition: callers must exactness-gate first (the resolver
+ * D32-extension gate above); non-exact entries passed here directly land in
+ * `neverExemptible` (fail-closed — globs can never be grantable).
+ *
+ * MECHANISM: DETERMINISTIC (H-NEW-13 tiering + filesystem stat evidence, no
+ * model judgment).
+ */
+export async function partitionRepairScopeBlockerByGrantability(
+  paths: readonly string[],
+  config: HarnessProjectConfig,
+  contract: TaskContract,
+  root: string,
+): Promise<{ grantableViaLead: string[]; neverExemptible: string[] }> {
+  const normalized = [...new Set(
+    paths
+      .map((entry) => normalizeRepairScopePath(String(entry ?? "").trim()))
+      .filter((entry) => entry),
+  )].sort((a, b) => a.localeCompare(b));
+  const tiered = await partitionHardViolationsByNewTestTier(normalized, config, contract, root);
+  const hard = new Set(tiered.hard);
+  return {
+    grantableViaLead: normalized.filter((entry) => !hard.has(entry)),
+    neverExemptible: [...hard].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
+/**
+ * DETERMINISTIC BLOCKED check for a MIXED scope declaration (D32 fail-fast
+ * with split guidance). A declaration bundling lead-grantable paths with
+ * never-exemptible hard paths can be honored by NEITHER channel as one
+ * decision — the lead channel refuses the hard remainder
+ * (`REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE`) and sweeping the grantable
+ * subset into an Owner-grant decision entangles it in grant-liveness failure
+ * modes (expiry/epoch/lineage/terminal/ledger) that poison the whole
+ * amendment. No suspension is opened and no decision is raised; the repairer
+ * re-declares the grantable subset alone (same-turn lead amendment, no Owner
+ * round-trip) and follows the per-class guidance for the remainder.
+ *
+ * Same BLOCKED shape/id/category as every other scope BLOCKED (no new
+ * terminal states); the details carry both subsets for forensics.
+ */
+export function repairScopeMixedBlockerValidationCheck(
+  blocker: RepairScopeBlockerReceiptV1,
+  grantableViaLead: readonly string[],
+  neverExemptible: readonly string[],
+): ValidationCheck {
+  assertRepairScopeBlockerReceipt(blocker);
+  const grantable = [...new Set(grantableViaLead)].sort((a, b) => a.localeCompare(b));
+  const hard = [...new Set(neverExemptible)].sort((a, b) => a.localeCompare(b));
+  return {
+    id: "repair.scope-blocker",
+    category: "frozen-scope",
+    status: "FAIL",
+    message: `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: mixed scope declaration cannot be raised as one decision (grantable via lead amendment: ${grantable.join(", ")}; never exemptible: ${hard.join(", ")}). Existing test files are immutable — put new assertions in a NEW tests/ file and declare it; contract/policy/seal/validator paths are never worker-mutable — external development only. Re-declare ONLY the grantable file(s) [${grantable.join(", ")}] to proceed via the bounded lead product-choice channel (same-turn amendment, no Owner grant round-trip); declare hard paths alone via a separate declaration to route to the bounded Owner approve/deny decision — never bundle lead-grantable and hard paths in one declaration, and no decision is raised for a mixed set.`,
+    details: {
+      mechanism: "DETERMINISTIC",
+      operationId: blocker.operationId,
+      taskId: blocker.taskId,
+      workUnitId: blocker.workUnitId,
+      filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+      blockerDigest: blocker.digest,
+      grantableViaLeadPaths: grantable,
+      nonExemptiblePaths: hard,
+    },
+  };
+}
+
+/**
+ * DETERMINISTIC BLOCKED check for a MALFORMED scope declaration (D32
+ * extension: S2 non-exact/unsafe fail-fast with guidance). A declaration
+ * containing paths that are not exact safe file paths (globs such as
+ * `tests/**`, traversal spellings such as `src/../tests/x`, absolute/drive
+ * forms, blanks) can be honored by NO channel: the mint gate
+ * (`isExactRepairScopeFilePath`), both apply gates, and the assembler
+ * carve-out all refuse non-exact entries, so raising a decision for them is
+ * a doomed Owner/lead round-trip by construction. The check names every
+ * malformed entry as-declared plus the well-formed entries to re-declare.
+ * Same BLOCKED shape/id/category as every other scope BLOCKED (no new
+ * terminal states); the details carry both lists for forensics.
+ */
+export function repairScopeMalformedBlockerValidationCheck(
+  blocker: RepairScopeBlockerReceiptV1,
+  malformedPaths: readonly string[],
+  wellFormedPaths: readonly string[],
+): ValidationCheck {
+  assertRepairScopeBlockerReceipt(blocker);
+  const bad = [...new Set(malformedPaths)].sort((a, b) => a.localeCompare(b));
+  const good = [...new Set(wellFormedPaths)].sort((a, b) => a.localeCompare(b));
+  const carryForward = good.length
+    ? ` Well-formed entries in this declaration: ${good.join(", ")} — re-declare those exact paths alone to proceed (no decision is raised for a declaration containing malformed paths, and no amendment budget was consumed).`
+    : ` No well-formed entries to carry forward — declare exact file paths to proceed (no decision is raised for a declaration containing malformed paths, and no amendment budget was consumed).`;
+  return {
+    id: "repair.scope-blocker",
+    category: "frozen-scope",
+    status: "FAIL",
+    message: `REPAIR_SCOPE_AMENDMENT_MALFORMED: scope declaration contains paths that can never be exempted (not exact safe file paths): ${bad.join(", ")}. Narrow globs and traversal spellings to exact file paths under the appropriate roots and re-declare.${carryForward}`,
+    details: {
+      mechanism: "DETERMINISTIC",
+      operationId: blocker.operationId,
+      taskId: blocker.taskId,
+      workUnitId: blocker.workUnitId,
+      filesNeededOutsideScope: blocker.filesNeededOutsideScope,
+      blockerDigest: blocker.digest,
+      malformedPaths: bad,
+      wellFormedPaths: good,
+    },
+  };
+}
+
 export interface RepairScopeNeededFileV1 {
   path: string;
   reason: string;
@@ -2334,7 +2461,7 @@ export async function suspendRepairScopeForProductChoice(input: {
     if (effectiveHard.length) {
       throw new AehError(
         "PARTICIPANT_PLAN_INVALID",
-        `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: blocker path(s) are never exemptible (frozen TaskContract, seal, validators, acceptance/spec, policy): ${effectiveHard.join(", ")}.`,
+        `REPAIR_SCOPE_AMENDMENT_NON_EXEMPTIBLE: blocker path(s) are never exemptible (frozen TaskContract, seal, validators, acceptance/spec, policy): ${effectiveHard.join(", ")}. Existing test files are immutable — put new assertions in a NEW tests/ file and declare it; contract/policy/seal/validator paths are never worker-mutable — external development only. No decision is raised for never-exemptible paths.`,
       );
     }
   }
@@ -2700,6 +2827,49 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
 > {
   const { root, controlRoot, operationId, config, contract, blocker } = input;
   assertRepairScopeBlockerReceipt(blocker);
+  // D32-extension exactness gate (S2 non-exact/unsafe fail-fast,
+  // DETERMINISTIC, no model judgment): every declared entry must be raisable
+  // exactly as the honoring layer judges it — the RAW trimmed path must pass
+  // the same `isSafeRepairScopePath` + `isExactRepairScopeFilePath` conjunction
+  // the mint gate (`mintOwnerExemptedRepairScopeAmendmentFromProductChoice`),
+  // both apply gates, and the assembler carve-out enforce (raw judgment, so a
+  // traversal spelling that normalizes into a grantable shape is still
+  // malformed — mirroring the Luna traversal-hiding rule). Receipt creation
+  // refuses safe-globs and drops unsafe entries, so a malformed declaration
+  // reaching this gate is forged/direct — and the zod shape + digest assert
+  // above cannot see it. Fail-WHOLE (chosen over drop-malformed-and-proceed):
+  // (i) provenance integrity — suspend/apply/honor bind blocker digest ↔
+  // on-disk receipt ↔ exemptedPaths ↔ amendment, so proceeding on a narrowed
+  // in-memory subset would either reuse the original digest (durable
+  // provenance then claims more than exempted — scope misrepresentation) or
+  // require minting a second narrowed receipt that overwrites the namespaced
+  // receipt file and destroys the original declaration evidence; (ii) budget
+  // — proceeding would spend the single per-task amendment (and possibly an
+  // Owner round-trip) on a partial set while the dropped need is
+  // unhonorable-by-construction, leaving a doomed partial state with no
+  // budget for the repairer's real need. Fail-fast consumes nothing (no
+  // suspension, no amendment, cap untouched): the well-formed entries are not
+  // poisoned — re-declared alone they proceed immediately with zero penalty —
+  // and the message names both lists. Well-formed exact declarations fall
+  // through to the grantability partition unchanged.
+  const malformedEntries = [...new Set(
+    blocker.filesNeededOutsideScope
+      .map((entry) => (typeof entry?.path === "string" ? entry.path.trim() : ""))
+      .filter((raw) => !raw || !isSafeRepairScopePath(raw) || !isExactRepairScopeFilePath(raw)),
+  )].sort((a, b) => a.localeCompare(b));
+  if (malformedEntries.length) {
+    const wellFormedEntries = [...new Set(
+      blocker.filesNeededOutsideScope
+        .map((entry) => (typeof entry?.path === "string" ? entry.path.trim() : ""))
+        .filter((raw) => raw && isSafeRepairScopePath(raw) && isExactRepairScopeFilePath(raw))
+        .map((raw) => normalizeRepairScopePath(raw)),
+    )].sort((a, b) => a.localeCompare(b));
+    return {
+      status: "BLOCKED",
+      blocker,
+      check: repairScopeMalformedBlockerValidationCheck(blocker, malformedEntries, wellFormedEntries),
+    };
+  }
   // D12 non-owner reuse (mirror of the H-NEW-14 owner reuse in the hard
   // branch below, consult-only): a second blocker on already-exempted
   // amendable/new-test-tier paths reuses the durable non-owner amendment
@@ -2762,13 +2932,40 @@ export async function resolveRepairScopeBlockerViaProductChoice(input: {
   // tier and take the regular (non-hard) branch below with no owner grant;
   // existing tests/ paths and every other hard class (including new files
   // elsewhere) take this hard branch unchanged.
-  const tiered = await partitionHardViolationsByNewTestTier(
+  //
+  // D32 partition-at-raising (OFFER-vs-HONOR, DETERMINISTIC, no model
+  // judgment): a MIXED declaration — lead-grantable paths (new-test-tier
+  // creations, dependency manifests, other non-hard files) bundled with
+  // never-exemptible hard paths — can be honored by NEITHER channel as one
+  // decision, so NO suspension is opened and NO decision is raised. Design
+  // (b) whole-declaration fail-fast (chosen over (a) raise-for-subset):
+  // (a) would burn the single per-task amendment (MAX=1) on a partial fix
+  // while the hard remainder still BLOCKs, or need a second suspension
+  // (at-most-one-suspension-per-call invariant); the two subsets need
+  // different authority channels (lead product-choice vs owner-grant with
+  // MAC/lineage/ledger binding) that one call cannot run; the D10 planner
+  // precedent fails mixed new+existing whole-terminal citing the hard
+  // remainder (grantable subset discarded, never routed); H-NEW-14 refuses
+  // partial coverage/partial honor; and sweeping grantable files into an
+  // Owner decision entangles them in grant-liveness failure modes
+  // (expiry/epoch/lineage/terminal/revocation) that poison the whole
+  // amendment. Pure-hard declarations route to the hard suspend unchanged
+  // (H-NEW-13 "suspend as today"); pure-grantable declarations fall through
+  // to the lead channel unchanged.
+  const grantablePartition = await partitionRepairScopeBlockerByGrantability(
     blocker.filesNeededOutsideScope.map((entry) => entry.path),
     config,
     contract,
     root,
   );
-  const hardViolations = tiered.hard;
+  if (grantablePartition.grantableViaLead.length > 0 && grantablePartition.neverExemptible.length > 0) {
+    return {
+      status: "BLOCKED",
+      blocker,
+      check: repairScopeMixedBlockerValidationCheck(blocker, grantablePartition.grantableViaLead, grantablePartition.neverExemptible),
+    };
+  }
+  const hardViolations = grantablePartition.neverExemptible;
   if (hardViolations.length) {
     const operation = await loadOperation(controlRoot, operationId);
     const ledger = repairScopeLedger(controlRoot);
