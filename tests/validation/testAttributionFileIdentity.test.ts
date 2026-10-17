@@ -194,3 +194,142 @@ describe("D30 file-identity test attribution", () => {
     expect(attributedReporterFailuresV1({ selectors: ["tests/b.spec.js"], tests })).toEqual([]);
   });
 });
+
+describe("D30b segment-suffix file matching (bare-vs-rooted variance)", () => {
+  function passingTest(title: string, fullTitle: string, file: string) {
+    return { title, fullTitle, status: "passed", passed: true, file };
+  }
+
+  it("bare reporter file vs rooted selector MATCHES (live D30b case)", () => {
+    // Live: reporter emits `contract-api.spec.js`, authors select `tests/contract-api.spec.js`.
+    const tests = parsePlaywrightReporterTestsV1({
+      suites: [
+        {
+          title: "bundle",
+          specs: [
+            {
+              title: "contract list journey",
+              file: "contract-api.spec.js",
+              tests: [{ status: "expected", results: [{ status: "passed" }] }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(tests).toHaveLength(1);
+    expect(tests[0]!.file).toBe("contract-api.spec.js");
+    const evalLive = evaluateTestAttributionV1({
+      requirementId: "REQ-D30B-LIVE",
+      selectors: ["tests/contract-api.spec.js"],
+      tests,
+    });
+    expect(evalLive.verdict).toBe("PASS");
+    expect(evalLive.matched).toBe(1);
+  });
+
+  it("prefixed reporter file vs shorter relative selector MATCHES (suffix)", () => {
+    const tests = [
+      passingTest(
+        "contract list journey",
+        "bundle > contract list journey",
+        "frontend/tests/contract-api.spec.js",
+      ),
+    ];
+    const evalShorter = evaluateTestAttributionV1({
+      requirementId: "REQ-D30B-SHORTER",
+      selectors: ["tests/contract-api.spec.js"],
+      tests,
+    });
+    expect(evalShorter.verdict).toBe("PASS");
+    expect(evalShorter.matched).toBe(1);
+  });
+
+  it("absolute reporter file vs rooted selector MATCHES", () => {
+    const tests = [
+      passingTest(
+        "contract list journey",
+        "bundle > contract list journey",
+        "/home/runner/work/repo/tests/contract-api.spec.js",
+      ),
+    ];
+    const evalAbs = evaluateTestAttributionV1({
+      requirementId: "REQ-D30B-ABS",
+      selectors: ["tests/contract-api.spec.js"],
+      tests,
+    });
+    expect(evalAbs.verdict).toBe("PASS");
+    expect(evalAbs.matched).toBe(1);
+  });
+
+  it("`./`-prefixed selector MATCHES the same file", () => {
+    const tests = [
+      passingTest(
+        "contract list journey",
+        "bundle > contract list journey",
+        "tests/contract-api.spec.js",
+      ),
+    ];
+    const evalDot = evaluateTestAttributionV1({
+      requirementId: "REQ-D30B-DOTSLASH",
+      selectors: ["./tests/contract-api.spec.js"],
+      tests,
+    });
+    expect(evalDot.verdict).toBe("PASS");
+    expect(evalDot.matched).toBe(1);
+  });
+
+  it("same-basename collision does NOT match (segment-aligned)", () => {
+    const tests = [
+      passingTest("other journey", "bundle > other journey", "b/foo.spec.js"),
+    ];
+    const evalCollision = evaluateTestAttributionV1({
+      requirementId: "REQ-D30B-COLLISION",
+      selectors: ["a/foo.spec.js"],
+      tests,
+    });
+    expect(evalCollision.verdict).toBe("FAIL");
+    expect(evalCollision.blocker).toBe("TEST_ATTRIBUTION_NO_MATCH");
+    expect(evalCollision.matched).toBe(0);
+  });
+
+  it("`tests/` directory prefix still never file-matches", () => {
+    const tests = parsePlaywrightReporterTestsV1(multiFileBundle());
+    const evalDir = evaluateTestAttributionV1({
+      requirementId: "REQ-D30B-DIR",
+      selectors: ["tests/"],
+      tests,
+    });
+    expect(evalDir.matched).toBe(0);
+    expect(evalDir.blocker).toBe("TEST_ATTRIBUTION_NO_MATCH");
+  });
+
+  it("slash-less selector never file-matches (title-only path unchanged)", () => {
+    const withoutTitle = [
+      passingTest("alpha journey", "bundle > alpha journey", "tests/contract-api.spec.js"),
+    ];
+    // Titles lack the selector, and the slash-less selector must not file-match.
+    const evalNoTitle = evaluateTestAttributionV1({
+      requirementId: "REQ-D30B-SLASHLESS-NOTITLE",
+      selectors: ["contract-api"],
+      tests: withoutTitle,
+    });
+    expect(evalNoTitle.verdict).toBe("FAIL");
+    expect(evalNoTitle.blocker).toBe("TEST_ATTRIBUTION_NO_MATCH");
+    expect(evalNoTitle.matched).toBe(0);
+    // Title containing it still matches via the (unchanged) title path.
+    const withTitle = [
+      passingTest(
+        "contract-api journey",
+        "bundle > contract-api journey",
+        "tests/other.spec.js",
+      ),
+    ];
+    const evalTitle = evaluateTestAttributionV1({
+      requirementId: "REQ-D30B-SLASHLESS-TITLE",
+      selectors: ["contract-api"],
+      tests: withTitle,
+    });
+    expect(evalTitle.verdict).toBe("PASS");
+    expect(evalTitle.matched).toBe(1);
+  });
+});

@@ -8,9 +8,11 @@ import type { ValidationRequirementV1 } from "../architecture/validationRequirem
  * Per-requirement test attribution for shared validation bundles.
  *
  * Mechanism=DETERMINISTIC: boundary-safe token/phrase matching against Playwright
- * JSON reporter titles (case-sensitive, separator-insensitive), plus exact
- * spec-file identity matching against the retained reporter `file` field
- * (slash-normalized, exact files only — directory prefixes never match),
+ * JSON reporter titles (case-sensitive, separator-insensitive), plus
+ * segment-suffix spec-file identity matching against the retained reporter
+ * `file` field (slash-normalized, trailing-segment equality unifying
+ * bare/root-relative/absolute forms; slash-less selectors keep title-only
+ * behavior; directory prefixes never match),
  * fail-closed on unknown titles, missing reporter, or parse errors.
  * Requirements without declared mapping keep the bundle verdict (no change).
  */
@@ -53,7 +55,9 @@ export interface AttributedPlaywrightTestV1 {
    * back-compat: present on parser output when the spec record carries a
    * `file` field; absent (undefined, never fabricated) on hand-constructed
    * literals and legacy documents without one. A file selector matches a
-   * test only by EXACT equality with this value; directory-prefix selectors
+   * test only by SEGMENT-SUFFIX equality with this value (trailing
+   * min(len)-segments equal, case-sensitive, segment-aligned; slash-less
+   * selectors never file-match); directory-prefix selectors
    * (e.g. `tests/`) never match.
    */
   file?: string;
@@ -340,18 +344,41 @@ function matchesAttributionSelectorV1(haystack: string, selector: string): boole
  * File-identity selector matching (Mechanism=DETERMINISTIC).
  *
  * A selector additionally matches a test when the selector — after the same
- * slash normalization as retained files (no trimming beyond what callers
- * already apply, no prefix/suffix stripping, case-sensitive) — EXACTLY
- * equals the test's retained reporter file. Boundary: exact files only;
- * directory-prefix selectors (e.g. `tests/`) never match. Fail-closed: a
- * test without a retained file never file-matches, and an unknown file
- * matches nothing.
+ * slash normalization as retained files (`\` -> `/`, case-sensitive, no
+ * trimming beyond what callers already apply) — equals the test's retained
+ * reporter file by SEGMENT-SUFFIX equality: both sides are split on `/` and
+ * match iff their trailing min(len)-segments are all equal, segment-aligned.
+ * The file side must be non-empty.
+ *
+ * Guards (D30/Luna boundary preserved): selectors NOT containing `/` never
+ * file-match (slash-less selectors keep title-only behavior, byte-identical
+ * to today), and selectors ending in `/` never file-match (directory prefixes
+ * stay excluded).
+ *
+ * Rationale: suffix matching errs toward STRICTER (over-attribution only adds
+ * must-pass tests; a PASS still requires the attributed tests to have run and
+ * passed), and it unifies the bare (`contract-api.spec.js`), root-relative
+ * (`tests/contract-api.spec.js`), and absolute
+ * (`/.../tests/contract-api.spec.js`) reporter forms that exact equality
+ * could never reconcile. Fail-closed: a test without a retained file never
+ * file-matches, and an unknown file matches nothing.
  */
 function matchesAttributionFileV1(selector: string, file: unknown): boolean {
   if (typeof file !== "string" || !file) return false;
   const normalizedSelector = normalizeAttributionFileV1(selector);
   if (!normalizedSelector) return false;
-  return normalizedSelector === normalizeAttributionFileV1(file);
+  if (!normalizedSelector.includes("/")) return false;
+  if (normalizedSelector.endsWith("/")) return false;
+  const normalizedFile = normalizeAttributionFileV1(file);
+  if (!normalizedFile) return false;
+  const selectorSegments = normalizedSelector.split("/");
+  const fileSegments = normalizedFile.split("/");
+  const overlap = Math.min(selectorSegments.length, fileSegments.length);
+  for (let i = 1; i <= overlap; i++) {
+    if (selectorSegments[selectorSegments.length - i] !== fileSegments[fileSegments.length - i])
+      return false;
+  }
+  return true;
 }
 
 /**
