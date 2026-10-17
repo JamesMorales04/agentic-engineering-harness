@@ -8,8 +8,10 @@ import type { ValidationRequirementV1 } from "../architecture/validationRequirem
  * Per-requirement test attribution for shared validation bundles.
  *
  * Mechanism=DETERMINISTIC: boundary-safe token/phrase matching against Playwright
- * JSON reporter titles (case-sensitive, separator-insensitive), fail-closed on
- * unknown titles, missing reporter, or parse errors.
+ * JSON reporter titles (case-sensitive, separator-insensitive), plus exact
+ * spec-file identity matching against the retained reporter `file` field
+ * (slash-normalized, exact files only — directory prefixes never match),
+ * fail-closed on unknown titles, missing reporter, or parse errors.
  * Requirements without declared mapping keep the bundle verdict (no change).
  */
 
@@ -45,6 +47,16 @@ export interface AttributedPlaywrightTestV1 {
    * for flaky); unknown/"" falls back to the explicit-failed-result rule.
    */
   testStatus?: string;
+  /**
+   * Spec file identity retained from the Playwright reporter (`spec.file`),
+   * slashes normalized (`\` -> `/`), no other transform. OPTIONAL for
+   * back-compat: present on parser output when the spec record carries a
+   * `file` field; absent (undefined, never fabricated) on hand-constructed
+   * literals and legacy documents without one. A file selector matches a
+   * test only by EXACT equality with this value; directory-prefix selectors
+   * (e.g. `tests/`) never match.
+   */
+  file?: string;
 }
 
 export interface TestAttributionEvaluationV1 {
@@ -77,6 +89,16 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function normalizeStatus(status: unknown): string {
   return String(status ?? "").toLowerCase().trim();
+}
+
+/**
+ * Slash normalization shared by retained spec files and file selectors
+ * (Mechanism=DETERMINISTIC): backslashes become forward slashes, no other
+ * transform (no trimming, no `./` stripping, no case folding) — the same
+ * normalization paths use elsewhere in the Harness.
+ */
+function normalizeAttributionFileV1(value: string): string {
+  return value.replaceAll("\\", "/");
 }
 
 function isPassingResultStatus(status: string): boolean {
@@ -204,6 +226,10 @@ export function parsePlaywrightReporterTestsV1(value: unknown): AttributedPlaywr
     for (const spec of specs) {
       const specRecord = asRecord(spec);
       const specTitle = typeof specRecord.title === "string" ? specRecord.title : "";
+      const specFile =
+        typeof specRecord.file === "string" && specRecord.file
+          ? normalizeAttributionFileV1(specRecord.file)
+          : undefined;
       const tests = Array.isArray(specRecord.tests) ? specRecord.tests : [];
       for (const test of tests) {
         const testRecord = asRecord(test);
@@ -229,6 +255,7 @@ export function parsePlaywrightReporterTestsV1(value: unknown): AttributedPlaywr
           passed,
           hasFailedResult: statuses.some(isFailedResultStatus),
           testStatus: outcome,
+          ...(specFile === undefined ? {} : { file: specFile }),
         });
       }
     }
@@ -309,6 +336,38 @@ function matchesAttributionSelectorV1(haystack: string, selector: string): boole
   return ` ${normalizedHaystack} `.includes(` ${normalizedSelector} `);
 }
 
+/**
+ * File-identity selector matching (Mechanism=DETERMINISTIC).
+ *
+ * A selector additionally matches a test when the selector — after the same
+ * slash normalization as retained files (no trimming beyond what callers
+ * already apply, no prefix/suffix stripping, case-sensitive) — EXACTLY
+ * equals the test's retained reporter file. Boundary: exact files only;
+ * directory-prefix selectors (e.g. `tests/`) never match. Fail-closed: a
+ * test without a retained file never file-matches, and an unknown file
+ * matches nothing.
+ */
+function matchesAttributionFileV1(selector: string, file: unknown): boolean {
+  if (typeof file !== "string" || !file) return false;
+  const normalizedSelector = normalizeAttributionFileV1(selector);
+  if (!normalizedSelector) return false;
+  return normalizedSelector === normalizeAttributionFileV1(file);
+}
+
+/**
+ * Whether a selector attributes a test (Mechanism=DETERMINISTIC): title or
+ * fullTitle token/phrase match (unchanged), or exact retained-file identity
+ * match. Shared by evaluation and reporter-failure attribution so the two
+ * can never disagree on the attributed set.
+ */
+function isTestAttributedV1(test: AttributedPlaywrightTestV1, selector: string): boolean {
+  return (
+    matchesAttributionSelectorV1(test.fullTitle, selector) ||
+    matchesAttributionSelectorV1(test.title, selector) ||
+    matchesAttributionFileV1(selector, test.file)
+  );
+}
+
 export function evaluateTestAttributionV1(input: {
   requirementId: string;
   selectors: readonly string[];
@@ -329,11 +388,7 @@ export function evaluateTestAttributionV1(input: {
     };
   }
   const matched = input.tests.filter((test) =>
-    selectors.some(
-      (selector) =>
-        matchesAttributionSelectorV1(test.fullTitle, selector) ||
-        matchesAttributionSelectorV1(test.title, selector),
-    ),
+    selectors.some((selector) => isTestAttributedV1(test, selector)),
   );
   if (!matched.length) {
     return {
@@ -449,11 +504,7 @@ export function attributedReporterFailuresV1(input: {
   return input.tests.filter(
     (test) =>
       isAttributionFailurePresent(test) &&
-      selectors.some(
-        (selector) =>
-          matchesAttributionSelectorV1(test.fullTitle, selector) ||
-          matchesAttributionSelectorV1(test.title, selector),
-      ),
+      selectors.some((selector) => isTestAttributedV1(test, selector)),
   );
 }
 
