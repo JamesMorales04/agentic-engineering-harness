@@ -177,14 +177,14 @@ describe("D24 DIRECT test-script authoring proposal", () => {
     expect(contract.verification).toBeUndefined();
   });
 
-  it("non-DIRECT routes are untouched by the proposal", async () => {
+  it("FORMAL_SDD routes are untouched by the proposal", async () => {
     const root = await tmpRoot({ scripts: { test: "vitest run" } });
     const floor = triageChange(bareConfig, { request: "fix range(n) loop bound", files: ["src/tasks.js"], risk: "low" });
-    const delegated = { ...floor, route: "DELEGATED" as const, assurance: "STANDARD" as const };
+    const formalSdd = { ...floor, route: "FORMAL_SDD" as const, assurance: "CRITICAL" as const };
     const { contract } = await createRoutedContract(root, bareConfig, "TASK-D24-F", {
-      title: "Delegated fix", request: "fix range(n) loop bound", scope: ["src/tasks.js"], acceptance, routeDecision: delegated
+      title: "Formal fix", request: "fix range(n) loop bound", scope: ["src/tasks.js"], acceptance, routeDecision: formalSdd
     });
-    expect(contract.routing?.route).toBe("DELEGATED");
+    expect(contract.routing?.route).toBe("FORMAL_SDD");
     expect(contract.requirements?.map((item) => item.validators)).toEqual([[], []]);
     expect(contract.verification).toBeUndefined();
   });
@@ -261,5 +261,53 @@ describe("D24 DIRECT test-script authoring proposal", () => {
       title: "Fix range(n) off-by-one", request: "fix range(n) loop bound", scope: ["src/tasks.js"], acceptance
     });
     expect(sha256Canonical(contract.requirements)).not.toBe(sha256Canonical(plain.contract.requirements));
+  });
+});
+
+describe("D27 DELEGATED test-script authoring proposal", () => {
+  function delegatedDecision() {
+    const floor = triageChange(bareConfig, { request: "fix range(n) loop bound", files: ["src/tasks.js"], risk: "low" });
+    return { ...floor, route: "DELEGATED" as const, assurance: "STANDARD" as const };
+  }
+
+  it("proposes the project test script as a declared AC validator for DELEGATED when no validation is configured", async () => {
+    const root = await tmpRoot({ scripts: { test: "playwright test --reporter=list" } });
+    const { contract } = await createRoutedContract(root, bareConfig, "TASK-D27-A", {
+      title: "Fix range(n) off-by-one", request: "fix range(n) loop bound", scope: ["src/tasks.js"], acceptance, routeDecision: delegatedDecision()
+    });
+    expect(contract.routing?.route).toBe("DELEGATED");
+    expect(contract.requirements?.map((item) => [item.id, item.validators])).toEqual([
+      ["AC-1", ["command.test"]],
+      ["AC-2", ["command.test"]]
+    ]);
+    expect(contract.verification?.commands).toEqual([expect.objectContaining({ id: "test", command: "npm test", required: true })]);
+  });
+
+  it("suppresses the proposal entirely for DELEGATED when any input requirement declares explicit validators", async () => {
+    const root = await tmpRoot({ scripts: { test: "vitest run" } });
+    const { contract } = await createRoutedContract(root, bareConfig, "TASK-D27-B", {
+      title: "Mixed validation", request: "add an export", scope: ["src/greeting.mjs"],
+      requirements: [
+        { id: "R-1", description: "explicitly validated", validators: ["custom-check"] },
+        { id: "R-2", description: "left bare" },
+      ],
+      routeDecision: delegatedDecision()
+    });
+    expect(contract.routing?.route).toBe("DELEGATED");
+    expect(contract.requirements).toEqual([
+      expect.objectContaining({ id: "R-1", validators: ["custom-check"] }),
+      expect.objectContaining({ id: "R-2", validators: [] }),
+    ]);
+    expect(contract.verification).toBeUndefined();
+  });
+
+  it("leaves DELEGATED validator-less ACs unchanged when no test script exists", async () => {
+    const root = await tmpRoot({ scripts: { start: "node src/server.js" } });
+    const { contract } = await createRoutedContract(root, bareConfig, "TASK-D27-C", {
+      title: "Fix range(n) off-by-one", request: "fix range(n) loop bound", scope: ["src/tasks.js"], acceptance, routeDecision: delegatedDecision()
+    });
+    expect(contract.routing?.route).toBe("DELEGATED");
+    expect(contract.requirements?.map((item) => item.validators)).toEqual([[], []]);
+    expect(contract.verification).toBeUndefined();
   });
 });

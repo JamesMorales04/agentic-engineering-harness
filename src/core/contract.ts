@@ -30,7 +30,7 @@ export async function createRoutedContract(root: string, config: HarnessProjectC
   // approved validators is bound to the project's configured validation commands and validators.
   // The model cannot select commands, and a project without configured validation keeps the
   // fail-closed empty set (the evidence-completeness gate then blocks), except for the narrow
-  // DIRECT test-script proposal below.
+  // DIRECT-or-DELEGATED test-script proposal below.
   // Requirement validators must name the deterministic validation check ids: configured commands
   // persist as `command.<id>` (src/validators/commands.ts) and configured validators persist under
   // their own id, which is what the requirement evidence graph matches against.
@@ -38,12 +38,13 @@ export async function createRoutedContract(root: string, config: HarnessProjectC
     ...(config.validation?.commands ?? []).map((command) => `command.${command.id}`),
     ...(config.validation?.validators ?? []).map((validator) => validator.id)
   ].filter((id) => id.trim().length > 0))].sort();
-  // D24 DIRECT authoring proposal (Mechanism=DETERMINISTIC): a DIRECT behavior fix whose intent
-  // declares no explicit validators and whose project configures no validation commands/validators
-  // would otherwise author `validators:[]`, which strict evidence.requirement-coverage rejects
-  // with no post-hoc authoring actor able to fix it (repairers cannot edit frozen contracts; the
-  // approved scope-amendment path has nothing actionable to author for a conventional contract).
-  // When the DIRECT target root owns an `npm test` script, authoring deterministically proposes
+  // D24 DIRECT authoring proposal, extended by D27 to DELEGATED (Mechanism=DETERMINISTIC):
+  // a DIRECT-or-DELEGATED behavior fix whose intent declares no explicit validators and whose
+  // project configures no validation commands/validators would otherwise author `validators:[]`,
+  // which strict evidence.requirement-coverage rejects with no post-hoc authoring actor able to
+  // fix it (repairers cannot edit frozen contracts; the approved scope-amendment path has nothing
+  // actionable to author for a conventional contract; planner-authored requirement kinds never
+  // produce declarations anywhere). When the DIRECT-or-DELEGATED target root owns an `npm test`
   // the canonical `command.test` check id plus its verification command — the same `command.<id>`
   // convention the evidence graph, contract-derived validation requirements, and resolution all
   // share (unit-test kinds already resolve to `npm test` via scriptCandidates, but the oracle
@@ -52,10 +53,10 @@ export async function createRoutedContract(root: string, config: HarnessProjectC
   // validators and configured project validators always win. If ANY input requirement carries
   // explicit validators, the proposal is suppressed entirely: a partially explicit intent
   // signals manual validation design, and auto-attaching `npm test` to the remaining bare
-  // requirements would surprise (unwanted suite runs). Non-DIRECT routes are untouched
-  // (DELEGATED keeps its existing semantics; FORMAL_SDD compiles through resolveRequirementValidation).
+  // requirements would surprise (unwanted suite runs). FORMAL_SDD (and NO_AGENT) are untouched
+  // (FORMAL_SDD compiles through resolveRequirementValidation).
   const hasExplicitInputValidators = (input.requirements ?? []).some((requirement) => (requirement.validators?.length ?? 0) > 0);
-  const directTestProposal = decision.route === "DIRECT" && configuredValidators.length === 0 && !hasExplicitInputValidators
+  const directTestProposal = (decision.route === "DIRECT" || decision.route === "DELEGATED") && configuredValidators.length === 0 && !hasExplicitInputValidators
     ? await directProjectTestProposalV1(root)
     : undefined;
   const requirements = (input.requirements ?? acceptance.map((description, index) => ({ id: `AC-${index + 1}`, description, validators: [] })))
@@ -87,11 +88,11 @@ export async function createRoutedContract(root: string, config: HarnessProjectC
 }
 
 /**
- * DETERMINISTIC DIRECT test-script proposal: when the target root owns a non-empty `test`
+ * DETERMINISTIC DIRECT-or-DELEGATED test-script proposal: when the target root owns a non-empty `test`
  * script, propose the canonical `command.test` check id with its `npm test` verification
  * command (the same selector→command mapping `resolveProjectScript` uses for unit-test kinds).
  * Only the `test` script is proposed — the minimal unit-test default for behavior fixes — and
- * only for DIRECT authoring with no configured validation. Any read failure or absent script
+ * only for DIRECT-or-DELEGATED authoring with no configured validation. Any read failure or absent script
  * returns undefined so authoring keeps the previous fail-closed empty set.
  */
 async function directProjectTestProposalV1(root: string): Promise<{ validatorId: string; command: ValidationCommand } | undefined> {
